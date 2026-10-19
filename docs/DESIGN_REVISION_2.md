@@ -50,3 +50,18 @@ Leg area 4.0 m² plus the bridge. Overall height ≈ 3.0 m; the arch folds back 
   roll-over protection hoop; fore/aft ring-track bulkheads and the keel beam carry its loads.
 * **Thermal** — the bridge top is a sky-facing solar-selective collector (≈ 1 m² instead of 0.65 m² on the nose); the rear deck
   carries the radiative cooler; the bridge also shades the cockpit.
+
+## Revision 5 — AeroArch with compliant flexure root (owner: no rotating mechanism, shorter, more stable, faster)
+
+* **No rotating mechanism.** The ring track, incidence drive and breakaway lock are removed. Each arch leg root is a
+  **compliant architected-lattice flexure** (titanium β-21S or CFRP leaf-spring metamaterial, no bearings, no joints) that
+  lets the whole arch twist elastically within about ±25° about a vertical axis ahead of its aerodynamic centre. The
+  aerodynamic moment self-trims the arch to a near-constant angle of attack, and a **bistable camber skin** snaps to the
+  leeward side on each tack. This is elastic deformation of the structure, the same principle as the morphing skins.
+* **Passive gust protection.** Above the design load the flexure's stiffening curve and the skin's de-cambering shed lift
+  (passive washout); no release mechanism is needed. The flexure must meet a fatigue life ≥ 10⁷ load cycles.
+* **Wind-direction envelope.** With incidence limited to ±25° relative to the body, thrust is available when the apparent
+  wind arrives within the corresponding sector; outside it the driver chooses a heading that brings the apparent wind into
+  the sector (sailing practice). The envelope, and any heading penalty, is reported.
+* **Targets.** Length as short as possible toward the original 3.6 m; static stability factor ≥ 1.11 g; safe sustainable
+  speed ≥ Revision 3 tandem with the same low-loss tyres and computed drag; overall height ≤ 3.0 m; mass ≤ 260 kg.
