@@ -81,6 +81,9 @@ export async function viewer(container, { background, up = 'z', grid = true, hei
   // pause rendering when off-screen to save battery on phones
   const io = new IntersectionObserver((e) => { if (e[0].isIntersecting) { if (!state.raf) { last = performance.now(); state.raf = requestAnimationFrame(loop); } } else { cancelAnimationFrame(state.raf); state.raf = 0; } }); io.observe(container);
   state.raf = requestAnimationFrame(loop);
+  // static scenes (no simulation driving them) turn slowly so the model is never frozen; any user interaction stops it
+  setTimeout(() => { if (!state.animate && !state.disposed && !state.userTouched) { controls.autoRotate = true; controls.autoRotateSpeed = 0.9; } }, 1200);
+  renderer.domElement.addEventListener('pointerdown', () => { state.userTouched = true; controls.autoRotate = false; });
   const api = {
     setFrameObject(o) { state.frameObj = o; camera.far = 5000; camera.updateProjectionMatrix(); },
     THREE, scene, camera, controls, renderer, root, add, clear, fit, viewDir, updateField, updatePositions, addLine, addArrow, snapshot, exportGLB,

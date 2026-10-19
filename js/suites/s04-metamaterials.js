@@ -183,7 +183,7 @@ function bistableAnim(el, B, L, hgt, t) {
   const slider = h('input', { type: 'range', min: 0, max: B.d.length - 1, value: 0, style: 'width:100%' });
   const draw = (i) => { const s = shape(B.coeffs[i]); svg.querySelector('#b1').setAttribute('d', 'M' + xs.map((x, j) => `${X(x)},${Y(s[j])}`).join('L')); svg.querySelector('#bt').textContent = `travel ${fmt(B.d[i] * 1000, 3)} mm · force ${fmt(B.F[i], 3)} N · energy ${fmt(B.U[i], 3)} J`; };
   slider.oninput = () => draw(+slider.value); draw(0);
-  let playing = true, i = 0; const tick = () => { if (!el.isConnected) return; if (playing) { i = (i + 1) % B.d.length; slider.value = i; draw(i); } setTimeout(tick, 60); }; tick();
+  let playing = true, i = 0, seen = false; const tick = () => { if (el.isConnected) seen = true; else if (seen) return; if (playing) { i = (i + 1) % B.d.length; slider.value = i; draw(i); } setTimeout(tick, 60); }; tick();
   el.append(svg, slider, h('button', { class: 'btn sm', onclick: (e) => { playing = !playing; e.target.textContent = playing ? 'Pause' : 'Play'; } }, 'Pause'), h('p', { class: 'small muted' }, `Solved equilibrium shapes along the displacement-controlled path (not an interpolated cartoon). Apex ${fmt(hgt * 1000, 3)} mm, thickness ${fmt(t * 1000, 3)} mm.`));
 }
 
