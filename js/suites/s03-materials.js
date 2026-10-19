@@ -93,8 +93,8 @@ export default {
     k('Components assigned', Object.keys(COMPONENTS).length, '', 'Every part of the automobile has an editable material assignment (Assignment tab).', 'user');
     k('Current material', current?.name || '—', '', `Material currently assigned to “${comp.name}”.`, ctx.store.project.materials[p.component] ? 'user' : 'library');
     k('Top-ranked candidate', best?.m.name || '—', '', 'Highest weighted score among admissible candidates (meeting the temperature constraint).', 'calc', best?.m.id === current?.id ? 'ok' : 'warn');
-    k('Top score', best?.s, '0–1', 'Normalised weighted score; ranges with property uncertainty are shown in the ranking chart.', 'calc');
-    k('Current material score', cur?.s ?? NaN, '0–1', 'Score of the current assignment under the same weights.', 'calc');
+    k('Top score', best ? best.s : 'no admissible candidate', best ? '0–1' : '', best ? 'Normalised weighted score; ranges with property uncertainty are shown in the ranking chart.' : `No library material for this component meets T_max ≥ ${p.Tservice} °C — relax the requirement or add a qualified high-temperature material.`, 'calc', best ? undefined : 'bad');
+    k('Current material score', cur ? cur.s : 'not admissible', cur ? '0–1' : '', cur ? 'Score of the current assignment under the same weights.' : 'The current material is excluded by the constraints, so it has no score.', 'calc', cur ? undefined : 'bad');
     k('Statistically tied candidates', tied, '', 'Candidates whose uncertainty band overlaps the leader’s — the ranking cannot separate them without better data.', 'calc', tied ? 'warn' : 'ok');
     k('Pareto-optimal candidates', pareto.size, '', 'Not dominated in (mass index, price, embodied carbon) simultaneously.', 'calc');
     k('Rejected by temperature', rejected.length, '', `Candidates with T_max below ${p.Tservice} °C.`, 'calc');
