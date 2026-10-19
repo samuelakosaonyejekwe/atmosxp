@@ -9,8 +9,15 @@ export async function loadThree() {
   return THREE;
 }
 
+// Registry of live viewers so WebGL contexts are released when their page is left (browsers cap active contexts ≈ 8–16).
+const LIVE = new Set();
+export function disposeDetached() { for (const v of [...LIVE]) if (!v.container.isConnected) { try { v.dispose(); } catch { /* already gone */ } LIVE.delete(v); } }
+export const liveViewerCount = () => LIVE.size;
+
 export async function viewer(container, { background, up = 'z', grid = true, height } = {}) {
   await loadThree();
+  // keep well below the browser limit even inside a single page with many 3D tabs: release the oldest hidden viewer
+  if (LIVE.size >= 6) { const hidden = [...LIVE].find(v => !v.container.isConnected || !v.container.offsetParent); if (hidden) { try { hidden.dispose(); } catch { /* ignore */ } LIVE.delete(hidden); } }
   container.classList.add('viewer'); container.innerHTML = '';
   const W = () => container.clientWidth || 600, H = () => height || Math.max(300, Math.min(620, Math.round(W() * 0.62)));
   const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: false });
@@ -74,10 +81,12 @@ export async function viewer(container, { background, up = 'z', grid = true, hei
   // pause rendering when off-screen to save battery on phones
   const io = new IntersectionObserver((e) => { if (e[0].isIntersecting) { if (!state.raf) { last = performance.now(); state.raf = requestAnimationFrame(loop); } } else { cancelAnimationFrame(state.raf); state.raf = 0; } }); io.observe(container);
   state.raf = requestAnimationFrame(loop);
-  return {
+  const api = {
     setFrameObject(o) { state.frameObj = o; camera.far = 5000; camera.updateProjectionMatrix(); },
     THREE, scene, camera, controls, renderer, root, add, clear, fit, viewDir, updateField, updatePositions, addLine, addArrow, snapshot, exportGLB,
     set animate(fn) { state.animate = fn; }, get objects() { return state.objects; },
-    dispose() { state.disposed = true; cancelAnimationFrame(state.raf); ro.disconnect(); io.disconnect(); clear(); renderer.dispose(); },
+    dispose() { if (state.disposed) return; state.disposed = true; cancelAnimationFrame(state.raf); ro.disconnect(); io.disconnect(); clear(); renderer.dispose(); try { renderer.forceContextLoss(); } catch { /* ignore */ } LIVE.delete(api); },
   };
+  api.container = container; LIVE.add(api);
+  return api;
 }

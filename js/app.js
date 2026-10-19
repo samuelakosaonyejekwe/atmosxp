@@ -23,7 +23,7 @@ function drawSidebar() {
   }
 }
 drawSidebar();
-let sbTimer; store.subscribe((e) => { if (['output', 'reset', 'vehicle', 'material', 'site'].includes(e.type)) { clearTimeout(sbTimer); sbTimer = setTimeout(drawSidebar, 200); } if (e.type === 'site' || e.type === 'reset') siteLabel(); });
+let sbTimer; store.subscribe((e) => { if (e.type === 'storage') toast(e.msg, e.level, 12000); if (['output', 'reset', 'vehicle', 'material', 'site'].includes(e.type)) { clearTimeout(sbTimer); sbTimer = setTimeout(drawSidebar, 200); } if (e.type === 'site' || e.type === 'reset') siteLabel(); });
 $('#menuBtn').onclick = () => { $('#sidebar').classList.toggle('open'); $('#topnav').classList.toggle('open'); };
 
 // ---------- router ----------
@@ -33,6 +33,7 @@ async function route() {
   const hash = location.hash.replace(/^#\/?/, ''), [page, arg] = hash.split('/');
   const main = $('#main'); current?.dispose?.(); current = null;
   main.innerHTML = ''; window.scrollTo({ top: 0 });
+  import('./core/viz3d.js').then(m => m.disposeDetached()).catch(() => { });
   $('#sidebar').classList.remove('open'); $('#topnav').classList.remove('open');
   document.querySelectorAll('.sidebar a, .topnav a').forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#/' + hash || (hash === '' && a.getAttribute('href') === '#/')));
   try {

@@ -1,0 +1,6 @@
+{
+  "name": "phoenix-atmos-xp",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "node tools/build.mjs", "test": "node tools/tests.mjs" }
+}

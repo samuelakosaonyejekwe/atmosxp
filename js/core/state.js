@@ -100,7 +100,19 @@ function load() {
   } catch { /* storage blocked */ }
   return freshProject();
 }
-function schedule() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { try { localStorage.setItem(KEY, JSON.stringify(store.project, (k, v) => (k === 'geometry' && v?.positions) ? undefined : v)); } catch { /* quota or private mode */ } }, 400); }
+function schedule() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    const full = JSON.stringify(store.project, (k, v) => (k === 'geometry' && v?.positions) ? undefined : v);
+    try { localStorage.setItem(KEY, full); store.storageWarning = null; return; } catch { /* quota exceeded or storage blocked */ }
+    // fall back: keep configuration, results and provenance, drop bulky imported data columns (kept in memory this session)
+    try {
+      const slim = JSON.stringify(store.project, (k, v) => (k === 'geometry' && v?.positions) ? undefined : (k === 'columns' || k === 'rows' || k === 'points') && (Array.isArray(v) ? v.length > 200 : typeof v === 'object') ? undefined : v);
+      localStorage.setItem(KEY, slim);
+      if (store.storageWarning !== 'slim') { store.storageWarning = 'slim'; store.emit({ type: 'storage', level: 'warn', msg: 'Device storage is nearly full: the project was saved without the large imported datasets. Export the project (Project page) to keep them.' }); }
+    } catch { if (store.storageWarning !== 'none') { store.storageWarning = 'none'; store.emit({ type: 'storage', level: 'fail', msg: 'This browser is not allowing the project to be saved (private mode or storage blocked). Export the project from the Project page before closing.' }); } }
+  }, 400);
+}
 
 // Simple stable hash for reproducibility records
 export function hashObj(o) { const s = JSON.stringify(o, Object.keys(o || {}).sort()); let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(16).padStart(8, '0'); }
