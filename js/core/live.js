@@ -109,7 +109,7 @@ export async function worldBank(iso2, indicator, n = 12) {
 export const WB = { inflation: 'FP.CPI.TOTL.ZG', lendingRate: 'FR.INR.LEND', realRate: 'FR.INR.RINR', gdpPc: 'NY.GDP.PCAP.CD', manufacturing: 'NV.IND.MANF.ZS', co2pc: 'EN.GHG.CO2.PC.CE.AR5', renewShare: 'EG.FEC.RNEW.ZS', elecAccess: 'EG.ELC.ACCS.ZS' };
 export async function fxRates(base = 'USD') { return fetchJSON('frankfurter', `https://api.frankfurter.dev/v1/latest?base=${base}`); }
 export async function gridCarbon(iso3) {
-  const r = await fetchJSON('owid-carbon', `https://ourworldindata.org/grapher/carbon-intensity-electricity.csv?v=1&csvType=filtered&useColumnShortNames=true&country=~${iso3}`, { text: true });
+  const r = await fetchJSON('owid-carbon', 'https://ourworldindata.org/grapher/electricity-mix.csv?frequency=annual&metric=carbon_intensity&source=total&v=1&csvType=filtered&useColumnShortNames=true', { text: true });
   // CSV columns: entity, code, year, gCO2/kWh[, original year]; entity names may contain quoted commas
   const lines = r.data.trim().split(/\r?\n/);
   r.series = lines.slice(1).map(l => l.match(/("([^"]|"")*"|[^,]*)(,|$)/g).map(c => c.replace(/,$/, '').replace(/^"|"$/g, '')))

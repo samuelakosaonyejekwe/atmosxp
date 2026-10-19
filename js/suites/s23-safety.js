@@ -95,7 +95,7 @@ export default {
     const Dyr = spec.reduce((s, [f, e]) => s + f * cycYr / Nf(e), 0), lifeYr = Dyr > 0 ? 1 / Dyr : Infinity, lifeCycles = Dyr > 0 ? cycYr / Dyr : Infinity, lifeKm = lifeYr * p.kmYear;
     // ----- Paris-law crack growth (Ti insert) -----
     const C = 5e-12, m = 3.2, KIc = ins.cls === 'ti' ? 55 : ins.cls === 'steel' ? 80 : ins.cls === 'al' ? 25 : 40, Y = 1.12, smax = p.dSigIns * 1.1;
-    const ac = (KIc / (Y * smax)) ** 2 / Math.PI;
+    const acK = (KIc / (Y * smax)) ** 2 / Math.PI, ligament = 0.015, ac = Math.min(acK, ligament); // fracture- or ligament-limited (insert half-width ≈ 15 mm)
     const grow = (a1, a2) => { if (a1 >= a2) return 0; const n = 400; let N = 0; const as = linspace(Math.log(a1), Math.log(a2), n + 1).map(Math.exp); for (let i = 0; i < n; i++) { const a = 0.5 * (as[i] + as[i + 1]); N += (as[i + 1] - as[i]) / (C * (Y * p.dSigIns * Math.sqrt(Math.PI * a)) ** m); } return N; };
     const a0 = p.a0 / 1000, aD = p.aDet / 1000, Ntot = grow(a0, ac), Ninsp = grow(Math.min(aD, ac), ac) / 3, cycYrGust = p.hoursYear * p.gustFreq;
     const closed = (2 / ((m - 2) * C * (Y * p.dSigIns * Math.sqrt(Math.PI)) ** m)) * (a0 ** (1 - m / 2) - ac ** (1 - m / 2));
@@ -134,7 +134,7 @@ export default {
     k('NiTi cartridge cycles per year', cycYr, 'cycles', `${fmt(revKm, 3)} revolutions per km × backup distance.`, 'calc');
     k('NiTi cartridge fatigue life', lifeYr, 'years', `Miner damage ${fmt(Dyr, 3)} per year from a 3-level strain spectrum (literature-range ε–N estimate).`, 'estimated', lifeYr >= 2 ? 'ok' : lifeYr >= 0.5 ? 'warn' : 'bad');
     k('Cartridge life in distance', lifeKm, 'km', 'Distance before cumulative damage D = 1.', 'estimated');
-    k('Critical crack length (insert)', ac * 1000, 'mm', `a_c from K_Ic = ${KIc} MPa√m at σ_max ${fmt(smax, 3)} MPa.`, 'calc');
+    k('Critical crack length (insert)', ac * 1000, 'mm', acK > ligament ? `Ligament-limited (insert half-width 15 mm); fracture-mechanics a_c would be ${fmt(acK * 1000, 3)} mm.` : `a_c from K_Ic = ${KIc} MPa√m at σ_max ${fmt(smax, 3)} MPa.`, 'calc');
     k('Crack-growth life (insert)', Ntot, 'cycles', `Paris law from a₀ = ${p.a0} mm (≈ ${fmt(Ntot / cycYrGust, 3)} years at ${cycYrGust.toLocaleString()} gust cycles/year).`, 'calc');
     k('Inspection interval (insert)', Ninsp / cycYrGust, 'years', `Growth from detectable ${p.aDet} mm to critical ÷ scatter factor 3.`, 'calc');
     k('Rollover apparent-wind limit', Uroll, 'm/s', `Wings loaded at C_s = ${p.Cs}; tipping arm ${fmt(tipArm, 3)} m, centre of pressure ${fmt(hcp, 3)} m.`, 'calc', Uroll >= p.gust ? 'ok' : Uroll >= 0.6 * p.gust ? 'warn' : 'bad');
@@ -181,6 +181,7 @@ export default {
     // recs
     if (Uroll < p.gust) out.recs.push({ level: 'critical', text: `Rollover is the governing hazard: tipping at ≈${fmt(Uroll, 3)} m/s apparent wind. Make wing unloading mandatory above ${fmt(Uroll / 1.25, 3)} m/s and consider a wider track (tipping arm grows with track) or lower aspect-ratio wings.`, basis: 'Static rollover envelope' });
     if (F.beta < p.betaTarget) out.recs.push({ level: 'warn', text: `Increase spar section: wall ${p.wall} mm gives β ${fmt(F.beta, 3)}. Re-run with thicker walls or higher-strength laminate until β ≥ ${p.betaTarget}.`, basis: 'FORM' });
+    if (sfWing > 4) out.recs.push({ level: 'info', text: `The spar is strength-oversized (SF ${fmt(sfWing, 3)}): stiffness, flutter and buckling — not strength — will set its size. Use Suites 06/08 to size the wall for aeroelastic margins and save mass.`, basis: 'Deterministic SF' });
     if (lifeYr < 2) out.recs.push({ level: 'warn', text: `NiTi cartridges reach D = 1 in ${fmt(lifeYr, 3)} years — design them as quick-change cartridges and lower the strain amplitude; fatigue-life testing per Experiment A is mandatory.`, basis: 'Miner damage' });
     out.recs.push({ level: 'good', text: 'Adopt a recognised functional-safety style process (hazard log, safety requirements, verification evidence) and a staged test programme: unoccupied first, then an independently approved occupied programme.', basis: 'Specification Module 23 & Part B §30' });
     out.recs.push({ level: 'sustain', text: 'Design cartridges, skins and pads for replacement and recycling (NiTi and titanium have high scrap value); durability is part of sustainability — a short-lived light part can be worse over the life cycle.', basis: 'Durability–sustainability coupling' });

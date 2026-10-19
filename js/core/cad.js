@@ -247,7 +247,7 @@ export function engineeringDrawing(parts, { title = 'PHOENIX-ATMOS-XP — Genera
   const tx = W - 10 - 520, ty = H - 10 - tb;
   svg += `<g font-size="10"><rect x="${tx}" y="${ty}" width="520" height="${tb}" fill="none" stroke="#000"/><line x1="${tx}" y1="${ty + 20}" x2="${tx + 520}" y2="${ty + 20}" stroke="#000"/><line x1="${tx + 300}" y1="${ty}" x2="${tx + 300}" y2="${ty + tb}" stroke="#000"/><line x1="${tx + 410}" y1="${ty}" x2="${tx + 410}" y2="${ty + tb}" stroke="#000"/>
   <text x="${tx + 6}" y="${ty + 14}" font-weight="700" font-size="12">${title}</text><text x="${tx + 306}" y="${ty + 14}">DWG No. ${dwgNo}</text><text x="${tx + 416}" y="${ty + 14}">REV ${rev}</text>
-  <text x="${tx + 6}" y="${ty + 34}">Units: mm · Third-angle projection · General tolerance ISO 2768-mK</text><text x="${tx + 6}" y="${ty + 50}">Material: ${material || 'see BOM / materials register'}</text>
+  <text x="${tx + 6}" y="${ty + 34}" font-size="9">Units mm · 3rd-angle · Tol. ISO 2768-mK</text><text x="${tx + 6}" y="${ty + 50}">Material: ${material || 'see BOM / materials register'}</text>
   <text x="${tx + 306}" y="${ty + 34}">Scale ${scale}</text><text x="${tx + 306}" y="${ty + 50}">Date ${new Date().toISOString().slice(0, 10)}</text><text x="${tx + 416}" y="${ty + 34}">Drawn: ${author || '—'}</text><text x="${tx + 416}" y="${ty + 50}">Sheet 1/1</text></g>`;
   // third-angle symbol
   svg += `<g transform="translate(${tx - 70},${ty + 18})" stroke="#000" fill="none" stroke-width="0.8"><circle cx="40" cy="12" r="10"/><circle cx="40" cy="12" r="4"/><path d="M0,4L22,0V24L0,20Z"/></g></svg>`;
