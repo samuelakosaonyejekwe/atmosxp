@@ -130,7 +130,7 @@ export default {
     let alloyShift = 0;
     if (p.matchAlloy !== false) alloyShift = s15u?.grade === p.grade && Number.isFinite(s15u?.tShift_K) ? s15u.tShift_K : matchAlloy(mat0, { Th: p.Th, Tc: p.Tc, sH: 150, sL: 20 }).shift;
     const mat = capStrain({ ...mat0, Ms: mat0.Ms + alloyShift, Mf: mat0.Mf + alloyShift, As: mat0.As + alloyShift, Af: mat0.Af + alloyShift }, (s15u?.epsAmp ?? 1) / 100);
-    if (p.Th <= p.Tc) throw new Error('Hot sector must be warmer than the cold sector.');
+    if (p.Th <= p.Tc) return { verdicts: [{ test: 'Physically admissible inputs', status: 'fail', detail: 'Hot sector must be warmer than the cold sector.', fix: 'Set the hot temperature above the cold temperature — with no temperature difference no heat engine can run.' }], kpis: [], charts: [], tables: [], views: [], explain: ['Hot sector must be warmer than the cold sector.'], recs: [], checks: [], headline: 'Hot sector must be warmer than the cold sector.', headlineKind: 'fail', outputs: { infeasible: true, netPositive: false, Wrev_J: 0, Pwheel_W: 0, wNet_J_kg: 0, powerDensity_W_kg: 0 }, credibility: 'Conceptual' };
     const veh = ctx.vehicle, s10 = ctx.upstream('s10'), s14 = ctx.upstream('s14');
     const v = kmh(Math.max(p.vKmh, 0.5)), omega = v / p.R, rpm = omega * 60 / (2 * Math.PI), fRev = omega / (2 * Math.PI);
     const A = p.t * p.w * 1e-6, L = p.L / 1000;

@@ -88,7 +88,7 @@ export default {
   async run(p, ctx) {
     const out = { kpis: [], charts: [], tables: [], verdicts: [], recs: [], checks: [], explain: [], views: [] };
     const mat0 = get(p.grade); if (!mat0) throw new Error('Unknown alloy grade');
-    if (p.Th <= p.Tc) throw new Error('Hot-interface temperature must exceed cold-interface temperature (no heat-engine cycle is possible otherwise).');
+    if (p.Th <= p.Tc) return { verdicts: [{ test: 'Physically admissible inputs', status: 'fail', detail: 'Hot-interface temperature must exceed cold-interface temperature (no heat-engine cycle is possible otherwise).', fix: 'Set the hot temperature above the cold temperature — with no temperature difference no heat engine can run.' }], kpis: [], charts: [], tables: [], views: [], explain: ['Hot-interface temperature must exceed cold-interface temperature (no heat-engine cycle is possible otherwise).'], recs: [], checks: [], headline: 'Hot-interface temperature must exceed cold-interface temperature (no heat-engine cycle is possible otherwise).', headlineKind: 'fail', outputs: { infeasible: true, netPositive: false, Wrev_J: 0, Pwheel_W: 0, wNet_J_kg: 0, powerDensity_W_kg: 0 }, credibility: 'Conceptual' };
     const capped = capStrain(mat0, (p.epsAmp ?? 1) / 100), MA = p.autoMatch !== false ? matchAlloy(capped, { Th: p.Th, Tc: p.Tc, sH: p.sH, sL: p.sL }) : { mat: capped, shift: 0, feasible: null, need: NaN, note: 'Library transformation temperatures used.' };
     const mat = MA.mat;
     // D5: thickness = largest lamella that still reaches the required cycle frequency

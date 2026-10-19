@@ -52,7 +52,7 @@ export default {
 
   async run(p, ctx) {
     const out = { kpis: [], charts: [], tables: [], verdicts: [], recs: [], checks: [], explain: [], views: [] };
-    if (p.Th <= p.Tc) throw new Error('Common hot temperature must exceed the cold temperature.');
+    if (p.Th <= p.Tc) return { verdicts: [{ test: 'Physically admissible inputs', status: 'fail', detail: 'Common hot temperature must exceed the cold temperature.', fix: 'Set the hot temperature above the cold temperature — with no temperature difference no heat engine can run.' }], kpis: [], charts: [], tables: [], views: [], explain: ['Common hot temperature must exceed the cold temperature.'], recs: [], checks: [], headline: 'Common hot temperature must exceed the cold temperature.', headlineKind: 'fail', outputs: { infeasible: true, netPositive: false, Wrev_J: 0, Pwheel_W: 0, wNet_J_kg: 0, powerDensity_W_kg: 0 }, credibility: 'Conceptual' };
     const base = { Th: p.Th, Tc: p.Tc, t_mm: p.t, hc: p.hc, dwell: p.dwell, match: p.autoMatch !== false, epsAmp: (p.epsAmp ?? 1) / 100 };
     const rows = [];
     for (const [i, m] of CANDIDATES.entries()) {

@@ -153,6 +153,7 @@ function renderResults(out, def, res, p, ctx) {
   const allVerdicts = res.verdicts || [];
   if (allVerdicts.length) out.append(section('Feasibility & safety verdicts', verdicts(allVerdicts)));
   if (res.headline) out.append(callout(res.headlineKind || 'info', res.headline));
+  for (const k of res.kpis || []) if (typeof k.value === 'number' && !Number.isFinite(k.value)) { k.value = Number.isNaN(k.value) ? 'not defined for these inputs' : (k.value > 0 ? 'unbounded (∞) — never reached' : '−∞'); k.unit = ''; k.status ||= 'warn'; }
   if (res.kpis?.length) out.append(section('Key results', kpiGrid(res.kpis), h('div', { class: 'small muted' }, `Solved in ${num.fmt(res.elapsed, 3)} ms · inputs hash ${hashObj(p)} · ${new Date().toLocaleString()}`)));
   const T = [];
   if (res.charts?.length) T.push({ label: 'Plots & contours', icon: '📈', render: (el) => { const g = h('div', { class: 'chart-grid' }); el.append(g); for (const c of res.charts) { const box = h('div', { class: 'chart-cell' + (c.wide ? ' wide' : '') }); g.append(box); chart(box, c); } } });
