@@ -23,6 +23,7 @@ function evalSMA(m, q) {
   return { w_J_kg: r.cyc.w_J_kg, eta: r.cyc.eta, f: r.f, P_kg: r.P_kg, stress: best.sH, fatigue: r.fatigue, stroke: r.cyc.strokeStrain, net: r.cyc.w_J_kg > 0.5 && r.cyc.dXiHeat > 0.05 };
 }
 const evaluate = (m, q) => m.cls === 'sma' ? evalSMA(m, q) : evalPolymer(m, q);
+export { evaluate as evaluateActuator };
 function perturb(m, R, scale) { const u = (m.unc || 15) / 100 * scale; const o = { ...m }; for (const k of ['Ms', 'Mf', 'As', 'Af']) if (o[k] !== undefined) o[k] += R.normal(0, 3 * scale); for (const k of ['CM', 'CA', 'epsL', 'strainPerK', 'stressMax', 'EA', 'EM']) if (o[k] !== undefined) o[k] *= Math.max(0.2, 1 + R.normal(0, u)); return o; }
 
 export default {
@@ -89,7 +90,7 @@ export default {
     out.explain.push({ title: 'Why matched conditions', text: 'Actuator literature reports results at very different temperature differences, loads and timescales. A material tested at 50 K will always look better than one tested at 5 K. Ranking is meaningful only when every candidate faces the same thermal boundary conditions, geometry and time budget.' });
     out.views.push({ label: '3D matched-cycle comparison', icon: '🧵', render: (el) => view3dCompare(el, { rows, p, fair }) });
     out.views.push({ label: '2D animation: matched-cycle strokes', icon: '🎞', render: (el) => anim2dStrokes(el, { rows, p }) });
-    out.outputs = { ranking: rows.map(r => ({ id: r.m.id, name: r.m.name, P_kg: r.r.P_kg, w_J_kg: r.r.w_J_kg })), best: fair ? best.m.id : null, wNet_J_kg: best.r.w_J_kg, powerDensity_W_kg: best.r.P_kg, fair };
+    out.outputs = { ranking: rows.map(r => ({ id: r.m.id, name: r.m.name, cls: r.m.cls, P_kg: r.r.P_kg, w_J_kg: r.r.w_J_kg, f: r.r.f, eta: r.r.eta, stroke: r.r.stroke, stress_MPa: r.r.stress, fatigue: r.r.fatigue, net: r.r.net, p05: r.p05, p95: r.p95 })), Th: p.Th, Tc: p.Tc, best: fair ? best.m.id : null, wNet_J_kg: best.r.w_J_kg, powerDensity_W_kg: best.r.P_kg, fair };
     out.headline = fair ? `Matched ${fmt(p.Th - p.Tc, 3)} K comparison: ${best.m.name} ranks first at ${fmt(best.r.P_kg, 3)} W/kg (5–95 %: ${fmt(best.p05, 3)}–${fmt(best.p95, 3)}).` : 'Ranking refused: candidates were not compared under identical conditions.';
     out.headlineKind = fair ? 'info' : 'fail';
     return out;

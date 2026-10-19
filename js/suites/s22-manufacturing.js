@@ -201,6 +201,25 @@ export default {
     out.recs.push({ level: 'sustain', text: `Processing electricity at ${p.grid} gCO₂/kWh: prefer out-of-autoclave prepregs and near-net-shape AM with powder reuse; schedule energy-intensive cures when grid carbon is low.`, basis: 'BOM process energy × grid intensity' });
     out.recs.push({ level: 'econ', text: `At ${p.quantity} units the average unit cost is ${fmt(avgUnit, 3)} USD (first unit ${fmt(proto, 3)} USD). Labour-dominated parts (high fabricated/material ratio) are the main targets for tooling investment.`, basis: 'Learning curve & BOM' });
     out.explain.push({ title: 'Why tolerances matter for the hub', text: 'The direct-rim drive transmits actuator work through contact between flexure shoes and a stationary cam. Clearance scatter changes preload and therefore the force–displacement path of every cartridge; too small and the cartridge binds (seizure risk), too large and stroke is lost to free play.' });
+    // ---------- Revision 4 AeroArch: closed-frame CFRP arch, ring track & slewing bearing, fold hinge ----------
+    if ((ctx.vehicle.wingConfig || 'tandem') === 'arch') {
+      const { vehicleAssembly } = await import('../core/cad.js'); const asmA = vehicleAssembly(ctx.vehicle), ringM = asmA.parts.find(m => /ring track/i.test(m.name)), bb = ringM ? ringM.bbox() : [-0.8, -0.8, 0, 0.8, 0.8, 0];
+      const Rr = Math.max(0.3, (bb[3] - bb[0]) / 2), aRing = ctx.material('rootInsert')?.alpha ?? 8.6, aBody = 2.0, dTop = 40;
+      // slewing-bearing axial clearance (spec 5–80 µm): bearing internal clearance 40 ± 10 µm, CFRP seat flatness (after in-situ machining ±40 µm),
+      // bolt-preload distortion ±10 µm, differential thermal growth of the metal ring vs the CFRP body (radial growth resolved through 45° contact)
+      const R3 = rng(2203), axial = range(20000).map(() => 0.040 + R3.normal(0, 0.010 / 3) - Math.abs(R3.normal(0, 0.040 / 3)) * 0.5 - R3.normal(0, 0.010 / 3) - Rr * (aRing - aBody) * 1e-6 * dTop * R3() * 0.5);
+      const bind = axial.filter(c => c < 0.005).length / axial.length, slack = axial.filter(c => c > 0.080).length / axial.length;
+      out.kpis.push({ label: 'Arch ring-track bearing axial clearance (P5–P95)', value: `${fmt(percentile(axial, 0.05) * 1000, 3)}–${fmt(percentile(axial, 0.95) * 1000, 3)}`, unit: 'µm', explain: `Slewing ring Ø${fmt(2 * Rr * 1000, 4)} mm on the CFRP body seat: bearing clearance, seat flatness, preload distortion and differential expansion over ±${dTop} K (Monte Carlo 20 000).`, prov: 'calc', status: bind < 0.01 && slack < 0.05 ? 'ok' : 'warn' });
+      out.verdicts.push({ test: 'Arch ring track: no binding, limited play', status: bind < 0.01 && slack < 0.05 ? 'pass' : bind < 0.05 ? 'warn' : 'fail', detail: `P(binding, clearance < 5 µm) = ${fmt(bind * 100, 3)} %; P(play > 80 µm) = ${fmt(slack * 100, 3)} %. Ring Ø ${fmt(2 * Rr, 3)} m.`, fix: 'Finish-machine the bearing seat after bonding (flatness ≤ 0.03 mm), use a preloaded four-point-contact ring and a titanium seat insert to limit expansion mismatch.' });
+      out.tables.push({ title: 'AeroArch manufacturing route & inspection', cols: ['Item', 'Specification'], rows: [
+        ['Arch closed frame', 'CFRP prepreg over PET-foam core; legs + bridge laid up as one closed frame and cured once (OOA ≤ 120 °C or autoclave 180 °C, 6 bar); ±45° skins for torsion, 0° caps in leg spars, co-cured shear webs'],
+        ['Bridge collector', 'Glazed selective absorber bonded to the bridge top after cure (structural epoxy, 80 °C post-cure)'],
+        ['Ring-track seat', `Ø${fmt(2 * Rr * 1000, 4)} mm titanium seat bonded to the fore/aft bulkheads, machined in situ: flatness ≤ 0.03 mm, roundness ≤ 0.05 mm`],
+        ['Slewing bearing', 'Four-point-contact / crossed-roller ring, internal clearance 30–50 µm, bolted with torque-angle controlled preload'],
+        ['Incidence drive & breakaway lock', 'Driver-operated worm/cable drive; torque-limited detent set ±10 % of the breakaway torque and recorded'],
+        ['Fold hinge & latch', 'Machined Ti clevis, PTFE-lined pins Ø25 H7/f7, positive latch with visual indicator; proof load 1.5× limit'],
+        ['Inspection', 'Tap/ultrasonic of the closed frame each service; bearing friction torque and breakaway torque every 6 months']] });
+    }
     // ---------- Revision 2.2: telescoping reef joint (sliding fit Ø40 H7/g6 with PTFE-lined bushings) ----------
     if ((ctx.vehicle.wingReefSpan ?? ctx.vehicle.wingHeight) < ctx.vehicle.wingHeight - 1e-6) { const Dn = 40, hole = [0, 0.025], shaft = [-0.025, -0.009], liner = 0.010, dTmax = 40, aIn = (ctx.material('rootInsert')?.alpha ?? 8.6), aOut = 2.0;
       const thermal = Dn * (aIn - aOut) * 1e-6 * dTmax; // mm: hot day closes the gap when the metal inner sleeve grows more than the CFRP outer tube

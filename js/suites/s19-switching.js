@@ -64,16 +64,22 @@ export default {
       // Revision 2.2: reef/deploy state with hysteresis (reef above reefU, deploy below reefU − 1.5 m/s)
       if (reefable) { const want = reefOn ? Uw[i] > reefU - 1.5 : Uw[i] > reefU; if (want !== reefOn) { reefOn = want; reefEvents++; } }
       reefState.push(reefOn ? 'REEFED' : 'DEPLOYED'); const sc = reefOn ? af : 1; thrustRaw[i] *= sc; sideRaw[i] *= sc;
-      if (featherRoot) { if (!feath && sideRaw[i] > FySafe) { feath = true; featherEvents++; calm = 0; } else if (feath) { const Uh = Uw[i], Fl = sideRaw[i]; calm = Fl < 0.6 * FySafe ? calm + dt : 0; if (calm >= 3) feath = false; void Uh; } }
+      if (featherRoot) { if (!feath && sideRaw[i] > 1.3 * FySafe) { feath = true; featherEvents++; calm = 0; } else if (feath) { const Uh = Uw[i], Fl = sideRaw[i]; calm = Fl < 0.6 * FySafe ? calm + dt : 0; if (calm >= 3) feath = false; void Uh; } }
       wingState.push(feath ? 'FEATHERED' : 'LOCKED');
-      thrust.push(feath ? -0.5 * rho * apparentWind(Uw[i], p.twa, 0, v).Va ** 2 * veh.wingArea * 0.02 * 0.5 : thrustRaw[i]);
+      // steady loads above the cap are trimmed (best thrust within the safe side force); breakaway only on spikes > 1.3 × cap
+      const trimF = !feath && featherRoot && sideRaw[i] > FySafe ? FySafe / sideRaw[i] : 1; if (trimF < 1) wingState[wingState.length - 1] = 'TRIMMED';
+      thrust.push(feath ? -0.5 * rho * apparentWind(Uw[i], p.twa, 0, v).Va ** 2 * veh.wingArea * 0.02 * 0.5 : thrustRaw[i] * trimF);
     }
-    const side = sideRaw.map((f, i) => wingState[i] === 'FEATHERED' ? 0.5 * rho * Uw[i] ** 2 * veh.wingArea * 0.02 : f);
+    const side = sideRaw.map((f, i) => wingState[i] === 'FEATHERED' ? 0.5 * rho * Uw[i] ** 2 * veh.wingArea * 0.02 : wingState[i] === 'TRIMMED' ? FySafe : f);
     const engage = p.engageFrac * need, disengage = Math.max(p.disengageFrac, p.engageFrac) * need, wn = Math.sqrt(p.kSens * 1000 / p.mSens);
     const brakeWin = (tt) => tt >= 200 && tt <= 230;
     const fault = p.fault, Pb = fault === 'weak' ? 5 : p.Pbackup;
     const run = (eF, dF, o = {}) => simulateSwitching(t, thrust, { need, engage: eF * need, disengage: Math.max(dF, eF) * need, wn, zeta: p.zeta, delay: p.delay, Pbackup: Pb, v, Ebuf0: p.Ebuf * 1000, braking: fault === 'brakeGust' && p.interlock ? brakeWin : () => false, jammed: fault === 'jammed', thresholdScale: fault === 'flexure' ? 0.4 : 1, ...o });
     const S = run(p.engageFrac, p.disengageFrac), S0 = run(1, 1);
+    // buffer charge state with solar-thermal recharge (re-scoped thermal backup, Suites 13–18) while the buffer is not discharging
+    const thSrc = ['s18', 's17', 's15', 's14', 's13'].map(id => ctx.upstream(id)).find(o => o && Number.isFinite(o.thermalChargePower_W)), Pth = Math.max(0, thSrc?.thermalChargePower_W ?? 0), etaCh = ctx.upstream('s18')?.efficiency ?? 0.8, dayNow = ctx.upstream('s05')?.isDay ?? true;
+    const Ecap = Math.max(p.Ebuf * 1000, ctx.upstream('s18')?.Etotal_J ?? 0), Ech = [p.Ebuf * 1000];
+    for (let i = 1; i < t.length; i++) { const draw = Math.max(0, S.hubForce[i] * v - Pb) * dt / 0.85, chg = draw > 0 ? 0 : Pth * etaCh * dt * (dayNow ? 1 : 0); Ech.push(Math.min(Ecap, Math.max(0, Ech[i - 1] + chg - draw))); }
     const modeIdx = S.modes.map(mo => MODES.indexOf(mo));
     // brake interlock / unsafe engagement evaluation
     let unsafe = false; if (fault === 'brakeGust') unsafe = t.some((tt, i) => brakeWin(tt) && S.hubForce[i] > 0);
@@ -89,6 +95,7 @@ export default {
     out.checks.push({ name: 'Sensor natural frequency vs gust band', value: wn / (2 * Math.PI), target: '> 1 Hz recommended', pass: wn / (2 * Math.PI) > 1, detail: 'A slow sensor filters turbulence but delays response.' });
     const k = (label, value, unit, explain, prov = 'calc', status) => out.kpis.push({ label, value, unit, explain, prov, status });
     k('Required forward force', need, 'N', `Road load at ${p.speed} km/h (rolling + drag).`);
+    k('Buffer charge at end (with solar-thermal recharge)', Ech[Ech.length - 1] / 1000, 'kJ', `Recharge ${fmt(Pth, 3)} W × ${fmt(etaCh, 3)} efficiency while the buffer is not discharging (${dayNow ? 'daylight' : 'night: no solar recharge'}); ${thSrc ? 'coupled from Suites 13–18' : 'no demonstrated thermal charging power yet (0 W)'}. The switching automaton itself is evaluated with the finite buffer.`, thSrc ? 'calc' : 'unsupported');
     if (reefable) k('Reef / deploy changes', reefEvents, '', `Reefed (area ×${fmt(af, 3)}) above ${reefU} m/s wind, deployed below ${fmt(reefU - 1.5, 3)} m/s.`, 'calc');
     if (featherRoot) k('Wing feathering events', featherEvents, '', `Breakaway at ${fmt(FySafe, 4)} N side force (Suite 01); while feathered the wing gives only drag and the automaton treats thrust as lost; it re-latches after 3 s below 60 % of breakaway.`, 'calc', featherEvents ? 'warn' : 'ok');
     k('Engage threshold', engage, 'N', 'Forward thrust below which the backup is requested.', 'user');
@@ -110,6 +117,7 @@ export default {
     // charts
     out.charts.push({ title: 'Forward thrust vs thresholds (thrust, not total load)', type: 'line', x: { label: 'Time', unit: 's' }, y: { label: 'Force', unit: 'N' }, series: [{ name: 'Forward thrust F_x', x: t, y: thrust, width: 1 }, { name: 'Sensed (filtered)', x: t, y: S.sensed }, { name: 'Total wing load', x: t, y: totalLoad, dash: '3 3', width: 1 }], annotations: [{ type: 'hline', y: engage, label: 'engage', color: '#f59e0b' }, { type: 'hline', y: disengage, label: 'disengage', color: '#22c55e' }, { type: 'hline', y: need, label: 'required', color: '#ef4444' }], wide: true, explain: 'The switch must respond to useful forward thrust. Total wing load (dashed) is much larger and can stay high even when thrust is insufficient — switching on it would leave the car without propulsion.' });
     out.charts.push({ title: 'Operating-mode history', type: 'line', x: { label: 'Time', unit: 's' }, y: { label: 'Mode (0 WIND · 1 ASSIST · 2 BACKUP · 3 BUFFER · 4 DECEL · 5 BRAKING)' }, series: [{ name: 'with hysteresis', x: t, y: modeIdx }, { name: 'no hysteresis', x: t, y: S0.modes.map(mo => MODES.indexOf(mo) + 0.08), dash: '3 2', width: 1 }], wide: true, explain: 'State machine trajectory. Rapid toggling in the dashed (no-hysteresis) curve is chatter, which would wear the coupling and jolt the car.' });
+    out.charts.push({ title: 'Buffer charge state', type: 'area', x: { label: 'Time', unit: 's' }, y: { label: 'Stored energy', unit: 'kJ' }, series: [{ name: 'buffer', x: t, y: Ech.map(e => e / 1000) }], annotations: [{ type: 'hline', y: Ecap / 1000, label: 'capacity', color: '#22c55e' }], explain: 'Finite elastic store: it falls while the buffer supplies backup force and rises only with demonstrated solar-thermal recharging (Suites 13–18) — never from nothing.' });
     out.charts.push({ title: 'Hub force supplied by backup', type: 'area', x: { label: 'Time', unit: 's' }, y: { label: 'Hub force', unit: 'N' }, series: [{ name: 'F_hub', x: t, y: S.hubForce }], explain: 'Force delivered at the tyre by the backup sources. Steps at mode changes are the engagement shocks.' });
     out.charts.push({ title: 'Design map: hysteresis width vs switching', type: 'line', x: { label: 'Hysteresis band (fraction of required force)', unit: '–' }, y: { label: 'Count (10 min)' }, series: [{ name: 'Switches', x: bands, y: sweep.map(s => s.s) }, { name: 'Chatter events', x: bands, y: sweep.map(s => s.c) }], explain: 'Wider bands suppress chatter but make the car tolerate larger speed loss before the backup engages. Choose the smallest band with zero chatter.' });
     out.tables.push({ title: 'Transition events', cols: ['t (s)', 'From', 'To'], rows: S.events.slice(0, 60).map(e => [e.t, e.from, e.to]) });
@@ -126,7 +134,7 @@ export default {
         const mats = Object.fromEntries(Object.keys(ctx.materials.COMPONENTS).map(k2 => [k2, ctx.material(k2)]));
         await drivingSim(el, { vehicle: veh, materials: mats, wingIncidence: 12 }, {
           t, v: t.map(() => v), hdg: 90, U: Uw, dirFrom: 90 + p.twa, thrust, side, hub: S.hubForce, drag: t.map(() => need),
-          hud: (i) => [['Time', fmt(t[i], 4) + ' s'], ['Mode', S.modes[i], MC[S.modes[i]] || '#e5e7eb'], ['Wing root', wingState[i], wingState[i] === 'FEATHERED' ? '#f59e0b' : undefined], ...(reefable ? [['Wing span', reefState[i], reefState[i] === 'REEFED' ? '#38bdf8' : undefined]] : []), ['True wind', fmt(Uw[i], 3) + ' m/s'], ['Forward wing thrust', fmt(thrust[i], 4) + ' N'], ['Sensed thrust (filtered)', fmt(S.sensed[i], 4) + ' N'], ['Engage below', fmt(engage, 4) + ' N'], ['Disengage above', fmt(disengage, 4) + ' N'], ['Hub/buffer force', fmt(S.hubForce[i], 4) + ' N', S.hubForce[i] > 0 ? '#a855f7' : undefined], ['Required force', fmt(need, 4) + ' N']],
+          hud: (i) => [['Time', fmt(t[i], 4) + ' s'], ['Mode', S.modes[i], MC[S.modes[i]] || '#e5e7eb'], ['Wing root', wingState[i], wingState[i] === 'FEATHERED' ? '#f59e0b' : undefined], ...(reefable ? [['Wing span', reefState[i], reefState[i] === 'REEFED' ? '#38bdf8' : undefined]] : []), ['True wind', fmt(Uw[i], 3) + ' m/s'], ['Forward wing thrust', fmt(thrust[i], 4) + ' N'], ['Sensed thrust (filtered)', fmt(S.sensed[i], 4) + ' N'], ['Engage below', fmt(engage, 4) + ' N'], ['Disengage above', fmt(disengage, 4) + ' N'], ['Hub/buffer force', fmt(S.hubForce[i], 4) + ' N', S.hubForce[i] > 0 ? '#a855f7' : undefined], ['Required force', fmt(need, 4) + ' N'], ['Buffer charge', fmt(Ech[i] / 1000, 3) + ' kJ']],
         }, { explain: `Solved: wind record (${p.profile}), forward wing thrust from the apparent-wind model${s07?.thrustVsAWA ? ' (Suite 07 table)' : ''}, the mechanical sensor's filtered response, the hysteretic engage/disengage automaton and the hub/buffer force at every ${dt} s step. The car is held at the target speed (switching study, not a journey). Green arrow = wing thrust, purple = backup force, orange = required road force, red = wing side force, blue = true wind. A digital automaton is not proof that the passive mechanism exists.` });
       } });
     }
@@ -146,7 +154,7 @@ export default {
         const gx = cx + R0 + 60, gy = 24, gh = 2 * R0 + 40, Y = (F) => gy + gh - Math.max(0, Math.min(1, F / Fmax)) * gh;
         g.fillStyle = A.theme().bg2; g.fillRect(gx, gy, 40, gh); const fs = S.sensed[i]; g.fillStyle = fs >= disengage ? '#22c55e' : fs <= engage ? '#a855f7' : '#eab308'; g.fillRect(gx, Y(fs), 40, gy + gh - Y(fs));
         for (const [F, lab, c] of [[engage, 'engage', '#a855f7'], [disengage, 'disengage', '#22c55e'], [need, 'required', '#ef4444']]) { g.strokeStyle = c; g.setLineDash([4, 3]); g.beginPath(); g.moveTo(gx - 6, Y(F)); g.lineTo(gx + 46, Y(F)); g.stroke(); g.setLineDash([]); A.text(g, `${lab} ${fmt(F, 3)} N`, gx + 50, Y(F) + 4, c); }
-        A.text(g, `sensed thrust ${fmt(fs, 4)} N`, gx - 10, gy + gh + 16);
+        A.text(g, `sensed thrust ${fmt(fs, 4)} N`, gx - 10, gy + gh + 16); A.bar(g, { x: 20, y: H - 26, w: gx - 40, value: Ech[i] / 1000, max: Math.max(1e-6, Ecap / 1000), label: 'Buffer charge', unit: ' kJ', color: '#eab308' });
         // time series
         const sx = gx + 150, sw = W - sx - 12;
         A.seriesPanel(g, { x: sx, y: 14, w: sw, h: (H - 40) / 2, T: t, t: tt, title: 'Wind & forward thrust', series: [{ name: 'true wind m/s', y: Uw, color: '#38bdf8' }, { name: 'thrust N', y: thrust, color: '#22c55e' }, { name: 'sensed N', y: S.sensed, color: '#eab308' }], hlines: [{ y: engage, label: 'engage', color: '#a855f7' }, { y: disengage, label: 'disengage', color: '#22c55e' }] });

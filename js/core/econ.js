@@ -49,6 +49,7 @@ export function bom(store, { grid = 450, labourRate = 35 } = {}) {
 // Revision 2.2: telescoping reef joints + torque-limited breakaway locks for both wings (≈ 3.5 kg per vehicle):
 // machined Ti-6Al-4V sleeves and latch, PTFE-lined bushings, stainless detent springs.
 function reefMechanismRow(store, { grid, labourRate }) {
+  if ((store.project?.vehicle?.wingConfig || 'tandem') === 'arch') return archMechanismRows(store, { grid, labourRate });
   const m = componentMaterial(store, 'rootInsert') || { name: 'Ti-6Al-4V', rho: 4430, cost: 30, co2: 40, energy: 650, recyclable: 0.6, unc: 15 };
   const v = store.project.vehicle, nW = v.nWings || 2, reefable = (v.wingReefSpan ?? v.wingHeight) < v.wingHeight - 1e-6;
   const mass = reefable ? 3.5 : 0.7 * nW, matCost = mass * (m.cost || 30), procKWh = mass * 35, fabCost = matCost * 4 + (reefable ? 8 : 2 * nW) * labourRate;
@@ -85,5 +86,15 @@ function aeroFairingRows(store, { grid, labourRate }) {
   return [['spats', 'Aerodynamic wheel spats (3)', 4.2, 10], ['fairings', 'Wing-root fairings (2)', 1.6, 5]].map(([key, name, mass, laborH]) => {
     const matCost = mass * (m.cost || 40), procKWh = mass * 12, fabCost = matCost * 2.5 + laborH * labourRate, co2Mat = mass * (m.co2 || 20), co2Proc = procKWh * grid / 1000, energyMat = mass * (m.energy || 250), recyc = m.recyclable ?? 0.25;
     return { key, name, material: m.name, matId: m.id, family: m.family, mass, matCost, fabCost, laborH, procKWh, co2Mat, co2Proc, co2: co2Mat + co2Proc, energyMat, energy: energyMat + procKWh * 3.6, recyc, eolCredit: recyc * co2Mat * 0.6, life: 12, process: 'Vacuum infusion / prepreg moulding on the body tooling', unc: 20 };
+  });
+}
+
+// Revision 4 AeroArch: ring track with incidence drive and torque-limited breakaway lock, plus the fold hinge and latch.
+function archMechanismRows(store, { grid, labourRate }) {
+  const m = componentMaterial(store, 'rootInsert') || { name: 'Ti-6Al-4V', rho: 4430, cost: 30, co2: 40, energy: 650, recyclable: 0.6, unc: 15 };
+  return [['archRing', 'Arch ring track, slewing bearing, incidence drive & breakaway lock', 6.0, 14, 40, 'Ring rolling / CNC, induction-hardened raceway, crossed-roller bearing assembly, breakaway torque calibration', 10],
+          ['archHinge', 'Arch fold hinge & latch (parking fold)', 1.4, 5, 35, 'CNC machined clevis, PTFE-lined pins, positive latch, proof test', 10]].map(([key, name, mass, laborH, kWhkg, process, life]) => {
+    const matCost = mass * (m.cost || 30), procKWh = mass * kWhkg, fabCost = matCost * 4 + laborH * labourRate, co2Mat = mass * (m.co2 || 40), co2Proc = procKWh * grid / 1000, energyMat = mass * (m.energy || 650), recyc = m.recyclable ?? 0.6;
+    return { key, name, material: m.name, matId: m.id, family: m.family, mass, matCost, fabCost, laborH, procKWh, co2Mat, co2Proc, co2: co2Mat + co2Proc, energyMat, energy: energyMat + procKWh * 3.6, recyc, eolCredit: recyc * co2Mat * 0.6, life, process, unc: 25 };
   });
 }

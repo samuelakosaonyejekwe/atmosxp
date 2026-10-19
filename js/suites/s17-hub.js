@@ -5,6 +5,8 @@ import { roadLoad, kmh } from '../core/physics.js';
 import { MATERIALS, get } from '../core/materials.js';
 import { h } from '../core/ui.js';
 import { matchAlloy, capStrain } from './s15-niti.js';
+import { evaluateActuator } from './s16-actuators.js';
+const POLY = MATERIALS.filter(m => m.uses?.includes('actuator') && m.cls !== 'sma');
 
 const SMAS = MATERIALS.filter(m => m.cls === 'sma');
 const wrap = (a) => ((a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
@@ -79,6 +81,8 @@ export default {
   formats: { import: ['CSV torque–angle / dynamometer logs', 'XLSX', 'JSON'], export: ['CSV torque–angle and cartridge histories', 'STEP AP242 / STL / glTF hub assembly (Suite 02)', 'PNG/SVG'] },
   params: [
     { key: 'mode', label: 'Experiment mode', type: 'select', group: 'Experiment', default: 'atmospheric', options: [{ value: 'actuator', label: 'Actuator-only (single cartridge cycle)' }, { value: 'hub', label: 'Hub-only, imposed laboratory ΔT' }, { value: 'atmospheric', label: 'Full atmospheric (coupled supply)' }] },
+    { key: 'hubActuator', label: 'Hub actuator technology', type: 'select', group: 'Actuator', default: 'auto', options: [{ value: 'auto', label: 'Auto — Suite 16 matched-condition winner if it beats NiTi' }, { value: 'sma', label: 'Shape-memory alloy (grade below)' }, ...POLY.map(m => ({ value: m.id, label: m.name }))] },
+    { key: 'tcpMass', label: 'Polymer-muscle mass per cartridge', unit: 'g', type: 'number', min: 1, max: 500, step: 1, group: 'Actuator', default: 30 },
     { key: 'grade', label: 'Actuator alloy', type: 'select', group: 'Actuator', default: 'nitcu', options: SMAS.map(m => ({ value: m.id, label: m.name })), auto: (c) => { const o = c.upstream('s15'); return o?.grade ? { value: o.grade, prov: 'coupled' } : { value: c.store.project.materials?.actuator || 'nitcu', prov: 'library' }; } },
     { key: 'Th', label: 'Hot-sector temperature', unit: '°C', type: 'number', min: -20, max: 200, step: 0.5, group: 'Thermal sectors', default: 25, auto: (c) => { const o = c.upstream('s14'); return o ? { value: +o.ThotIface_C.toFixed(2), prov: 'coupled' } : { value: +((c.env?.T ?? 20) + 5).toFixed(1), prov: 'hypothetical' }; } },
     { key: 'Tc', label: 'Cold-sector temperature', unit: '°C', type: 'number', min: -40, max: 150, step: 0.5, group: 'Thermal sectors', default: 20, auto: (c) => { const o = c.upstream('s14'); return o ? { value: +o.TcoldIface_C.toFixed(2), prov: 'coupled' } : { value: +(c.env?.T ?? 20).toFixed(1), prov: 'hypothetical' }; } },
@@ -111,7 +115,17 @@ export default {
 
   async run(p, ctx) {
     const out = { kpis: [], charts: [], tables: [], verdicts: [], recs: [], checks: [], explain: [], views: [] };
-    const mat0 = get(p.grade); if (!mat0) throw new Error('Unknown alloy');
+    // Actuator selection (owner decision): use the Suite 16 matched-condition winner when it beats the best NiTi
+    const s16u = ctx.upstream('s16');
+    // "Beats" is judged by delivered mechanical power under the ACTUAL heat supply: P = min(Q_avail·η, m_active·P/m),
+    // because the hub is heat-limited (power density alone would favour slow, inefficient actuators).
+    let polyId = null, gradeId = p.grade, selNote = 'user selection';
+    const Qsel = Math.max(0, ctx.upstream('s14')?.Qhot_W ?? 0), mBudget = p.nCart * p.nWheels * (p.tcpMass / 1000);
+    const delivered = (r) => Math.min(Qsel * Math.max(0, r.eta || 0), mBudget * Math.max(0, r.P_kg || 0));
+    if ((p.hubActuator || 'auto') === 'auto' && s16u?.ranking?.length) { const cands = s16u.ranking.filter(r => r.net).map(r => ({ ...r, Pdel: delivered(r) })).sort((a, b) => b.Pdel - a.Pdel); const w = cands[0]; if (w) { if (w.cls === 'sma') gradeId = w.id; else polyId = w.id; selNote = `auto: highest delivered power ${fmt(w.Pdel, 3)} W = min(${fmt(Qsel, 3)} W × η ${fmt(100 * w.eta, 3)} %, ${fmt(mBudget, 3)} kg × ${fmt(w.P_kg, 3)} W/kg) among Suite 16 matched candidates`; } }
+    else if (p.hubActuator && !['auto', 'sma'].includes(p.hubActuator)) polyId = p.hubActuator;
+    if (polyId) return runPolymerHub(p, ctx, get(polyId), s16u, selNote);
+    const mat0 = get(gradeId) || get(p.grade); if (!mat0) throw new Error('Unknown alloy');
     const s15u = ctx.upstream('s15');
     let alloyShift = 0;
     if (p.matchAlloy !== false) alloyShift = s15u?.grade === p.grade && Number.isFinite(s15u?.tShift_K) ? s15u.tShift_K : matchAlloy(mat0, { Th: p.Th, Tc: p.Tc, sH: 150, sL: 20 }).shift;
@@ -247,7 +261,8 @@ export default {
     out.recs.push({ level: 'sustain', text: 'Design cartridges as replaceable modules with alloy recovery; the wheel-integrated hub avoids gearbox/motor materials but concentrates high-embodied-energy NiTi — life (cycles) dominates its footprint.', basis: 'Life-cycle perspective' });
     out.explain.push({ title: 'How torque is produced', text: 'Each cartridge is stretched by the cam on one side of the wheel (cold, soft martensite, low force) and allowed to contract on the other (hot, austenite, high force). The axle-fixed cam converts this force asymmetry into tangential torque τ = −F dδ/dφ. Net work is the difference between work released on the contracting flank and work absorbed on the stretching flank, minus friction and bearing losses.' });
     out.explain.push({ title: 'Why heat supply limits speed', text: 'Faster rotation shortens the time each cartridge spends in each sector, so it transforms less per revolution; at the same time it needs heat at a higher rate. The atmospheric mode caps the hub at the heat the environment actually supplies (Suites 13–14).' });
-    out.outputs = { selfStart, bufferStart, hotSector_deg: usedSector, alloyShift_K: alloyShift, Wrev_J: isAct ? S.Wtau : Wrev, Pwheel_W: isAct ? 0 : Psustain, PwheelGross_W: PwheelGross, tauMean_Nm: tauMean, torqueRipple: ripple, startupOK, heatDemand_W: Qdemand, deficit_W: deficit, feasible: !isAct && Psustain >= demand && startupOK && Wrev > 0 && p.mode === 'atmospheric', vmax_kmh: vmax, mode: p.mode, WcartRev_J: S.Wtau, dxi: S.dxi, Qavail_W: Number.isFinite(Qavail) ? Qavail : null };
+    const selR = s16u?.ranking?.find(r => r.id === mat0.id);
+    out.outputs = { actuator: mat0.id, actuatorClass: 'sma', actuatorSelection: selNote, actuatorEta: selR?.eta ?? ctx.upstream('s15')?.efficiency, actuatorPkg: selR?.P_kg ?? ctx.upstream('s15')?.powerDensity_W_kg, activeMass_kg: ctx.upstream('s15')?.activeMass_kg ?? mBudget, startEnergy_J: Estart, selfStart, bufferStart, hotSector_deg: usedSector, alloyShift_K: alloyShift, Wrev_J: isAct ? S.Wtau : Wrev, Pwheel_W: isAct ? 0 : Psustain, PwheelGross_W: PwheelGross, tauMean_Nm: tauMean, torqueRipple: ripple, startupOK, heatDemand_W: Qdemand, deficit_W: deficit, feasible: !isAct && Psustain >= demand && startupOK && Wrev > 0 && p.mode === 'atmospheric', vmax_kmh: vmax, mode: p.mode, WcartRev_J: S.Wtau, dxi: S.dxi, Qavail_W: Number.isFinite(Qavail) ? Qavail : null };
     out.headline = isAct ? `Actuator-only: ${fmt(S.Wtau, 4)} J per cartridge cycle at ${fmt(fRev, 3)} Hz (Δξ ${fmt(S.dxi, 3)}).` : `${p.mode === 'atmospheric' ? 'Atmospheric' : 'Imposed-ΔT'} hub at ${p.vKmh} km/h: ${fmt(Wrev, 4)} J/rev per wheel, sustainable ${fmt(Psustain, 4)} W vs demand ${fmt(demand, 4)} W${deficit > 0 ? ` → deficit ${fmt(deficit, 4)} W` : ' — demand met'}; start-up ${startupOK ? 'OK' : 'fails at ' + fmt(dead * 100, 3) + ' % of angles'}.`;
     out.headlineKind = !isAct && deficit === 0 && startupOK ? 'ok' : 'warn';
     return out;
@@ -322,4 +337,59 @@ async function anim2dHub(el, { S, tauTot, N, nT, p, Wrev, omega }) {
     P.line(deg.map((d, i) => (i && d < deg[i - 1]) ? NaN : d), tauTot, '#38bdf8', 2); P.hline(0, '#94a3b8'); P.vline(deg[k]); P.point(deg[k], tauTot[k], tauTot[k] >= 0 ? '#22c55e' : '#ef4444');
     const W = Math.floor(t / 360) * Wrev + cum[k]; g.text(`τ = ${fmt(tauTot[k], 4)} N·m   ∮τdθ so far = ${fmt(W, 4)} J   (per rev ${fmt(Wrev, 4)} J)   real time ${fmt(t * Math.PI / 180 / Math.max(omega, 1e-9), 3)} s`, P.px + 4, P.py + 16, { size: 11, color: W >= 0 ? '#22c55e' : '#ef4444' });
   } });
+}
+
+// Cycle-averaged hub model for twisted-coiled polymer (or LCE) muscle cartridges. The angle-resolved contact model above is
+// specific to shape-memory alloys; here each cartridge completes min(1, f_achievable/f_rev) of one matched thermal cycle per
+// wheel revolution (Suite 16 cycle model at the hub sector temperatures), with cam-contact friction, bearing loss,
+// heat-supply limitation, fatigue and creep. Torque ripple is estimated from the cartridge count.
+async function runPolymerHub(p, ctx, m, s16u, selNote = '') {
+  const out = { kpis: [], charts: [], tables: [], verdicts: [], recs: [], checks: [], explain: [], views: [] };
+  const veh = ctx.vehicle, s10 = ctx.upstream('s10'), s14 = ctx.upstream('s14'), s18u = ctx.upstream('s18');
+  if (p.Th <= p.Tc) throw new Error('Hot sector must be warmer than the cold sector.');
+  const v = kmh(Math.max(p.vKmh, 0.5)), omega = v / p.R, fRev = omega / (2 * Math.PI), N = p.nCart, mC = p.tcpMass / 1000;
+  const q = { Th: p.Th, Tc: p.Tc, t_mm: Math.max(0.2, p.t), hc: p.hc, dwell: 0.1 }, r = evaluateActuator(m, q);
+  const complete = r.f > 0 ? Math.min(1, r.f / fRev) : 0, wEff = Math.max(0, r.w_J_kg) * complete;
+  const Lcoil = 0.12, F = mC * Math.max(0, r.w_J_kg) / (Math.max(1e-3, r.stroke) * Lcoil), Wfric = p.mu * F * p.rc * 2 * Math.PI; // actuator force consistent with cycle work = F·δ over a 0.12 m coil; rolling follower friction per rev
+  const bearingW = s10?.bearingLoss_W ?? veh.bearingLoss_W ?? 3, Wbear = bearingW / Math.max(fRev, 1e-6) / p.nWheels;
+  const Wgross = N * mC * wEff, Wrev = Wgross - N * Wfric - Wbear, tauMean = Wrev / (2 * Math.PI);
+  const PwheelGross = Math.max(0, Wrev) * fRev * p.nWheels, Qdemand = r.eta > 0 ? N * p.nWheels * mC * wEff * fRev / r.eta : Infinity;
+  let Qavail = Infinity, note = 'Imposed laboratory heat supply.'; if (p.mode === 'atmospheric') { Qavail = s14 ? Math.max(0, s14.Qhot_W) : 0; note = s14 ? `Suite 14 supply ${fmt(Qavail, 3)} W.` : 'Suite 14 not run: supply 0 W.'; }
+  const supplyFrac = Qdemand > 0 && Number.isFinite(Qdemand) ? Math.min(1, Qavail / Qdemand) : 0, Psustain = PwheelGross * supplyFrac;
+  const demand = roadLoad(v, veh).P, deficit = Math.max(0, demand - Psustain);
+  const tauResist = (s10?.Crr ?? veh.Crr) * veh.mass * G0 * p.R / p.nWheels + bearingW / 5 / p.nWheels, Estart = 3 * (tauResist * p.nWheels * 2 * Math.PI / N + 0.5 * veh.mass * kmh(2) ** 2), bufE = s18u?.Euse_J ?? 10000, bufferStart = bufE >= Estart, startupOK = bufferStart;
+  const ripple = N > 0 ? 2 / N : 1, lifeCycles = r.fatigue, lifeH = lifeCycles / Math.max(fRev, 1e-9) / 3600, creepLoss = Math.min(0.6, (m.id === 'tcp-pe' ? 0.04 : 0.02) * Math.max(0, Math.log10(Math.max(1, lifeCycles) / 1e3)));
+  const K = (label, value, unit, explain, prov, status) => out.kpis.push({ label, value, unit, explain, prov, status });
+  K('Hub actuator', m.name, '', `Selection: ${selNote}. NiTi remains selectable (Hub actuator technology → SMA).`, (p.hubActuator || 'auto') === 'auto' ? 'generated' : 'user');
+  K('Cycle work at sector temperatures', r.w_J_kg, 'J/kg', `Suite 16 polymer cycle at ${p.Th} / ${p.Tc} °C, load ${fmt(r.stress, 3)} MPa, stroke ${fmt(r.stroke * 100, 3)} %.`, 'calc', r.net ? 'ok' : 'bad');
+  K('Achievable cycle frequency vs wheel', `${fmt(r.f, 3)} / ${fmt(fRev, 3)}`, 'Hz', `Fraction of each cycle completed per revolution: ${fmt(complete * 100, 3)} % (polymer fibres heat/cool slowly).`, 'calc', complete >= 1 ? 'ok' : 'bad');
+  K('Net work per wheel per revolution', Wrev, 'J', `Gross ${fmt(Wgross, 4)} J − friction ${fmt(N * Wfric, 4)} J − bearing ${fmt(Wbear, 4)} J.`, 'calc', Wrev > 0 ? 'ok' : 'bad');
+  K('Wheel power (supply unconstrained)', PwheelGross, 'W', `${N} cartridges × ${p.nWheels} wheels × ${p.tcpMass} g of fibre.`, 'calc');
+  K('Heat demand / available', `${fmt(Qdemand, 4)} / ${fmt(Qavail, 4)}`, 'W', note, s14 ? 'coupled' : 'hypothetical', supplyFrac >= 1 ? 'ok' : 'bad');
+  K('Sustainable wheel power', Psustain, 'W', 'After limiting by environmental heat supply.', 'calc', Psustain >= demand ? 'ok' : 'bad');
+  K('Road-load demand', demand, 'W', `${p.vKmh} km/h level road.`, 'calc');
+  K('Power deficit', deficit, 'W', 'Must come from wind, stored energy or lower speed.', 'calc', deficit > 0 ? 'bad' : 'ok');
+  K('Start-up', bufferStart ? 'via buffer release' : 'NOT possible', '', `Polymer muscles give no reliable static torque; buffer start needs ${fmt(Estart, 3)} J, available ${fmt(bufE, 4)} J.`, s18u ? 'coupled' : 'estimated', startupOK ? 'ok' : 'bad');
+  K('Fatigue life / creep stroke loss', `${fmt(lifeCycles, 3)} cycles (${fmt(lifeH, 3)} h) / ${fmt(creepLoss * 100, 3)} %`, '', 'Literature-trend estimates for twisted-coiled fibres; creep reduces stroke at constant load — calibrate with cyclic tests.', 'estimated', lifeCycles > 1e7 ? 'ok' : 'warn');
+  out.verdicts.push({ test: 'Positive net work per revolution (after friction and bearing loss)', status: Wrev > 0 ? 'pass' : 'fail', detail: `${fmt(Wrev, 4)} J per wheel revolution.` });
+  out.verdicts.push({ test: 'Actuator can follow the wheel-imposed cycle', status: complete >= 1 ? 'pass' : complete > 0.2 ? 'warn' : 'fail', detail: `Polymer cycle ${fmt(r.f, 3)} Hz vs ${fmt(fRev, 3)} Hz at ${p.vKmh} km/h — ${fmt(complete * 100, 3)} % of each cycle completes.`, fix: 'Thinner fibres, forced-air cooling, or charge the buffer while parked instead of driving the wheel directly.' });
+  out.verdicts.push({ test: 'Start-up (buffer-assisted)', status: startupOK ? 'pass' : 'fail', detail: `Needs ${fmt(Estart, 3)} J; buffer ${fmt(bufE, 4)} J.` });
+  out.verdicts.push({ test: `Meets road demand at ${p.vKmh} km/h`, status: Psustain >= demand ? 'pass' : 'fail', detail: `Sustainable ${fmt(Psustain, 4)} W vs ${fmt(demand, 4)} W required — deficit ${fmt(deficit, 4)} W. The thermal backup cannot sustain driving; its credible role is recharging the elastic buffer (Suite 18).` });
+  const speeds = linspace(2, 60, 30), Ps = speeds.map(vk => { const om = kmh(vk) / p.R, fr = om / (2 * Math.PI), cpl = r.f > 0 ? Math.min(1, r.f / fr) : 0, W = N * mC * Math.max(0, r.w_J_kg) * cpl - N * Wfric - bearingW / fr / p.nWheels, Pg = Math.max(0, W) * fr * p.nWheels, Qd = r.eta > 0 ? N * p.nWheels * mC * Math.max(0, r.w_J_kg) * cpl * fr / r.eta : Infinity; return Pg * (Number.isFinite(Qd) && Qd > 0 ? Math.min(1, Qavail / Qd) : 0); });
+  out.charts.push({ title: `Hub power vs road demand — ${m.name}`, type: 'line', x: { label: 'Vehicle speed', unit: 'km/h' }, y: { label: 'Power', unit: 'W' }, series: [{ name: 'Sustainable hub power', x: speeds, y: Ps }, { name: 'Road-load demand', x: speeds, y: speeds.map(vk => roadLoad(kmh(vk), veh).P), color: '#ef4444' }], explain: 'Cycle-averaged polymer-muscle hub: completed-cycle fraction falls with speed because fibres cannot heat and cool faster than their thermal time constant.' });
+  out.charts.push({ title: 'Matched-condition ranking used for the selection (Suite 16)', type: 'bar', horizontal: true, categories: (s16u?.ranking || []).slice(0, 9).map(x => x.name), series: [{ name: 'W/kg', values: (s16u?.ranking || []).slice(0, 9).map(x => x.P_kg) }], y: { label: 'Power density', unit: 'W/kg' }, explain: 'The default hub actuator is the matched-condition winner when it beats NiTi.' });
+  out.explain.push({ title: 'Model scope', text: 'Cycle-averaged polymer-muscle cartridge model (matched cycle from Suite 16 at the hub sector temperatures). The angle-resolved cam-contact model of this suite applies to shape-memory alloys; select “Shape-memory alloy” to use it.' });
+  out.recs.push({ level: 'critical', text: `The hub cannot sustain the ${fmt(demand, 3)} W road load (deficit ${fmt(deficit, 3)} W). Use the thermal converter to recharge the elastic buffer while parked or cruising (Suite 18) for wind-free starts.`, basis: 'Energy balance' });
+  out.outputs = { actuator: m.id, actuatorClass: m.cls, selfStart: false, bufferStart, startEnergy_J: Estart, hotSector_deg: p.hotSector, alloyShift_K: 0, Wrev_J: Wrev, Pwheel_W: p.mode === 'actuator' ? 0 : Psustain, PwheelGross_W: PwheelGross, tauMean_Nm: tauMean, torqueRipple: ripple, startupOK, heatDemand_W: Qdemand, deficit_W: deficit, feasible: Psustain >= demand && startupOK && Wrev > 0 && p.mode === 'atmospheric', vmax_kmh: speeds.filter((vk, i) => Ps[i] >= roadLoad(kmh(vk), veh).P).pop() || 0, mode: p.mode, WcartRev_J: mC * wEff, fatigueCycles: lifeCycles, actuatorSelection: selNote, activeMass_kg: N * p.nWheels * mC, actuatorEta: r.eta, actuatorPkg: r.P_kg, Qavail_W: Number.isFinite(Qavail) ? Qavail : null };
+  out.headline = `${m.name} hub at ${p.vKmh} km/h: ${fmt(Wrev, 4)} J/rev, sustainable ${fmt(Psustain, 4)} W vs ${fmt(demand, 4)} W demand (deficit ${fmt(deficit, 4)} W).`; out.headlineKind = deficit > 0 ? 'warn' : 'ok';
+  out.credibility = 'Analytical screening';
+  out.views.push({ label: '3D hub drive (cycle-averaged polymer muscles)', icon: '⚙', render: async (el) => {
+    const [{ viewer }, { playback, hud }, { hubAssembly }, { cmap }, { h }] = await Promise.all([import('../core/viz3d.js'), import('../core/sim3d.js'), import('../core/cad.js'), import('../core/chart.js'), import('../core/ui.js')]);
+    el.append(h('p', { class: 'small muted' }, `Cartridges coloured by their position in the matched polymer cycle (red heating / blue cooling); only ${fmt(complete * 100, 3)} % of each cycle completes per revolution at this speed, so colours barely swing at high speed. Wheel motion ${Wrev > 0 ? 'from the net work' : 'IMPOSED for visualisation (net work ≤ 0)'}.`));
+    const box = h('div'); el.append(box); const V = await viewer(box, { height: 440, grid: false });
+    const objs = hubAssembly({ R: p.R, nCart: N, hotSector: p.hotSector, camAmp: 0.006 }).parts.map(mm => ({ mm, o: V.add(mm) })); V.viewDir(0.15, -0.45, 0.8);
+    const rot = objs.filter(x => !/cam|sector/i.test(x.o.name)).map(x => x.o), carts = objs.filter(x => x.mm.cartridge !== undefined); const H = hud(box);
+    playback(box, { duration: 720, rate: 36, label: 'Wheel rotation', unit: '°', onFrame: (t) => { const th = t * Math.PI / 180; rot.forEach(o => o.rotation.z = th); carts.forEach(({ mm, o }) => { const ph = ((th + 2 * Math.PI * mm.cartridge / N) % (2 * Math.PI)) / (2 * Math.PI), sw = 0.5 + 0.5 * complete * Math.sin(2 * Math.PI * ph), c = cmap(sw, 'coolwarm'); o.material.color.setRGB(c[0] / 255, c[1] / 255, c[2] / 255); }); H.set([['Actuator', m.name.slice(0, 28)], ['Cycle completed / rev', fmt(complete * 100, 3) + ' %'], ['Net work / rev', fmt(Wrev, 4) + ' J', Wrev > 0 ? '#22c55e' : '#ef4444'], ['Sustainable power', fmt(Psustain, 4) + ' W'], ['Deficit at ' + p.vKmh + ' km/h', fmt(deficit, 4) + ' W', '#ef4444']]); } });
+  } });
+  return out;
 }

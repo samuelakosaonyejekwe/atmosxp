@@ -44,6 +44,8 @@ export default {
     { key: 'capex', label: 'Tooling & facility investment', unit: 'USD', type: 'number', min: 0, max: 5e7, step: 1e4, group: 'Business case', default: 1.5e6 },
     { key: 'overhead', label: 'Fixed overhead per year', unit: 'USD', type: 'number', min: 0, max: 1e7, step: 1e4, group: 'Business case', default: 3e5 },
     { key: 'price', label: 'Vehicle sale price', unit: 'USD', type: 'number', min: 1000, max: 500000, step: 500, group: 'Business case', default: 26000 },
+    { key: 'wtpBasis', label: 'Willingness-to-pay basis', type: 'select', group: 'Business case', default: 'evParity', options: [{ value: 'evParity', label: 'Reference-EV total-cost-of-ownership parity (default)' }, { value: 'assumed', label: 'Accept the sale price as given (user override)' }], help: 'Buyers will not pay more than the price at which owning ATMOS-XP costs the same as the reference EV over its life.' },
+    { key: 'demandInfeasible', label: 'Demand share if journeys are not demonstrated', unit: '%', type: 'number', min: 0, max: 100, step: 1, group: 'Business case', default: 10, help: 'Research / enthusiast niche when Suite 20 shows journeys failing.' },
     { key: 'life', label: 'Vehicle service life', unit: 'years', type: 'number', min: 3, max: 30, step: 1, group: 'Ownership', default: 12 },
     { key: 'kmYear', label: 'Distance per year', unit: 'km', type: 'number', min: 100, max: 50000, step: 100, group: 'Ownership', default: 5000 },
     { key: 'maint', label: 'Routine maintenance', unit: 'USD/year', type: 'number', min: 0, max: 10000, step: 50, group: 'Ownership', default: 450 },
@@ -80,6 +82,12 @@ export default {
     const L1 = lcc({ purchase: p.price, years: p.life, rate: rUse, annualOps: p.maint, replacements: repCostYr });
     const evEnergyCost = p.evCons / 100 * p.kmYear * p.elecPrice;
     const L2 = lcc({ purchase: p.evPrice, years: p.life, rate: rUse, annualOps: p.maint * 0.8 + evEnergyCost, replacements: [{ interval: p.evBattLife, cost: p.evBattery * 150 }] });
+    // Demand / price realism: price capped by willingness to pay (EV TCO parity unless overridden); volume scaled when
+    // Suite 20 does not demonstrate successful journeys. Owner PV is linear in purchase price, so parity price = price − ΔPV.
+    const s20r = ctx.upstream('s20'), wtp = p.wtpBasis === 'assumed' ? p.price : p.price - (L1.pv - L2.pv);
+    const adoption = s20r && s20r.journeySuccess === false ? p.demandInfeasible / 100 : 1, priceR = Math.min(p.price, wtp), qtyR = Math.max(0, Math.round(p.quantity * adoption));
+    const flowsR = [-p.capex - proto * 3]; { let cR = 0; for (let y = 1; y <= p.years; y++) { if (!qtyR) { flowsR.push(-p.overhead); continue; } const n1 = cR + qtyR, avg = (avgCost(proto, p.learning, n1) * n1 - (cR ? avgCost(proto, p.learning, cR) * cR : 0)) / qtyR; flowsR.push(qtyR * (priceR - avg) - p.overhead); cR = n1; } }
+    const NPVr = npv(nominal, flowsR), IRRr = irr(flowsR), realistic = p.price <= wtp && adoption >= 1;
     // life-cycle carbon (functional unit vehicle-km)
     const kmLife = p.kmYear * p.life, atmosLC = co2Cradle + repCO2 - credit * (p.collect / 100);
     const evProd = p.evGlider + p.evBattery * p.evBattCO2, evRep = Math.max(0, Math.ceil(p.life / p.evBattLife) - 1) * p.evBattery * p.evBattCO2, evUseYr = p.evCons / 100 * p.kmYear * grid / 1000;
@@ -92,6 +100,8 @@ export default {
     k('Prototype cost (one-off)', X(proto), cur, 'Sum of fabricated component costs from the live BOM (materials × process factor + labour).', 'estimated');
     k(`Average unit cost (${(p.quantity * p.years).toLocaleString()} units)`, X(unitAtVol), cur, `Learning curve PR ${p.learning}.`, 'calc');
     k('NPV of production programme', X(NPV), cur, `Nominal discount ${fmt(nominal * 100, 3)} %, ${p.years} years, ${p.quantity}/yr at ${fmt(X(p.price), 4)} ${cur}.`, 'calc', NPV > 0 ? 'ok' : 'bad');
+    k('Willingness-to-pay ceiling', X(wtp), cur, p.wtpBasis === 'assumed' ? 'User override: sale price accepted as given.' : `Price at which the owner's life-cycle cost equals the reference EV (${fmt(X(L2.pv), 4)} ${cur} PV).`, p.wtpBasis === 'assumed' ? 'user' : 'calc', p.price <= wtp ? 'ok' : 'bad');
+    k('Realism-adjusted NPV', X(NPVr), cur, `Price ${fmt(X(priceR), 4)} ${cur} (≤ willingness to pay), volume ${qtyR}/yr${adoption < 1 ? ` (${p.demandInfeasible} % niche demand because Suite 20 journeys fail)` : ''}. IRR ${Number.isFinite(IRRr) ? fmt(IRRr * 100, 3) + ' %' : 'undefined'}.`, 'calc', NPVr > 0 ? 'ok' : 'bad');
     k('IRR', Number.isFinite(IRR) ? IRR * 100 : NaN, '%', 'Discount rate at which NPV = 0.', 'calc', IRR > nominal ? 'ok' : 'warn');
     k('Payback (simple / discounted)', `${Number.isFinite(PB) ? fmt(PB, 3) : '∞'} / ${Number.isFinite(DPB) ? fmt(DPB, 3) : '∞'}`, 'years', 'Years until cumulative (discounted) cash flow turns positive.', 'calc');
     k('Owner life-cycle cost (PV)', X(L1.pv), cur, `Purchase + maintenance + scheduled replacements over ${p.life} years at a real rate of ${fmt(rUse * 100, 3)} %.`, 'calc');
@@ -105,7 +115,8 @@ export default {
     k('Real discount rate', rReal * 100, '%', 'Fisher real rate from nominal lending rate and inflation.', live?.lendingRate ? 'live' : 'estimated');
     // verdicts
     out.verdicts.push({ test: 'Data provenance', status: live && !live.errors?.length ? 'pass' : 'warn', detail: `${liveNote} Grid ${fmt(grid, 3)} gCO₂/kWh${live?.gridCarbon ? ' (' + live.gridCarbon.year + ')' : ''}; lending ${fmt(nominal * 100, 3)} %; inflation ${fmt(infl * 100, 3)} %${fxOK ? '' : `; ${p.currency} not in ECB reference set — shown in USD`}.` });
-    out.verdicts.push({ test: 'Production programme NPV > 0', status: NPV > 0 ? 'pass' : 'fail', detail: `NPV ${fmt(X(NPV), 4)} ${cur}; IRR ${Number.isFinite(IRR) ? fmt(IRR * 100, 3) + ' %' : 'undefined'}.`, fix: 'Raise volume, cut unit cost (labour-heavy parts, see Suite 22), lower capex, or reposition the price.' });
+    out.verdicts.push({ test: 'Demand / price realism', status: realistic ? 'pass' : 'fail', detail: realistic ? `Sale price ${fmt(X(p.price), 4)} ${cur} ≤ willingness to pay ${fmt(X(wtp), 4)} ${cur}; journeys demonstrated.` : `${p.price > wtp ? `Sale price ${fmt(X(p.price), 4)} exceeds willingness to pay ${fmt(X(wtp), 4)} ${cur} (owner cost ${fmt(L1.pv / L2.pv, 3)}× the reference EV). ` : ''}${adoption < 1 ? `Suite 20 journeys fail, so only ${p.demandInfeasible} % niche demand is assumed. ` : ''}The assumed-demand NPV of ${fmt(X(NPV), 4)} ${cur} is not credible; realism-adjusted NPV ${fmt(X(NPVr), 4)} ${cur}.`, fix: 'Lower owner cost (maintenance, replacement intervals, unit cost) to reach EV parity and demonstrate journeys in Suite 20 before relying on volume forecasts.' });
+    out.verdicts.push({ test: 'Production programme NPV > 0 (realism-adjusted)', status: NPVr > 0 ? 'pass' : 'fail', detail: `Adjusted NPV ${fmt(X(NPVr), 4)} ${cur} (assumed-demand NPV ${fmt(X(NPV), 4)} ${cur}, IRR ${Number.isFinite(IRR) ? fmt(IRR * 100, 3) + ' %' : 'undefined'}).`, fix: 'Raise volume, cut unit cost (labour-heavy parts, see Suite 22), lower capex, or reposition the price.' });
     out.verdicts.push({ test: 'Life-cycle carbon below reference EV', status: atmosLC < evLC ? 'pass' : 'fail', detail: `${fmt(atmosLC / kmLife * 1000, 3)} vs ${fmt(evLC / kmLife * 1000, 3)} g CO₂e/km. Valid only if atmospheric propulsion is demonstrated feasible (Suites 17, 20) — otherwise the comparison is hypothetical.` });
     out.verdicts.push({ test: 'Owner cost competitiveness', status: L1.pv <= L2.pv ? 'pass' : 'warn', detail: `ATMOS-XP ${fmt(X(L1.pv), 4)} vs EV ${fmt(X(L2.pv), 4)} ${cur} present value.` });
     const f17 = ctx.upstream('s17'), f20 = ctx.upstream('s20');
@@ -140,9 +151,9 @@ export default {
     if (nominal > 0.15) out.recs.push({ level: 'econ', text: `High local cost of capital (${fmt(nominal * 100, 3)} %) favours low-capex flexible manufacturing (out-of-autoclave, modular tooling) and staged investment.`, basis: 'Live lending rate' });
     out.recs.push({ level: 'good', text: 'Commission an ISO 14040/14044 LCA with primary supplier data and a critical review before publishing environmental claims; keep the functional unit (vehicle-km) and system boundary explicit.', basis: 'Specification Module 26' });
     out.explain.push({ title: 'What the comparison means', text: 'ATMOS-XP purchases no propulsion energy, so its footprint is production plus replacements minus end-of-life credits. The reference EV adds charging emissions that depend on the live grid intensity of the site. The comparison is only meaningful if the atmospheric propulsion is feasible for the intended duty — check Suites 17 and 20.' });
-    out.views.push({ label: '2D animation: cash flow & carbon over life', icon: '🎞', render: (el) => anim2dLife(el, { flows, nominal, B, life: p.life, evProd, evUseYr, evBattLife: p.evBattLife, evBattCO2: p.evBattery * p.evBattCO2, cur, X }) });
+    out.views.push({ label: '2D animation: cash flow & carbon over life', icon: '🎞', render: (el) => anim2dLife(el, { flows: flowsR, nominal, B, life: p.life, evProd, evUseYr, evBattLife: p.evBattLife, evBattCO2: p.evBattery * p.evBattCO2, cur, X }) });
     out.views.push({ label: '3D life-cycle footprint', icon: '♻', render: (el) => view3dLCA(el, { B, life: p.life, cur, X, ctx }) });
-    out.outputs = { prototypeCost: proto, unitCost: unitAtVol, lifecycleCost: L1.pv, embodiedCO2_kg: co2Cradle, lifecycleCO2_kg: atmosLC, gPerKm: atmosLC / kmLife * 1000, npv: NPV, irr: IRR, mci: MCI, grid };
+    out.outputs = { npvAdjusted: NPVr, wtp, priceRealistic: realistic, prototypeCost: proto, unitCost: unitAtVol, lifecycleCost: L1.pv, embodiedCO2_kg: co2Cradle, lifecycleCO2_kg: atmosLC, gPerKm: atmosLC / kmLife * 1000, npv: NPV, irr: IRR, mci: MCI, grid };
     out.headline = `Prototype ${fmt(X(proto), 4)} ${cur}; NPV ${fmt(X(NPV), 4)} ${cur}; ${fmt(atmosLC / kmLife * 1000, 3)} g CO₂e/km vs ${fmt(evLC / kmLife * 1000, 3)} g for the reference EV (grid ${fmt(grid, 3)} g/kWh).`;
     return out;
   },
@@ -161,7 +172,7 @@ async function view3dLCA(el, { B, life, cur, X, ctx }) {
   const V = await viewer(wrap, { height: 460, grid: true });
   const matMap = Object.fromEntries(Object.keys(mats.COMPONENTS).map(k => [k, ctx.material(k)]));
   const asm = vehicleAssembly(ctx.vehicle, { materials: matMap });
-  const drawn = new Set(); const objs = asm.parts.map(m => { const r = row[/reef joint/i.test(m.name) ? 'reefJoint' : /spat/i.test(m.name) ? 'spats' : /fairing/i.test(m.name) ? 'fairings' : m.component]; if (r) { drawn.add(r.key); m.materialName = `${r.material} · ${fmt(r.mass, 3)} kg · ${fmt(r.co2, 3)} kg CO₂e · ${fmt(X(r.fabCost), 4)} ${cur} · replaced every ${r.life} y`; } return { r, o: V.add(m) }; });
+  const drawn = new Set(); const objs = asm.parts.map(m => { const r = row[/reef joint/i.test(m.name) ? 'reefJoint' : /ring track/i.test(m.name) ? 'archRing' : /fold hinge/i.test(m.name) ? 'archHinge' : /spat/i.test(m.name) ? 'spats' : /fairing/i.test(m.name) ? 'fairings' : m.component]; if (r) { drawn.add(r.key); m.materialName = `${r.material} · ${fmt(r.mass, 3)} kg · ${fmt(r.co2, 3)} kg CO₂e · ${fmt(X(r.fabCost), 4)} ${cur} · replaced every ${r.life} y`; } return { r, o: V.add(m) }; });
   V.viewDir(0.9, -1.2, 0.6);
   const vmax = { co2: Math.max(...B.map(r => r.co2)), cost: Math.max(...B.map(r => r.fabCost)) };
   const leg = legend3d(wrap, { title: 'Embodied CO₂e (kg)', lo: 0, hi: vmax.co2, cmapName: 'inferno' }); const H = hud(wrap);
@@ -183,11 +194,11 @@ async function anim2dLife(el, { flows, nominal, B, life, evProd, evUseYr, evBatt
   const [{ anim2d }, { h }] = await Promise.all([import('../core/sim3d.js'), import('../core/ui.js')]);
   const yrsF = flows.map((_, i) => i), cumF = [], cumD = []; flows.reduce((s, f, i) => { cumF.push(s + f); return s + f; }, 0); flows.reduce((s, f, i) => { const v = s + f / (1 + nominal) ** i; cumD.push(v); return v; }, 0);
   const ys = linspace(0, life, 121), atm = ys.map(y => B.reduce((s, r) => s + r.co2 * (1 + Math.floor(y / r.life)), 0)), ev = ys.map(y => evProd + evUseYr * y + Math.floor(y / evBattLife) * evBattCO2);
-  el.append(h('p', { class: 'small muted' }, 'Solved economics and inventory of this suite, revealed year by year. Left: cumulative nominal and discounted cash flow of the production programme. Right: cumulative CO₂e of one vehicle.'));
+  el.append(h('p', { class: 'small muted' }, 'Solved economics and inventory of this suite, revealed year by year. Left: cumulative nominal and discounted cash flow of the production programme at the realism-adjusted price and volume. Right: cumulative CO₂e of one vehicle.'));
   const T = Math.max(life, flows.length - 1);
   anim2d(el, { height: 420, duration: T, rate: T / 20, label: 'Year', unit: 'y', onFrame: (t, g) => {
     g.clear(); const k = Math.min(flows.length - 1, Math.floor(t)), lo = Math.min(...cumF, ...cumD), hi = Math.max(...cumF, ...cumD, 0);
-    const A = g.panel(0, 0, g.W / 2, g.H, { xr: [0, flows.length - 1], yr: [X(lo) * 1.1, X(hi) * 1.1 + 1], xlabel: 'Programme year', ylabel: `Cumulative cash [${cur}]`, title: `Cash: ${fmt(X(cumF[k]), 4)} (disc. ${fmt(X(cumD[k]), 4)}) ${cur}` });
+    const A = g.panel(0, 0, g.W / 2, g.H, { xr: [0, flows.length - 1], yr: [X(lo) * 1.1, X(hi) * 1.1 + 1], xlabel: 'Programme year', ylabel: `Cumulative cash [${cur}]`, title: `Cash (realism-adjusted): ${fmt(X(cumF[k]), 4)} (disc. ${fmt(X(cumD[k]), 4)}) ${cur}` });
     A.hline(0, '#94a3b8'); A.line(yrsF.slice(0, k + 1), cumF.slice(0, k + 1).map(X), '#38bdf8', 2.5); A.line(yrsF.slice(0, k + 1), cumD.slice(0, k + 1).map(X), '#a855f7', 2.5, [5, 3]); A.point(k, X(cumF[k]));
     const j = Math.min(ys.length - 1, Math.round(Math.min(t, life) / life * (ys.length - 1)));
     const Bp = g.panel(g.W / 2, 0, g.W / 2, g.H, { xr: [0, life], yr: [0, Math.max(...atm, ...ev) * 1.1], xlabel: 'Vehicle age [years]', ylabel: 'Cumulative CO₂e [kg]', title: `Carbon: ATMOS-XP ${fmt(atm[j], 4)} vs reference EV ${fmt(ev[j], 4)} kg` });

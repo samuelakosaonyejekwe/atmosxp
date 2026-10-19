@@ -30,6 +30,14 @@ const FMEA = [
   ['Thermal', 'Collector overheating at standstill', 'Polymer degradation', 5, 4, 4, 'Over-temperature venting; material T_max margin (Suite 03)'],
 ];
 
+const ARCH_FMEA = [
+  ['Arch / ring track', 'Ring-track bearing jams (incidence cannot be changed or feathered)', 'Uncontrolled thrust / side force in a gust', 10, 3, 4, 'Preloaded slewing ring, sealed raceway, pre-trip rotation check; breakaway path independent of the drive'],
+  ['Arch / ring track', 'Breakaway lock fails to release', 'Overturning in gusts', 10, 2, 5, 'Torque-limited detent calibrated at assembly; 6-monthly release-torque test (Suite 22)'],
+  ['Arch / ring track', 'Breakaway releases prematurely', 'Loss of propulsion in moderate wind', 5, 4, 3, 'Release-torque window ±10 %; re-latch from cockpit'],
+  ['Arch / fold', 'Fold latch fails (arch folds while driving)', 'Sudden load change, pinch hazard', 9, 2, 4, 'Positive latch with indicator, interlock with the parking brake, proof load 1.5× limit'],
+  ['Arch / fold', 'Fold hinge seizure (cannot stow for parking)', 'Exposed arch while parked in a storm', 7, 3, 4, 'PTFE-lined pins, sealed hinge, tie-down points for the unfolded arch'],
+  ['Arch / structure', 'Closed-frame delamination at a leg–bridge corner', 'Loss of box-wing stiffness, flutter risk', 8, 3, 5, 'Corner reinforcement, tap test each service, flutter margin check (Suite 06)'],
+];
 export default {
   description: 'Deterministic and probabilistic safety assessment of the complete vehicle: FMEA with risk priority, fault-tree structure with order-of-magnitude bounds, FORM and Monte Carlo reliability of the wing root, NiTi cartridge fatigue with Miner damage, Paris-law crack growth with inspection intervals, crosswind rollover envelope and a consolidated safety-margin register from all coupled suites.',
   literature: 'structural reliability FORM fatigue Miner rule Paris law wind-powered land vehicle rollover safety',
@@ -115,7 +123,7 @@ export default {
     const FyBreak = Math.min(0.7 * mu * mass * G0, 0.8 * ssf * mass * G0 * v.cgHeight / hcp), Ubreak = Math.sqrt(FyBreak / (0.5 * rho * v.wingArea * p.Cs));
     const Abody = 0.75 * v.length * (v.height + v.wheelRadius), hBody = (v.height + v.wheelRadius) / 2;
     // Revision 2.2: deployed and reefed wing states (reefed span telescopes into the lower section)
-    const spanR = Math.min(span, v.wingReefSpan || span), areaR = v.wingArea * spanR / span, hcpR = v.wheelRadius + v.height * 0.7 + spanR / 2;
+    const archV = (v.wingConfig || 'tandem') === 'arch', spanR = archV ? span : Math.min(span, v.wingReefSpan || span), areaR = archV ? v.wingArea * 0.12 : v.wingArea * spanR / span, hcpR = archV ? 0.9 * (v.wheelRadius + v.height) : v.wheelRadius + v.height * 0.7 + spanR / 2; // arch: second state = folded over the body (parking)
     const rollAt = (area, hc) => { // breakaway calibrated so wing + body overturning moment stays ≤ 0.8 × restoring moment (and within 70 % of grip)
       const UBm = Math.sqrt(0.8 * Mrest / (0.5 * rho * (area * p.Cs * hc + Abody * 0.8 * hBody) * cosPsi)), UBg = Math.sqrt(0.7 * mu * mass * G0 / (0.5 * rho * area * p.Cs)), UB = Math.min(UBm, UBg), FyB = 0.5 * rho * UB * UB * area * p.Cs; const Mo = (U) => { const q = 0.5 * rho * U * U, Fw = p.feather ? (U <= UB ? q * area * p.Cs : q * area * 0.03) : q * area * p.Cs; return (Fw * hc + q * Abody * 0.8 * hBody) * cosPsi; }; let Ur = 0; for (let U = 0.5; U <= 80; U += 0.1) { if (Mo(U) > Mrest) { Ur = U; break; } } return { Ur: Ur || 80, UB, FyB, Mo }; };
     const RD = rollAt(v.wingArea, hcp), RR = rollAt(areaR, hcpR), Mover = RD.Mo; const UbreakD = RD.UB, FyBreakD = RD.FyB;
@@ -139,7 +147,8 @@ export default {
     reg.push(['Rollover wind limit (wings loaded)', Uroll, '≥ design gust', Uroll >= p.gust, 'this suite']);
     const sfVals = reg.filter(r => /SF|safety factor/i.test(r[0])).map(r => r[1]).filter(Number.isFinite), minSF = Math.min(sfWing, ...sfVals);
     const reefableV = (ctx.vehicle.wingReefSpan ?? ctx.vehicle.wingHeight) < ctx.vehicle.wingHeight - 1e-6;
-    const fm = FMEA.filter(r => reefableV || !/reef/i.test(r[1])).map(r => [...r.slice(0, 6), r[3] * r[4] * r[5], r[6]]).sort((a, b) => b[6] - a[6]);
+    const isArchV = (ctx.vehicle.wingConfig || 'tandem') === 'arch', FMEA_USE = isArchV ? FMEA.filter(r => !/reef|breakaway/i.test(r[1])).concat(ARCH_FMEA) : FMEA;
+    const fm = FMEA_USE.filter(r => reefableV || !/reef/i.test(r[1])).map(r => [...r.slice(0, 6), r[3] * r[4] * r[5], r[6]]).sort((a, b) => b[6] - a[6]);
     // KPIs
     const k = (label, value, unit, explain, prov, status) => out.kpis.push({ label, value, unit, explain, prov, status });
     k('Wing-root bending stress at design gust', sigma(p.gust, p.CLmax), 'MPa', `M = ½ρU²S·C·4b/3π = ${fmt(Mroot(p.gust, p.CLmax), 4)} N·m on a ${fmt(b * 1000, 3)} × ${fmt(hh * 1000, 3)} × ${p.wall} mm box spar.`, 'calc');
@@ -154,7 +163,13 @@ export default {
     k('Critical crack length (insert)', ac * 1000, 'mm', acK > ligament ? `Ligament-limited (insert half-width 15 mm); fracture-mechanics a_c would be ${fmt(acK * 1000, 3)} mm.` : `a_c from K_Ic = ${KIc} MPa√m at σ_max ${fmt(smax, 3)} MPa.`, 'calc');
     k('Crack-growth life (insert)', Ntot, 'cycles', `Paris law from a₀ = ${p.a0} mm (≈ ${fmt(Ntot / cycYrGust, 3)} years at ${cycYrGust.toLocaleString()} gust cycles/year).`, 'calc');
     k('Inspection interval (insert)', Ninsp / cycYrGust, 'years', `Growth from detectable ${p.aDet} mm to critical ÷ scatter factor 3.`, 'calc');
-    k('Rollover wind — deployed / reefed', `${fmt(UrollDeployed, 3)} / ${fmt(UrollReefed, 3)}`, 'm/s', `Deployed span ${fmt(span, 3)} m (${fmt(v.wingArea, 3)} m²) vs reefed ${fmt(spanR, 3)} m (${fmt(areaR, 3)} m²), both with breakaway feathering${p.feather ? '' : ' disabled'}.`, 'calc', Math.min(UrollDeployed, UrollReefed) >= p.gust ? 'ok' : 'bad');
+    if (archV) { // AeroArch doubles as a roll-over protection hoop: two leg box-spars as frame columns plus the bridge
+      const Aleg = 2 * t * (b + hh), Ileg = Math.min(b * hh ** 3 - (b - 2 * t) * Math.max(0, hh - 2 * t) ** 3, hh * b ** 3 - (hh - 2 * t) * Math.max(0, b - 2 * t) ** 3) / 12, Esp = (spar.E || 70) * 1e9;
+      const Pcr = Math.PI ** 2 * Esp * Ileg / (0.7 * span) ** 2, Pcap = 2 * Math.min(allow * 1e6 * Aleg, Pcr), need = 2 * mass * G0, Mlat = 1.5 * mass * G0 * span, Mcap = 2 * allow * 1e6 * (2 * Ileg / hh);
+      k('Arch as roll-over hoop (vertical / lateral capacity ratio)', `${fmt(Pcap / need, 3)} / ${fmt(Mcap / Mlat, 3)}`, '×', `Estimated: two leg box spars (${fmt(b * 1000, 3)} × ${fmt(hh * 1000, 3)} × ${p.wall} mm) as frame columns — vertical crush capacity vs 2 mg and lateral bending vs 1.5 mg at the bridge. Benefit of the closed frame; confirm with Suite 09 and a static ROPS test.`, 'estimated', Pcap >= need && Mcap >= Mlat ? 'ok' : 'warn');
+      out.verdicts.push({ test: 'Roll-over protection by the arch (benefit)', status: Pcap >= need && Mcap >= Mlat ? 'pass' : 'warn', detail: `Vertical ${fmt(Pcap / 1000, 3)} kN vs ${fmt(need / 1000, 3)} kN required; lateral ${fmt(Mcap / 1000, 3)} kN·m vs ${fmt(Mlat / 1000, 3)} kN·m. Bulkhead attachment and occupant head clearance must be verified.` });
+    }
+    k(archV ? 'Rollover wind — arch up / folded' : 'Rollover wind — deployed / reefed', `${fmt(UrollDeployed, 3)} / ${fmt(UrollReefed, 3)}`, 'm/s', archV ? `Arch up (${fmt(v.wingArea, 3)} m², ring-track breakaway feathering${p.feather ? '' : ' disabled'}) vs folded over the body for parking (exposed ≈ ${fmt(areaR, 3)} m²).` : `Deployed span ${fmt(span, 3)} m (${fmt(v.wingArea, 3)} m²) vs reefed ${fmt(spanR, 3)} m (${fmt(areaR, 3)} m²), both with breakaway feathering${p.feather ? '' : ' disabled'}.`, 'calc', Math.min(UrollDeployed, UrollReefed) >= p.gust ? 'ok' : 'bad');
     k('Wing breakaway (feathering) wind', p.feather ? UbreakD : NaN, 'm/s', `D3 torque-limited breakaway calibrated so wing + body overturning moment ≤ 0.8 × restoring moment and side force ≤ 0.7 μmg: F_y = ${fmt(FyBreakD, 4)} N.`, 'calc');
     k('Rollover apparent-wind limit', Uroll, 'm/s', `${p.feather ? 'Wings feathered above breakaway; ' : ''}Wings loaded at C_s = ${p.Cs}; tipping arm ${fmt(tipArm, 3)} m, centre of pressure ${fmt(hcp, 3)} m.`, 'calc', Uroll >= p.gust ? 'ok' : Uroll >= 0.6 * p.gust ? 'warn' : 'bad');
     k('Highest RPN', fm[0][6], '', `${fm[0][1]} (${fm[0][0]}).`, 'hypothetical', fm[0][6] > 200 ? 'bad' : 'warn');

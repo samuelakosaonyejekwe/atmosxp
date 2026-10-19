@@ -84,8 +84,8 @@ export const DEFAULT_VEHICLE = {
   // (2 × 3 m wings, 8 m², track 1.5 m) remains available as a preset in Suite 01.
     // Revision 4 — AeroArch: one closed box wing (two swept, tapered 1.75 m airfoil legs leaning into an A, joined by a curved top bridge) on a ring
   // track around the forward cockpit; 3.0 m overall, ≈1.3 m folded. wingArea = both legs; the bridge adds closure.
-  baseline: 7, wingConfig: 'arch', archCant: 6, archSweep: 8, mass: 300, Crr: 0.006, CdA: 0.25, wheelRadius: 0.30, wingArea: 5.5, wingHeight: 1.95, wingReefSpan: 1.95, wingReef: 'none', nWings: 2,
-  wheelbase: 2.9, track: 1.9, cgHeight: 0.62, length: 4.6, width: 1.6, height: 1.0, nWheels: 3, layout: 'tadpole',
+  baseline: 8, wingConfig: 'arch', archCant: 6, archSweep: 8, mass: 300, Crr: 0.004, CdA: 0.18, wheelRadius: 0.30, wingArea: 5.2, wingHeight: 2.0, wingReefSpan: 2.0, wingReef: 'none', nWings: 2,
+  wheelbase: 2.6, track: 1.9, cgHeight: 0.69, length: 4.6, width: 1.6, height: 0.9, nWheels: 3, layout: 'tadpole',
   frontalArea: 0.9, Cd: 0.28, bearingLoss_W: 3, driveWheels: 2, payload: 90,
 };
 export function roadLoad(v, veh = DEFAULT_VEHICLE, { rho = 1.225, grade = 0, headwind = 0, accel = 0 } = {}) {

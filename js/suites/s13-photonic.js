@@ -6,7 +6,8 @@ import { forUse, get } from '../core/materials.js';
 import { vehicleAssembly } from '../core/cad.js';
 // Sky-facing area of a conformal thermal patch (thin closed shell → half its surface area), cached per vehicle
 const _areaCache = new Map();
-function patchArea(veh, comp) { const key = JSON.stringify(veh) + comp; if (!_areaCache.has(key)) { try { const parts = vehicleAssembly(veh).parts.filter(m => m.component === comp); _areaCache.set(key, parts.reduce((s, m) => s + m.area() / 2, 0)); } catch { _areaCache.set(key, 0); } } return _areaCache.get(key); }
+function patchInfo(veh, comp) { const key = JSON.stringify(veh) + comp; if (!_areaCache.has(key)) { try { const asm = vehicleAssembly(veh), parts = asm.parts.filter(m => m.component === comp); let area = parts.reduce((s, m) => s + m.area() / 2, 0), z = parts.length ? Math.max(...parts.map(m => m.bbox()[5])) : NaN; if (comp === 'collector' && asm.meta.arch?.collectorArea) { area = parts.reduce((s2, m) => s2 + (/bridge/i.test(m.name) ? asm.meta.arch.collectorArea : m.area() / 2), 0); } _areaCache.set(key, { area, z, names: parts.map(m => m.name) }); } catch { _areaCache.set(key, { area: 0, z: NaN, names: [] }); } } return _areaCache.get(key); }
+function patchArea(veh, comp) { return patchInfo(veh, comp).area; }
 
 const caseFrom = (env, kind) => {
   // pick representative day (max irradiance) and night (median sky depression) hours from the Suite 05 series
@@ -130,6 +131,7 @@ export default {
     K('Radiator solar absorptance', aS_rad, '', 'Fraction of sunlight absorbed by the radiator; must be ≲ 0.05 for daytime sub-ambient cooling.', 'calc');
     K('Radiator 8–13 µm emittance', eW_rad, '', 'Emittance inside the atmospheric window — the channel through which heat escapes to cold space.', 'calc');
     K('Day useful absorber flux', qDay, 'W/m²', `Net heat deliverable at T_a + ${dTh} K under ${fmt(day.ghi, 4)} W/m² (${day.src}).`, day.coupled ? 'coupled' : 'hypothetical', qDay > 0 ? 'ok' : 'bad');
+    { const ci = patchInfo(ctx.vehicle, 'collector'), ri = patchInfo(ctx.vehicle, 'radiator'); K('Collector / radiator placement', `${ci.names.map(n => n.replace(/^Solar-selective collector /, '')).join(' + ')} · ${(ri.names[0] || '—').replace(/^Radiative-cooling emitter /, '')}`, '', ctx.vehicle.wingConfig === 'arch' ? `AeroArch: primary collector on the unshaded nose deck above the driven front wheels plus the sky-facing arch-bridge top (horizontal, sky view ≈ 1, no ground-reflected gain credited, ${fmt(ci.z, 3)} m high so wind convection is stronger — glazing limits it); total ${fmt(ci.area, 3)} m². Suite 14 routes each to the hubs.` : 'Conformal body patches from the current CAD.', 'generated'); }
     K('Absorber operating temperature', day.T + dTh, '°C', p.opMode !== 'fixed' ? `Exergy-optimal: maximises q·(1 − T_a/T) for the ${p.glazed ? 'glazed (τ = ' + p.tauGlass + ')' : 'unglazed'} collector.` : 'Fixed offset (user).', p.opMode !== 'fixed' ? 'generated' : 'user');
     K('Radiator operating temperature', night.T - dTc, '°C', p.opMode !== 'fixed' ? 'Exergy-optimal: maximises q·(T_a/T − 1).' : 'Fixed offset (user).', p.opMode !== 'fixed' ? 'generated' : 'user');
     K('Absorber stagnation temperature', stag.ok ? stag.x - KELVIN : NaN, '°C', 'Temperature at which no heat can be extracted (upper bound for the hot side).', 'calc');

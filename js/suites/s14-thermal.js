@@ -1,8 +1,37 @@
 // Suite 14 — Thermal metamaterials, heat spreaders, insulation and thermal management.
 import * as TH from '../core/thermo.js';
 import { SCENARIOS, derive } from '../core/env.js';
-import { linspace, fmt, luSolve, rk45, range, KELVIN, argmax, logspace } from '../core/num.js';
+import { linspace, fmt, luSolve, rk45, range, KELVIN, argmax, logspace, goldenMin } from '../core/num.js';
 import { forUse, get } from '../core/materials.js';
+import { vehicleAssembly } from '../core/cad.js';
+const archMeta = (veh) => { try { return veh.wingConfig === 'arch' ? vehicleAssembly(veh).meta.arch : null; } catch { return null; } };
+// Thermal-path geometry from the current CAD: collector patches, driven front hubs, radiator (distances in m)
+const _geo = new Map();
+export function thermalGeometry(veh) {
+  const key = JSON.stringify(veh); if (_geo.has(key)) return _geo.get(key);
+  let g = null;
+  try {
+    const asm = vehicleAssembly(veh), P = asm.parts, find = (re) => P.find(m => re.test(m.name)), R = veh.wheelRadius;
+    const fronts = asm.meta.wheelPos.filter(w => w[2]).map(([x, y]) => [x, y, R]), near = (c) => fronts.reduce((b, w) => { const d = Math.hypot(c[0] - w[0], c[1] - w[1], c[2] - w[2]); return d < b.d ? { d, w } : b; }, { d: Infinity, w: fronts[0] });
+    const nose = find(/nose deck/i), bridge = find(/arch bridge top/i), rad = find(/Radiative-cooling/i);
+    const nearestVertex = (m) => { let best = Infinity; if (!m) return best; for (let k = 0; k < m.p.length; k += 3) for (const [x, y] of fronts) { const d = Math.hypot(m.p[k] - x, m.p[k + 1] - (y - Math.sign(y) * 0.12), m.p[k + 2] - (R + 0.12)); if (d < best) best = d; } return best; };
+    const nC = nose?.centroid(), bC = bridge?.centroid(), rC = rad?.centroid();
+    g = { arch: veh.wingConfig === 'arch', noseArea: nose ? nose.area() / 2 : 0, bridgeArea: bridge ? (asm.meta.arch?.collectorArea ?? bridge.area() / 2) : 0,
+      strapL: nose ? Math.max(0.15, nearestVertex(nose)) : 0.5, strapToCentroid: nC ? near(nC).d : 0.5, lhpL: bC ? 1.2 * near(bC).d : 0, lhpDz: bC ? bC[2] - R : 0, radL: rC ? near(rC).d : 0.6, radDz: rC ? rC[2] - R : 0 };
+  } catch { g = null; }
+  _geo.set(key, g); return g;
+}
+// Loop heat pipe (capillary-pumped two-phase loop, fine-pore sintered-nickel primary wick). Water properties vs T (°C);
+// ammonia only below ≈ 90 °C (critical point 132 °C). Pressure budget: 2σ/r_p ≥ ΔP_liquid + ΔP_vapour + ΔP_wick + ρ_l g Δz.
+export function loopHeatPipe({ fluid = 'water', Tsat = 100, dz = 2.4, L = 3.7, dLiq = 0.004, dVap = 0.006, rPore = 1.2e-6, K = 1e-14, tWick = 0.003, Aw = 0.0094, hEvap = 12000, Aevap = 0.0094, hCond = 8000, Acond = 0.02 } = {}) {
+  let sig, rl, mul, hfg, rv, muv, ok = true, note = '';
+  if (fluid === 'ammonia') { sig = Math.max(0.002, 0.0234 - 1.9e-4 * Tsat); rl = 638 - 1.6 * Tsat; mul = 1.7e-4 * Math.exp(-0.012 * Tsat); hfg = 1.26e6 - 4.5e3 * Tsat; const pv = 429.6e3 * Math.exp(0.035 * Tsat); rv = pv / (488 * (Tsat + 273.15)); muv = 1e-5; if (Tsat > 90) { ok = false; note = `Ammonia unsuitable at ${Tsat.toFixed(0)} °C (vapour pressure ≈ ${(pv / 1e5).toFixed(0)} bar, near the critical point).`; } }
+  else { sig = 0.0756 - 1.67e-4 * Tsat; rl = 1000 - 0.42 * Tsat; mul = 2.414e-5 * 10 ** (247.8 / (Tsat + 133.15)); hfg = 2.501e6 - 2370 * Tsat; const pv = 611.21 * Math.exp((18.678 - Tsat / 234.5) * (Tsat / (257.14 + Tsat))); rv = pv / (461.5 * (Tsat + 273.15)); muv = 1.2e-5; if (Tsat < 40) note = 'Low vapour density below 40 °C raises vapour-line losses; water LHPs prefer ≥ 60 °C.'; }
+  const dPcap = 2 * sig / rPore, dPhyd = rl * 9.81 * Math.max(0, dz);
+  const cL = 128 * mul * L / (Math.PI * rl * hfg * dLiq ** 4), cV = 128 * muv * L / (Math.PI * rv * hfg * dVap ** 4), cW = mul * tWick / (rl * hfg * K * Aw), perW = cL + cV + cW;
+  const Qmax = Math.max(0, (dPcap - dPhyd) / perW), R = 1 / (hEvap * Aevap) + 1 / (hCond * Acond);
+  return { ok: ok && dPcap > dPhyd, Qmax: ok ? Qmax : 0, dPcap, dPhyd, perW, cL, cV, cW, R, sig, note, startup: `Start-up needs ≈ 3–8 K evaporator superheat and a liquid-flooded compensation chamber; adverse elevation ${dz.toFixed(2)} m uses ${(100 * dPhyd / dPcap).toFixed(0)} % of the capillary head.` };
+}
 
 function envCase(env, kind) {
   if (kind === 'current' && env) return { T: env.T, Uz: env.Uz ?? env.U, ghi: env.ghi || 0, eps: env.eps ?? 0.8, isDay: env.isDay, src: 'Suite 05 snapshot', coupled: true };
@@ -46,9 +75,14 @@ export default {
     { key: 'insulator', label: 'Hot/cold isolation', type: 'select', group: 'Materials', default: 'aerogel', options: forUse('insulator').map(m => ({ value: m.id, label: m.name })), auto: (c) => ({ value: c.store.material('insulator', 'aerogel'), prov: 'library' }) },
     { key: 'anis', label: 'Lattice anisotropy k_in-plane / k_through', type: 'range', min: 1, max: 200, step: 1, group: 'Materials', default: 1, help: 'Architected thermal metamaterial: >1 channels heat along the spreader while limiting through-thickness leakage.' },
     { key: 'nHP', label: 'Number of heat pipes per path', type: 'number', min: 0, max: 40, step: 1, group: 'Heat pipes', default: 6 },
-    { key: 'Lhp', label: 'Heat-pipe length', unit: 'm', type: 'number', min: 0.05, max: 2, step: 0.01, group: 'Heat pipes', default: 0.6 },
+    { key: 'Lhp', label: 'Heat-pipe length (cold path, radiator ↔ hubs)', unit: 'm', type: 'number', min: 0.05, max: 6, step: 0.01, group: 'Heat pipes', default: 0.6, auto: (c) => { const g = thermalGeometry(c.vehicle); return g?.arch ? { value: +g.radL.toFixed(2), prov: 'generated' } : undefined; }, help: 'From the CAD: rear-deck radiator to the driven front hubs.' },
+    { key: 'strapL', label: 'Graphite strap length (nose collector → hub hot interface)', unit: 'm', type: 'number', min: 0.1, max: 2, step: 0.01, group: 'Hot path (AeroArch)', default: 0.3, auto: (c) => { const g = thermalGeometry(c.vehicle); return g?.arch ? { value: +Math.min(g.strapL, 2).toFixed(2), prov: 'generated' } : undefined; }, help: 'Hot interface relocated into the nose bay beside the driven hubs: shortest collector-edge-to-hub distance from the CAD.' },
+    { key: 'strapMass', label: 'Graphite strap mass budget (both hubs)', unit: 'kg', type: 'number', min: 0.02, max: 3, step: 0.01, group: 'Hot path (AeroArch)', default: 0.5, help: 'For fixed mass the lowest-resistance strap has R = L²ρ/(k·m), independent of how the section is split.' },
+    { key: 'matchG', label: 'Match converter draw for maximum power (Curzon–Ahlborn)', type: 'bool', group: 'Converter coupling', default: true },
+    { key: 'lhpFluid', label: 'Loop-heat-pipe working fluid (bridge → hubs)', type: 'select', group: 'Hot path (AeroArch)', default: 'water', options: ['water', 'ammonia'] },
+    { key: 'lhpPore', label: 'Primary wick pore radius (sintered nickel)', unit: 'µm', type: 'number', min: 0.3, max: 20, step: 0.1, group: 'Hot path (AeroArch)', default: 1.2 },
     { key: 'dHP', label: 'Heat-pipe diameter', unit: 'mm', type: 'number', min: 3, max: 20, step: 0.5, group: 'Heat pipes', default: 8 },
-    { key: 'tilt', label: 'Heat-pipe tilt (evaporator above = +)', unit: '°', type: 'range', min: -90, max: 90, step: 1, group: 'Heat pipes', default: 0, expert: true },
+    { key: 'tilt', label: 'Heat-pipe tilt (evaporator above = +)', unit: '°', type: 'range', min: -90, max: 90, step: 1, group: 'Heat pipes', default: 0, expert: true, auto: (c) => { const g = thermalGeometry(c.vehicle); return g?.arch ? { value: +(-Math.asin(Math.min(1, Math.max(0, g.radDz) / (g.radL || 1))) * 180 / Math.PI).toFixed(1), prov: 'generated' } : undefined; }, help: 'Cold path: hub (evaporator) below the rear-deck radiator (condenser) → negative tilt = gravity-assisted.' },
     { key: 'Lsp', label: 'Spreader length', unit: 'm', type: 'number', min: 0.02, max: 1, step: 0.01, group: 'Geometry', default: 0.3 },
     { key: 'wsp', label: 'Spreader width', unit: 'm', type: 'number', min: 0.01, max: 1, step: 0.01, group: 'Geometry', default: 0.2 },
     { key: 'tsp', label: 'Spreader thickness', unit: 'mm', type: 'number', min: 0.1, max: 20, step: 0.1, group: 'Geometry', default: 3 },
@@ -73,16 +107,22 @@ export default {
     // Revision 2 (D5): in the day case the hot side is the Suite 13 glazed collector — use its solved q(T) curve so the
     // collector operating temperature found there is carried through the heat path; otherwise the bare-surface model.
     const curveA = p.case === 'day' && s13?.curves?.absorber?.T?.length ? s13.curves.absorber : null;
-    const Qhot = curveA ? (T) => Acol * interpX(curveA.T, curveA.q, T - KELVIN) : (T) => { const r = surf(epsCol, T, cacheA); return Acol * (r.solAbs - (r.emit - r.atm) - h * (T - TaK)) + Acol * (p.fin - 1) * h * (TaK - T); };
+    const geo = thermalGeometry(ctx.vehicle), archDay = !!(geo?.arch && curveA && geo.noseArea > 0);
+    const qA = (T) => interpX(curveA.T, curveA.q, T - KELVIN); // useful collector flux per m² (Suite 13 glazed collector)
+    const pgs = get('pgs'), Rstrap = archDay ? p.strapL ** 2 * (pgs?.rho || 2100) / ((pgs?.k || 1500) * p.strapMass) + 1 / (p.hc * Math.max(1e-4, p.Ac / 1e4)) : Infinity, strapSection = archDay ? p.strapMass / ((pgs?.rho || 2100) * p.strapL) : 0;
+    const lhp = archDay && geo.bridgeArea > 0 ? loopHeatPipe({ fluid: p.lhpFluid, Tsat: Math.max(20, (s13?.Thot_C ?? 100) - 10), dz: geo.lhpDz, L: geo.lhpL, rPore: p.lhpPore * 1e-6 }) : null;
+    // bridge branch: collector temperature Tb such that A_b q(Tb) = min((Tb − T_hi)/R_LHP, Q_max); diode-like (no reverse flow)
+    const qBridge = (Thi) => { if (!lhp || !lhp.ok || geo.bridgeArea * qA(Thi) <= 0) return 0; const f = (Tb) => geo.bridgeArea * qA(Tb) - Math.min((Tb - Thi) / lhp.R, lhp.Qmax); const r = TH.brent(f, Thi, Thi + 400); return r.ok ? Math.max(0, Math.min((r.x - Thi) / lhp.R, lhp.Qmax)) : 0; };
+    const Qhot = archDay ? (T) => geo.noseArea * qA(T) : curveA ? (T) => Acol * interpX(curveA.T, curveA.q, T - KELVIN) : (T) => { const r = surf(epsCol, T, cacheA); return Acol * (r.solAbs - (r.emit - r.atm) - h * (T - TaK)) + Acol * (p.fin - 1) * h * (TaK - T); };
     const Qcold = (T) => { const r = surf(epsRad, T, cacheR); return Arad * ((r.emit - r.atm) - r.solAbs - h * (TaK - T)) + Arad * (p.fin - 1) * h * (T - TaK); };
     const sp = get(p.spreader), ins = get(p.insulator), hpM = get(ctx.store.material('heatpipe', 'heatpipe-cuw'));
     const kIn = sp.k;
     const tsp = p.tsp / 1000, Asp = p.wsp * tsp, Ac = p.Ac / 1e4, Ains = p.Ains / 1e4, tIns = p.tIns / 1000;
-    const Rsp = p.Lsp / (kIn * Asp), Ahp = Math.PI * (p.dHP / 1000) ** 2 / 4, Rhp = p.nHP > 0 ? p.Lhp / ((hpM?.k || 10000) * Ahp * p.nHP) : Infinity;
-    const Rcon = 1 / (p.hc * Ac), Rpath = 1 / (1 / Rsp + (Number.isFinite(Rhp) ? 1 / Rhp : 0)) + Rcon, Rins = tIns / (ins.k * Ains);
+    const Rsp = p.Lsp / (kIn * Asp), Ahp = Math.PI * (p.dHP / 1000) ** 2 / 4; let Rhp = p.nHP > 0 ? p.Lhp / ((hpM?.k || 10000) * Ahp * p.nHP) : Infinity;
+    const Rcon = 1 / (p.hc * Ac), Rins = tIns / (ins.k * Ains); let Rpath = 1 / (1 / Rsp + (Number.isFinite(Rhp) ? 1 / Rhp : 0)) + Rcon;
     // Newton solve of the 4-node network: x = [Tcol, Thi, Tci, Trad]
     const solve = (Gc) => {
-      const F = (x) => { const [Tc_, Th_, Tk_, Tr_] = x, qh = (Tc_ - Th_) / Rpath, qc = (Tk_ - Tr_) / Rpath, qi = Gc * (Th_ - Tk_) + (Th_ - Tk_) / Rins; return [Qhot(Tc_) - qh, qh - qi, qi - qc, qc - Qcold(Tr_)]; };
+      const Rh = archDay ? Rstrap : Rpath, F = (x) => { const [Tc_, Th_, Tk_, Tr_] = x, qh = (Tc_ - Th_) / Rh + (archDay ? qBridge(Th_) : 0), qc = (Tk_ - Tr_) / Rpath, qi = Gc * (Th_ - Tk_) + (Th_ - Tk_) / Rins; return [Qhot(Tc_) - (Tc_ - Th_) / Rh, qh - qi, qi - qc, qc - Qcold(Tr_)]; };
       let x = [TaK + 1, TaK + 0.5, TaK - 0.5, TaK - 1]; const hist = [];
       for (let it = 0; it < 60; it++) {
         const f = F(x), nrm = Math.hypot(...f); hist.push(nrm); if (nrm < 1e-7) break;
@@ -91,16 +131,24 @@ export default {
         let lam = 1; const n0 = nrm; for (let ls = 0; ls < 12; ls++) { const xn = x.map((v, i) => v + lam * dx[i]); if (Math.hypot(...F(xn)) < n0) { x = xn; break; } lam /= 2; if (ls === 11) x = x.map((v, i) => v + lam * dx[i]); }
       }
       const [Tc_, Th_, Tk_, Tr_] = x, Qconv = Gc * (Th_ - Tk_), Qleak = (Th_ - Tk_) / Rins;
-      return { Tcol: Tc_, Thi: Th_, Tci: Tk_, Trad: Tr_, Qconv, Qleak, Qin: (Tc_ - Th_) / Rpath, hist, res: hist[hist.length - 1], Wideal: Math.max(0, Qconv * (1 - Tk_ / Th_)) };
+      const Qn = (Tc_ - Th_) / Rh, Qb = archDay ? qBridge(Th_) : 0;
+      return { Tcol: Tc_, Thi: Th_, Tci: Tk_, Trad: Tr_, Qconv, Qleak, Qin: Qn + Qb, Qnose: Qn, Qbridge: Qb, hist, res: hist[hist.length - 1], Wideal: Math.max(0, Qconv * (1 - Tk_ / Th_)) };
     };
     ctx.progress(0.2, 'network');
-    const S = solve(p.Gconv);
-    const open = solve(1e-6);
-    const Gs = logspace(-2, 2.7, 40), sw = Gs.map(g => solve(g)), iBest = argmax(sw.map(r => r.Wideal));
+    let S = solve(p.Gconv);
+    let open = solve(1e-6);
+    const Gs = logspace(-2, 2.7, 40); let sw = Gs.map(g => solve(g)), iBest = argmax(sw.map(r => r.Wideal));
+    // Endoreversible (Curzon–Ahlborn) matching: converter heat draw chosen for maximum work from the delivered heat
+    let Guse = p.Gconv; const refineG = () => { const lo = Gs[Math.max(0, iBest - 1)], hi = Gs[Math.min(Gs.length - 1, iBest + 1)]; return Math.exp(goldenMin((x) => -solve(Math.exp(x)).Wideal, Math.log(lo), Math.log(hi), 1e-3)); };
+    if (p.matchG !== false) { Guse = refineG(); S = solve(Guse); }
     await ctx.yield();
     // heat-pipe limits at hot path temperature
-    const hpT = (p.case === 'night' ? S.Thi : S.Tcol) - KELVIN, lim = TH.heatPipeLimits({ TC: hpT, dOuter: p.dHP / 1000, L: p.Lhp, tilt: p.tilt });
-    const qPerPipe = p.nHP > 0 ? Math.abs(S.Qin) * (1 / Rhp) / (1 / Rsp + 1 / Rhp) / p.nHP : 0;
+    const hpT = (archDay ? S.Tci : p.case === 'night' ? S.Thi : S.Tcol) - KELVIN, lim = TH.heatPipeLimits({ TC: hpT, dOuter: p.dHP / 1000, L: p.Lhp, tilt: p.tilt });
+    const pathQ = () => archDay ? Math.abs(S.Qconv + S.Qleak) : Math.abs(S.Qin);
+    let qPerPipe = p.nHP > 0 ? pathQ() * (1 / Rhp) / (1 / Rsp + 1 / Rhp) / p.nHP : 0, dryOut = false;
+    // A heat pipe asked to carry more than its governing limit dries out and conducts only through its copper wall
+    // (0.5 mm): re-solve the network with that conductance so no heat is credited beyond the limit.
+    if (p.nHP > 0 && qPerPipe > lim.Qmax) { dryOut = true; Rhp = p.Lhp / (390 * Math.PI * (p.dHP / 1000) * 0.0005 * p.nHP); Rpath = 1 / (1 / Rsp + 1 / Rhp) + Rcon; S = solve(Guse); open = solve(1e-6); sw = Gs.map(g => solve(g)); iBest = argmax(sw.map(r => r.Wideal)); qPerPipe = pathQ() * (1 / Rhp) / (1 / Rsp + 1 / Rhp) / p.nHP; }
     ctx.progress(0.45, '2-D field');
     // 2-D anisotropic FV field: hot block | isolation | cold block (x), spreader thickness (y)
     const nH = 18, nI = 6, nx = 2 * nH + nI, ny = 10, Lx = 2 * p.Lsp + Math.max(tIns, 0.005), dxH = p.Lsp / nH, dxI = Math.max(tIns, 0.005) / nI;
@@ -112,7 +160,7 @@ export default {
     const hEffRad = Math.abs(S.Qin) / Math.max(0.05, Math.abs(S.Tci - S.Trad)) / (p.Lsp * p.wsp);
     const field = TH.conduction2D({ nx, ny, dx, dy, kx, ky, rc }, {
       top: { type: 'mixed', fn: (i) => i < nH ? { type: 'q', q: qTopHot } : i >= nH + nI ? { type: 'h', h: hEffRad, Tinf: S.Trad } : null },
-      bottom: { type: 'mixed', fn: (i) => i < nH ? { type: 'h', h: p.Gconv / (p.Lsp * p.wsp) + 1e-9, Tinf: Tci } : i >= nH + nI ? { type: 'q', q: S.Qconv / (p.Lsp * p.wsp) } : null },
+      bottom: { type: 'mixed', fn: (i) => i < nH ? { type: 'h', h: Guse / (p.Lsp * p.wsp) + 1e-9, Tinf: Tci } : i >= nH + nI ? { type: 'q', q: S.Qconv / (p.Lsp * p.wsp) } : null },
     }, { T0: TaK, tol: 1e-7, maxIt: 30000 });
     const Z = range(ny).map(j => range(nx).map(i => field.T[j * nx + i] - KELVIN));
     const xsF = range(nx).map(i => (i + 0.5) * dx * 1000), ysF = range(ny).map(j => (j + 0.5) * dy * 1000);
@@ -123,7 +171,7 @@ export default {
     ctx.progress(0.7, 'transient');
     // transient 2-node network (hot block, cold block) from ambient
     const Chot = sp.rho * sp.cp * Asp * p.Lsp + 2700 * 900 * Acol * 0.001, Ccold = sp.rho * sp.cp * Asp * p.Lsp + 2700 * 900 * Arad * 0.001;
-    const tEnd = Math.min(20000, 8 * Math.max(Chot, Ccold) * (Rpath + 0.2)), tr = rk45((t, y) => { const [Th_, Tk_] = y, Tcol = Th_, Trad = Tk_, qi = p.Gconv * (Th_ - Tk_) + (Th_ - Tk_) / Rins; return [(Qhot(Tcol) - qi) / Chot, (qi - Qcold(Trad)) / Ccold]; }, 0, [TaK, TaK], tEnd, { rtol: 1e-6, hmax: tEnd / 200 });
+    const tEnd = Math.min(20000, 8 * Math.max(Chot, Ccold) * (Rpath + 0.2)), tr = rk45((t, y) => { const [Th_, Tk_] = y, Tcol = Th_, Trad = Tk_, qi = Guse * (Th_ - Tk_) + (Th_ - Tk_) / Rins; return [(Qhot(Tcol) - qi) / Chot, (qi - Qcold(Trad)) / Ccold]; }, 0, [TaK, TaK], tEnd, { rtol: 1e-6, hmax: tEnd / 200 });
     const dTss = tr.y[tr.y.length - 1][0] - tr.y[tr.y.length - 1][1], i63 = tr.y.findIndex(y => (y[0] - y[1]) >= 0.632 * dTss), tau = i63 > 0 ? tr.t[i63] : NaN;
     // verification
     const slab = TH.conduction2D({ nx: 20, ny: 1, dx: 0.01, dy: 0.01, kx: new Float64Array(20).fill(10), ky: new Float64Array(20).fill(10), rc: new Float64Array(20).fill(1e6) }, { left: { type: 'T', T: 1 }, right: { type: 'T', T: 0 } }, { T0: 0.5, tol: 1e-12, maxIt: 50000 });
@@ -139,7 +187,8 @@ export default {
     const K = (label, value, unit, explain, prov, status) => out.kpis.push({ label, value, unit, explain, prov, status });
     K('Actuator hot-interface temperature', S.Thi - KELVIN, '°C', 'Solved temperature at the actuator hot face (not ambient, not collector).', 'calc');
     K('Actuator cold-interface temperature', S.Tci - KELVIN, '°C', 'Solved temperature at the actuator cold face (not sky temperature).', 'calc');
-    K('Interface ΔT under load', dTi, 'K', `Temperature difference actually available to the actuator while it draws ${fmt(p.Gconv, 3)} W/K.`, 'calc', dTi > 15 ? 'ok' : dTi > 5 ? 'warn' : 'bad');
+    K('Converter heat draw G_conv (matched)', Guse, 'W/K', p.matchG !== false ? `Curzon–Ahlborn matching: G_conv that maximises ideal work Q·(1 − T_c,i/T_h,i) for this collector/strap/radiator network (sweep + golden-section refinement). The actuator array (Suites 15–17) is sized to draw this.` : 'User / Suite 15 value.', p.matchG !== false ? 'generated' : 'user');
+    K('Interface ΔT under load', dTi, 'K', `Temperature difference actually available to the actuator while it draws ${fmt(Guse, 3)} W/K.`, 'calc', dTi > 15 ? 'ok' : dTi > 5 ? 'warn' : 'bad');
     K('Open-circuit interface ΔT', dTopen, 'K', 'ΔT with no heat drawn by the actuator — an upper bound that collapses once heat flows.', 'calc');
     K('Heat delivered to actuator', S.Qconv, 'W', 'Heat flow through the converter; the work it can make is bounded by Carnot of the interface temperatures.', 'calc');
     K('Heat leakage through isolation', S.Qleak, 'W', 'Heat bypassing the actuator from the hot to the cold side — wasted exergy.', 'calc', S.Qleak < 0.1 * Math.abs(S.Qconv) ? 'ok' : 'warn');
@@ -156,27 +205,33 @@ export default {
     K('Achievable ΔT vs actuator requirement', `${fmt(dTi, 3)} / ${fmt(needDT, 3)}`, 'K', `${actM.name}: hysteresis (A_f − M_f = ${fmt(actM.Af - actM.Mf, 3)} K) + stress shift + 2 × 3 K margins. ${s15o?.minDT_K ? 'From Suite 15.' : 'Estimated at σ_H = 150, σ_L = 20 MPa.'}`, s15o ? 'coupled' : 'estimated', dTi >= needDT ? 'ok' : 'bad');
     if (curveA) K('Collector curve source', 'Suite 13 glazed collector', '', `Hot-side heat q(T) taken from Suite 13 (exergy-optimal point ${fmt(s13.Thot_C, 4)} °C); the network solves the actual collector temperature under the actuator draw.`, 'coupled');
     out.verdicts.push({ test: 'Usable actuator ΔT', status: dTi >= needDT ? 'pass' : dTi > 0.5 * needDT ? 'warn' : 'fail', detail: `${fmt(dTi, 3)} K under load vs ${fmt(needDT, 3)} K needed by ${actM.name} (hysteresis + stress shift + margins). Below that the alloy cannot complete a transformation cycle.`, fix: 'Reduce path resistance (more heat pipes, better interface material), enlarge collector/radiator areas, or lower the actuator draw.' });
+    if (archDay) {
+      K('Hot sources in parallel (nose strap / bridge LHP)', `${fmt(S.Qnose, 4)} / ${fmt(S.Qbridge, 4)}`, 'W', `Nose collector ${fmt(geo.noseArea, 3)} m² over a ${fmt(p.strapL, 3)} m pyrolytic-graphite strap (${fmt(p.strapMass * 1000, 3)} g, section ${fmt(strapSection * 1e4, 3)} cm², R = ${fmt(Rstrap, 3)} K/W, no pumping); bridge collector ${fmt(geo.bridgeArea, 3)} m² through a loop heat pipe (${fmt(geo.lhpL, 3)} m line, ${fmt(geo.lhpDz, 3)} m adverse elevation). Distances from the current CAD.`, 'calc');
+      if (lhp) K('Loop-heat-pipe capillary budget', `${fmt(lhp.dPcap / 1000, 3)} kPa head − ${fmt(lhp.dPhyd / 1000, 3)} kPa hydrostatic → Q_max ${fmt(lhp.Qmax, 4)} W`, '', `${p.lhpFluid}, r_p = ${p.lhpPore} µm; flow losses ${fmt(lhp.perW, 3)} Pa/W (liquid ${fmt(lhp.cL, 3)}, vapour ${fmt(lhp.cV, 3)}, wick ${fmt(lhp.cW, 3)}); thermal resistance ${fmt(lhp.R, 3)} K/W. ${lhp.note} ${lhp.startup}`, 'calc', lhp.ok && S.Qbridge < lhp.Qmax ? 'ok' : 'bad');
+      out.verdicts.push({ test: 'Bridge loop heat pipe operates against gravity', status: !lhp ? 'info' : lhp.ok && S.Qbridge <= lhp.Qmax ? 'pass' : 'fail', detail: lhp ? `${fmt(S.Qbridge, 4)} W transported vs Q_max ${fmt(lhp.Qmax, 4)} W; hydrostatic head uses ${fmt(100 * lhp.dPhyd / lhp.dPcap, 3)} % of the ${fmt(lhp.dPcap / 1000, 3)} kPa capillary pressure. ${lhp.note}` : 'No bridge collector.', fix: 'Finer primary wick, larger liquid line, water above 60 °C (ammonia only below 90 °C).' });
+    }
+    if (dryOut) K('Heat pipes dried out', 'yes — wall conduction only', '', `Demand exceeded the ${lim.governing} limit (${fmt(lim.Qmax, 3)} W per pipe at ${p.tilt}° adverse tilt over ${p.Lhp} m); the network was re-solved with copper-wall conduction only. `, 'calc', 'bad');
     out.verdicts.push({ test: 'Heat-pipe operating limits', status: !p.nHP ? 'info' : lim.frozen ? 'fail' : qPerPipe > lim.Qmax ? 'fail' : 'pass', detail: p.nHP ? `${fmt(qPerPipe, 3)} W per pipe vs ${lim.governing} limit ${fmt(lim.Qmax, 3)} W at ${fmt(hpT, 3)} °C.` : 'Heat pipes not used.', fix: 'Add pipes, use larger diameter or finer wick, avoid adverse tilt; water pipes freeze below 0 °C — use another working fluid in cold climates.' });
     out.verdicts.push({ test: 'Isolation effectiveness', status: S.Qleak < 0.1 * Math.abs(S.Qconv) ? 'pass' : 'warn', detail: `Leakage ${fmt(S.Qleak, 3)} W = ${fmt(100 * S.Qleak / Math.max(1e-9, Math.abs(S.Qconv)), 3)} % of converter heat.` });
     // charts
     out.charts.push({ title: '2-D conduction field: hot block | isolation | cold block (°C)', type: 'heatmap', wide: true, x: { label: 'Along spreader', unit: 'mm', values: xsF }, y: { label: 'Thickness', unit: 'mm', values: ysF }, z: Z, cmap: 'coolwarm', isolines: 8, vectors: { u: U, v: V, stride: 2 }, z_label: '°C', explain: 'Finite-volume temperature field with heat-flux vectors (thickness exaggerated). Heat enters at top-left, is drawn into the actuator along the bottom-left, and leaks through the central isolation into the cold block, which rejects it to the radiator at top-right. Anisotropy reduces through-thickness gradients.' });
-    out.charts.push({ title: 'Thermal impedance matching: converter draw vs available ΔT and ideal work', type: 'line', x: { label: 'Actuator thermal draw G_conv', unit: 'W/K', log: true }, y: { label: 'Value' }, series: [{ name: 'Interface ΔT (K)', x: Gs, y: sw.map(r => r.Thi - r.Tci) }, { name: 'Heat to actuator (W)', x: Gs, y: sw.map(r => r.Qconv) }, { name: 'Ideal work ×10 (W)', x: Gs, y: sw.map(r => 10 * r.Wideal) }], annotations: [{ type: 'vline', x: p.Gconv, label: 'current' }, { type: 'vline', x: Gs[iBest], label: 'best', color: '#22c55e' }], explain: 'Drawing more heat lowers the interface ΔT. Ideal work peaks where the actuator conductance matches the external path — the thermal equivalent of impedance matching.' });
+    out.charts.push({ title: 'Thermal impedance matching: converter draw vs available ΔT and ideal work', type: 'line', x: { label: 'Actuator thermal draw G_conv', unit: 'W/K', log: true }, y: { label: 'Value' }, series: [{ name: 'Interface ΔT (K)', x: Gs, y: sw.map(r => r.Thi - r.Tci) }, { name: 'Heat to actuator (W)', x: Gs, y: sw.map(r => r.Qconv) }, { name: 'Ideal work ×10 (W)', x: Gs, y: sw.map(r => 10 * r.Wideal) }], annotations: [{ type: 'vline', x: Guse, label: 'current' }, { type: 'vline', x: Gs[iBest], label: 'best', color: '#22c55e' }], explain: 'Drawing more heat lowers the interface ΔT. Ideal work peaks where the actuator conductance matches the external path — the thermal equivalent of impedance matching.' });
     out.charts.push({ title: 'Warm-up transient (2-node network)', type: 'line', x: { label: 'Time', unit: 's' }, y: { label: 'Temperature', unit: '°C' }, series: [{ name: 'Hot side', x: tr.t, y: tr.y.map(y => y[0] - KELVIN) }, { name: 'Cold side', x: tr.t, y: tr.y.map(y => y[1] - KELVIN) }], annotations: Number.isFinite(tau) ? [{ type: 'vline', x: tau, label: 'τ (63 %)' }] : [], explain: 'How long the thermal path takes to establish its steady gradient after start-up or a change in weather.' });
     const lims = ['capillary', 'sonic', 'entrainment', 'viscous', 'boiling'];
     const Tsw = linspace(2, 90, 30); out.charts.push({ title: 'Heat-pipe operating envelope (per pipe)', type: 'line', x: { label: 'Vapour temperature', unit: '°C' }, y: { label: 'Limit', unit: 'W', log: true }, series: lims.map(n => ({ name: n, x: Tsw, y: Tsw.map(T => Math.max(1e-3, TH.heatPipeLimits({ TC: T, dOuter: p.dHP / 1000, L: p.Lhp, tilt: p.tilt })[n])) })), annotations: p.nHP ? [{ type: 'point', x: hpT, y: Math.max(1e-3, qPerPipe), label: 'operating' }] : [], explain: 'The lowest curve at the operating temperature governs. Low-temperature operation is usually capillary- or viscous-limited.' });
     out.charts.push({ title: 'Network solution convergence', type: 'line', x: { label: 'Newton iteration' }, y: { label: 'Residual', unit: 'W', log: true }, series: [{ name: '‖F‖', x: range(S.hist.length), y: S.hist.map(v => Math.max(v, 1e-14)) }], explain: 'Quadratic Newton convergence of the nonlinear radiative–conductive network.' });
-    out.tables.push({ title: 'Thermal resistance network', cols: ['Element', 'Value', 'Unit'], rows: [['Spreader (in-plane)', Rsp, 'K/W'], ['Heat pipes (parallel)', Number.isFinite(Rhp) ? Rhp : '—', 'K/W'], ['Contact', Rcon, 'K/W'], ['Path total (per side)', Rpath, 'K/W'], ['Isolation leak path', Rins, 'K/W'], ['Converter 1/G', 1 / p.Gconv, 'K/W']] });
+    out.tables.push({ title: 'Thermal resistance network', cols: ['Element', 'Value', 'Unit'], rows: [['Spreader (in-plane)', Rsp, 'K/W'], ['Heat pipes (parallel)', Number.isFinite(Rhp) ? Rhp : '—', 'K/W'], ['Contact', Rcon, 'K/W'], ['Path total (per side)', Rpath, 'K/W'], ['Isolation leak path', Rins, 'K/W'], ['Converter 1/G', 1 / Guse, 'K/W']] });
     out.tables.push({ title: 'Node temperatures and heat flows', cols: ['Quantity', 'Value', 'Unit'], rows: [['Ambient', c.T, '°C'], ['Collector / exchanger', S.Tcol - KELVIN, '°C'], ['Actuator hot interface', S.Thi - KELVIN, '°C'], ['Actuator cold interface', S.Tci - KELVIN, '°C'], ['Radiator', S.Trad - KELVIN, '°C'], ['Heat in from collector', S.Qin, 'W'], ['Heat to actuator', S.Qconv, 'W'], ['Leakage', S.Qleak, 'W']] });
     // recs
     if (dTi < 10) out.recs.push({ level: 'critical', text: `Only ${fmt(dTi, 3)} K reaches the actuator. ${p.case === 'night' ? 'At night this is an environmental limit (sky radiative sink), not just a design flaw.' : 'Reduce contact resistance and add heat-transport capacity.'}`, basis: 'Coupled network solution' });
     if (Rcon > 0.3 * Rpath) out.recs.push({ level: 'warn', text: `Contact resistance is ${fmt(100 * Rcon / Rpath, 3)} % of the path; specify a compliant thermal interface material and controlled clamping pressure (h_c ≥ 20 kW/m²K).`, basis: 'Resistance breakdown' });
-    if (Math.abs(Math.log10(p.Gconv / Gs[iBest])) > 0.3) out.recs.push({ level: 'info', text: `Re-size the actuator heat draw towards ≈ ${fmt(Gs[iBest], 3)} W/K (cartridge count × frequency × thermal mass) to maximise ideal work.`, basis: 'Impedance matching sweep' });
+    if (Math.abs(Math.log10(Guse / Gs[iBest])) > 0.3) out.recs.push({ level: 'info', text: `Re-size the actuator heat draw towards ≈ ${fmt(Gs[iBest], 3)} W/K (cartridge count × frequency × thermal mass) to maximise ideal work.`, basis: 'Impedance matching sweep' });
     if (p.anis < 5) out.recs.push({ level: 'info', text: 'An anisotropic thermal metamaterial (graphite-laminate or aligned lattice, k_in/k_through ≥ 20) channels heat to the interfaces while suppressing cross-leakage.', basis: 'Anisotropic conduction' });
     out.recs.push({ level: 'sustain', text: 'Aluminium spreaders and copper/water heat pipes are highly recyclable; aerogel insulation is energy-intensive to produce — size it to the leakage target rather than over-insulating.', basis: 'Embodied energy in materials registry' });
     out.explain.push({ title: 'Why interface temperatures matter', text: 'The actuator does not see ambient air or the sky. It sees the ends of a thermal path whose resistances, leakage and radiative boundaries reduce the available temperature difference — especially once heat actually flows. These solved interface temperatures feed Suites 15 and 17.' });
     out.views.push({ label: '2D animation: transient temperature field', icon: '🎞', render: (el) => anim2dField(el, { tr, Z, nx, ny, nH, nI, TaK, S }) });
     out.views.push({ label: '3D heat path (transient)', icon: '🌡', render: (el) => view3dHeatPath(el, { S, tr, Z, nx, ny, nH, nI, TaK, spName: sp.name, insName: ins.name, nHP: p.nHP }) });
-    out.outputs = { Qhot_W: S.Qconv, Qleak_W: S.Qleak, ThotIface_C: S.Thi - KELVIN, TcoldIface_C: S.Tci - KELVIN, Rth_K_W: 2 * Rpath, tauThermal_s: tau, Gconv_W_K: p.Gconv, case: p.case, Wideal_W: S.Wideal, dTopen_K: dTopen, TambC: c.T, bestG_W_K: Gs[iBest] };
+    out.outputs = { Qhot_W: S.Qconv, Qleak_W: S.Qleak, ThotIface_C: S.Thi - KELVIN, TcoldIface_C: S.Tci - KELVIN, Rth_K_W: 2 * Rpath, tauThermal_s: tau, Gconv_W_K: Guse, case: p.case, Wideal_W: S.Wideal, dTopen_K: dTopen, TambC: c.T, bestG_W_K: Gs[iBest] };
     out.convergence = { title: 'Newton residual history', series: [{ name: 'network', x: range(S.hist.length), y: S.hist.map(v => Math.max(v, 1e-14)) }] };
     out.headline = `${p.case === 'day' ? 'Day' : p.case === 'night' ? 'Night' : 'Current'} case: actuator interfaces at ${fmt(S.Thi - KELVIN, 4)} °C / ${fmt(S.Tci - KELVIN, 4)} °C (ΔT ${fmt(dTi, 3)} K) delivering ${fmt(S.Qconv, 3)} W of heat; ideal work ≤ ${fmt(S.Wideal, 3)} W.`;
     out.headlineKind = dTi > 15 ? 'ok' : 'warn';
