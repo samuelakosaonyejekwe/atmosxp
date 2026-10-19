@@ -56,6 +56,9 @@ export default {
     { key: 'route', label: 'Route', type: 'select', group: 'Route', default: 'flat', options: [{ value: 'flat', label: 'Flat straight road (heading below)' }, { value: 'imported', label: 'Imported route (Data portal GPX/KML/GeoJSON)' }], auto: (c) => (c.store.project.imports?.route?.length >= 2 ? { value: 'imported', prov: 'user' } : undefined) },
     { key: 'heading', label: 'Initial heading', unit: '°', type: 'number', min: 0, max: 359, step: 1, group: 'Route', default: 0 },
     { key: 'grade', label: 'Road gradient (flat route)', unit: '%', type: 'number', min: -10, max: 10, step: 0.5, group: 'Route', default: 0 },
+    { key: 'reefMode', label: 'Wing reefing (Revision 2.2)', type: 'select', group: 'Wing', default: 'auto', options: [{ value: 'auto', label: 'Auto: deployed in light wind, reefed above threshold or at the side-force cap' }, { value: 'deployed', label: 'Always deployed' }, { value: 'reefed', label: 'Always reefed' }], auto: (c) => ({ value: c.vehicle.wingReef || 'auto', prov: 'coupled' }) },
+    { key: 'reefU', label: 'Reef threshold (wind at wing)', unit: 'm/s', type: 'number', min: 2, max: 20, step: 0.5, group: 'Wing', default: 7, help: 'Deploy again below threshold − 1.5 m/s (hysteresis).' },
+    { key: 'wingControl', label: 'Wing load control', type: 'select', group: 'Wing', default: 'feather', options: [{ value: 'feather', label: 'Free-feathering root with breakaway (Revision 2)' }, { value: 'trim', label: 'Driver depowers (trims) to the safe limit' }], auto: (c) => ({ value: (c.upstream('s01')?.wingRoot ?? 'feathering') === 'feathering' ? 'feather' : 'trim', prov: 'coupled' }) },
     { key: 'safeDepower', label: 'Depower wing to grip/rollover limit', type: 'bool', group: 'Wing', default: true, help: 'Caps wing side force at min(0.7·μmg, 0.8·SSF·mg·h_cg/h_CE) — the safe useful-thrust envelope. Disable only to see the unsafe theoretical maximum.' },
     { key: 'CL', label: 'Wing max trimmed C_L', type: 'number', min: 0.3, max: 2, step: 0.05, group: 'Wing', default: 1.0, auto: (c) => c.upstream('s07')?.CLmax ? { value: +(0.85 * c.upstream('s07').CLmax).toFixed(2), prov: 'coupled' } : undefined },
     { key: 'CD0', label: 'Wing profile drag C_D0', type: 'number', min: 0.005, max: 0.2, step: 0.005, group: 'Wing', default: 0.03 },
@@ -63,7 +66,7 @@ export default {
     { key: 'Phub', label: 'Continuous hub power (backup)', unit: 'W', type: 'number', min: 0, max: 3000, step: 1, group: 'Backup', default: 0, auto: (c) => { const o = c.upstream('s17'); return o?.Pwheel_W !== undefined ? { value: +Math.max(0, o.Pwheel_W).toFixed(2), prov: 'coupled' } : { value: 0, prov: 'unsupported' }; }, help: 'Only power demonstrated by Suite 17 should be used. Values typed here are hypothetical.' },
     { key: 'hubProfile', label: 'Hub power availability', type: 'select', group: 'Backup', default: 'asComputed', options: [{ value: 'asComputed', label: 'As computed (all conditions)' }, { value: 'dayOnly', label: 'Daytime only (solar-driven)' }, { value: 'nightReduced', label: 'Night = 5 % of day (sky-cooling limited)' }] },
     { key: 'hubStart', label: 'Hub starting force at standstill', unit: 'N', type: 'number', min: 0, max: 500, step: 1, group: 'Backup', default: 0, auto: (c) => { const o = c.upstream('s17'); return o ? { value: o.startupOK ? +(Math.max(0, o.tauMean_Nm || 0) / c.vehicle.wheelRadius).toFixed(1) : 0, prov: 'coupled' } : undefined; } },
-    { key: 'Ebuf', label: 'Buffer usable energy at start', unit: 'kJ', type: 'number', min: 0, max: 600, step: 1, group: 'Buffer', default: 30, auto: (c) => { const o = c.upstream('s18'); return o?.Euse_J !== undefined ? { value: +(o.Euse_J / 1000).toFixed(2), prov: 'coupled' } : undefined; } },
+    { key: 'Ebuf', label: 'Buffer usable energy at start', unit: 'kJ', type: 'number', min: 0, max: 600, step: 1, group: 'Buffer', default: 10, auto: (c) => { const o = c.upstream('s18'); return o?.Euse_J !== undefined ? { value: +(o.Euse_J / 1000).toFixed(2), prov: 'coupled' } : undefined; } },
     { key: 'PbufMax', label: 'Buffer max discharge power', unit: 'W', type: 'number', min: 0, max: 3000, step: 10, group: 'Buffer', default: 250 },
     { key: 'etaBuf', label: 'Buffer discharge efficiency', type: 'number', min: 0.3, max: 1, step: 0.01, group: 'Buffer', default: 0.85, auto: (c) => { const o = c.upstream('s18'); return o?.efficiency ? { value: +o.efficiency.toFixed(3), prov: 'coupled' } : undefined; } },
     { key: 'charge', label: 'Recharge buffer from surplus wind', type: 'bool', group: 'Buffer', default: true },
@@ -105,17 +108,42 @@ export default {
     // Safe-depowering limit: wing side force may not exceed the tyre-grip reserve or the static rollover limit
     // (moment balance Fy·h_ce ≤ SSF·m·g·h_cg with an 0.8 safety factor). This is “maximum safe useful thrust”.
     const ssf = ctx.upstream('s11')?.ssf ?? ctx.upstream('s01')?.ssf ?? (veh.track / 2) * 0.62 / veh.cgHeight / 2;
-    const hCE = R + veh.height * 0.7 + veh.wingHeight * 0.45, FyRoll = 0.8 * ssf * m * G0 * veh.cgHeight / hCE, FyGrip = 0.7 * mu * m * G0;
-    const FyMax = p.safeDepower === false ? Infinity : Math.min(FyRoll, FyGrip);
-    const wing = (Va, beta) => {
+    // Revision 2.2 reefable wings: deployed span veh.wingHeight / area veh.wingArea; reefed span veh.wingReefSpan
+    const spanD = veh.wingHeight, spanR = Math.min(spanD, veh.wingReefSpan ?? spanD), reefable = spanR < spanD - 1e-6;
+    const hCED = R + veh.height * 0.7 + spanD * 0.45, hCER = R + veh.height * 0.7 + spanR * 0.45, FyGrip = 0.7 * mu * m * G0;
+    const FyMaxOf = (hce) => p.safeDepower === false ? Infinity : Math.min(0.8 * ssf * m * G0 * veh.cgHeight / hce, FyGrip);
+    let Sw = veh.wingArea, FyMax = FyMaxOf(hCED), hCE = hCED, FyRoll = 0.8 * ssf * m * G0 * veh.cgHeight / hCED;
+    const reefMode = p.reefMode || 'auto';
+    const setReef = (on) => { const r = reefable && on; Sw = r ? veh.wingArea * spanR / spanD : veh.wingArea; hCE = r ? hCER : hCED; FyMax = FyMaxOf(hCE); return r; };
+    const reefFor = (U) => reefMode === 'reefed' ? true : reefMode === 'deployed' ? false : U > p.reefU;
+    setReef(reefMode === 'reefed');
+    const wingTrim = (Va, beta, FyLim) => {
       const q = 0.5 * rho * Va * Va, b = rad(Math.abs(beta)); let best = -Infinity, side = 0;
-      if (s07?.thrustVsAWA?.awa?.length && s07.Va) { let T0 = interp1(s07.thrustVsAWA.awa, s07.thrustVsAWA.thrust, Math.abs(beta)) * (Va / s07.Va) ** 2, Fy = q * veh.wingArea * p.CL * Math.cos(b); if (Fy > FyMax) { T0 *= FyMax / Fy; Fy = FyMax; } return { Fx: T0, Fy, feather: -q * veh.wingArea * p.CD0 * Math.cos(b) }; }
+      if (s07?.thrustVsAWA?.awa?.length && s07.Va) { let T0 = interp1(s07.thrustVsAWA.awa, s07.thrustVsAWA.thrust, Math.abs(beta)) * (Va / s07.Va) ** 2 * (Sw / veh.wingArea), Fy = q * Sw * p.CL * Math.cos(b); if (Fy > FyLim) { T0 *= FyLim / Fy; Fy = FyLim; } return { Fx: T0, Fy, feather: -q * Sw * p.CD0 * Math.cos(b) }; }
       const luff = clamp((Math.abs(beta) - 12) / 18, 0, 1); // close-hauled limit: no useful lift below ≈ 12–30°
-      for (const cl of CLs) { const CLe = cl * luff, CD = p.CD0 + p.kInd * CLe * CLe, Fx = q * veh.wingArea * (CLe * Math.sin(b) - CD * Math.cos(b)), Fy = q * veh.wingArea * (CLe * Math.cos(b) + CD * Math.sin(b)); if (Fy > FyMax && cl > 0) continue; if (Fx > best) { best = Fx; side = Fy; } }
-      const stallFy = 1.1 * q * veh.wingArea * Math.sin(b), stallF = -1.1 * q * veh.wingArea * Math.cos(b) * Math.min(1, FyMax / Math.max(stallFy, 1e-9)); if (stallF > best) { best = stallF; side = Math.min(stallFy, FyMax); }
-      if (best === -Infinity) { best = -q * veh.wingArea * p.CD0 * Math.cos(b); side = q * veh.wingArea * p.CD0 * Math.sin(b); }
-      return { Fx: best, Fy: side, feather: -q * veh.wingArea * p.CD0 * Math.cos(b) };
+      for (const cl of CLs) { const CLe = cl * luff, CD = p.CD0 + p.kInd * CLe * CLe, Fx = q * Sw * (CLe * Math.sin(b) - CD * Math.cos(b)), Fy = q * Sw * (CLe * Math.cos(b) + CD * Math.sin(b)); if (Fy > FyLim && cl > 0) continue; if (Fx > best) { best = Fx; side = Fy; } }
+      const stallFy = 1.1 * q * Sw * Math.sin(b), stallF = -1.1 * q * Sw * Math.cos(b) * Math.min(1, FyLim / Math.max(stallFy, 1e-9)); if (stallF > best) { best = stallF; side = Math.min(stallFy, FyLim); }
+      if (best === -Infinity) { best = -q * Sw * p.CD0 * Math.cos(b); side = q * Sw * p.CD0 * Math.sin(b); }
+      return { Fx: best, Fy: side, feather: -q * Sw * p.CD0 * Math.cos(b) };
     };
+    // Wing control: 'trim' = driver depowers to the safe limit; 'feather' = Revision 2 free-feathering root with a
+    // torque-limited breakaway at the safe side force — above release the wing weathervanes (C_L≈0, C_D≈0.02) and
+    // re-latches after 3 s below 60 % of the release force.
+    const wingCtl = p.wingControl || 'trim';
+    // Lifting body (Revision 2.3): body forces from Suite 07 (bodyForces: thrust incl. drag and side-force coefficient vs AWA,
+    // acting at hCE_m) and the wing endplate factor. Without them the body is a pure drag area (C_dA) with no side force.
+    const BF = s07?.bodyForces, epf = s07?.endplateFactor ?? 1, VaRefB = BF?.Va ?? s07?.Va;
+    const bodyF = (Va, beta) => { if (!BF?.thrustVsAWA?.awa?.length || !VaRefB) return null; const ab = Math.abs(beta), sc = (Va / VaRefB) ** 2, Fx = interp1(BF.thrustVsAWA.awa, BF.thrustVsAWA.thrust, ab) * sc; const c = BF.CYvsAWA; const CY = c?.awa?.length ? interp1(c.awa, c.CY || c.cy, ab) : 0; return { Fx, Fy: Math.abs(0.5 * rho * Va * Va * (BF.Aref ?? 2.5) * CY), z: BF.hCE_m ?? 0.6 }; };
+    const capWing = (Va, beta) => { const bf = bodyF(Va, beta); return bf ? Math.max(0, (FyMax * hCE - bf.Fy * bf.z) / hCE) : FyMax; };
+    const wing = (Va, beta, st) => {
+      const cap = capWing(Va, beta), ep = (r0) => r0.Fx > 0 && epf !== 1 ? { ...r0, Fx: r0.Fx * epf } : r0;
+      if (wingCtl !== 'feather') return ep(wingTrim(Va, beta, cap));
+      const r = wingTrim(Va, beta, Infinity), q = 0.5 * rho * Va * Va, b = rad(Math.abs(beta));
+      let fe;
+      if (st) { if (!st.f && r.Fy > cap) { st.f = true; st.n++; st.calm = 0; } else if (st.f) { st.calm = r.Fy < 0.6 * cap ? st.calm + dt : 0; if (st.calm >= 3) st.f = false; } fe = st.f; } else fe = r.Fy > cap;
+      return fe ? { Fx: -q * Sw * 0.02 * Math.cos(b), Fy: q * Sw * 0.02 * Math.sin(b), feather: -q * Sw * 0.02 * Math.cos(b), feathered: true } : ep(r);
+    };
+    const featherSt = { f: false, n: 0, calm: 0 }, reefSt = { on: reefMode === 'reefed', n: 0 };
     // hub availability
     let Phub = p.Phub, hubProv = prov('Phub') || 'estimated';
     if (S.competition && s16?.powerDensity_W_kg && s17) { Phub = Math.max(0, p.Phub * (s16.powerDensity_W_kg / Math.max(1e-9, ctx.upstream('s15')?.powerDensity_W_kg || s16.powerDensity_W_kg))); }
@@ -126,12 +154,14 @@ export default {
     let v = S.v0 === 'target' ? vt : (S.v0 || 0), x = 0, t = 0, Ebuf = Ebuf0, mode = v > 0 ? MODE.WIND : MODE.STOP, backupOn = false;
     const L = { wing: 0, wingNeg: 0, hub: 0, buf: 0, bufDrawn: 0, charge: 0, roll: 0, aero: 0, brake: 0, grade: 0, windFlux: 0 };
     const KE0 = 0.5 * mEff * v * v; let PE = 0;
-    const rec = { t: [], v: [], x: [], U: [], Fwav: [], Fw: [], Fh: [], Fb: [], Fres: [], E: [], mode: [], Pw: [], Ph: [], Pb: [], Preq: [], side: [], awa: [] };
+    const rec = { t: [], v: [], x: [], U: [], Fwav: [], Fw: [], Fh: [], Fb: [], Fres: [], E: [], mode: [], Pw: [], Ph: [], Pb: [], Preq: [], side: [], awa: [], dir: [], hdg: [], drag: [], brake: [], grade: [], feath: [], reef: [] };
     const every = Math.max(1, Math.round(N / 1500)); let stalledT = 0, maxSideRatio = 0, wheelRevs = 0, thrustPeaks = 0, lastF = 0, lastSlope = 0, firstMove = null, reach5 = null;
     const Fstatic = m * G0 * Crr * 1.6;
     for (let i = 0; i < N; i++) {
-      const w = windAt(t), rd = roadAt(x), th = Math.atan(rd.grade), aw = apparentWind(w.U, w.dirFrom, rd.hdg, v), wf = wing(aw.Va, aw.beta);
-      const Fbody = 0.5 * rho * veh.CdA * aw.ax * Math.abs(aw.ax); // signed: negative = drag
+      const w = windAt(t), rd = roadAt(x), th = Math.atan(rd.grade), aw = apparentWind(w.U, w.dirFrom, rd.hdg, v);
+      if (reefMode === 'auto' && reefable) { let want = reefSt.on ? w.U > p.reefU - 1.5 : w.U > p.reefU; if (!want && !reefSt.on) { setReef(false); if (wingTrim(aw.Va, aw.beta, Infinity).Fy > FyMax) want = true; } if (want !== reefSt.on) { reefSt.on = want; reefSt.n++; } } else reefSt.on = reefMode === 'reefed';
+      setReef(reefSt.on); const wf = wing(aw.Va, aw.beta, featherSt);
+      const bfx = bodyF(aw.Va, aw.beta), Fbody = bfx ? bfx.Fx : 0.5 * rho * veh.CdA * aw.ax * Math.abs(aw.ax); // signed: negative = drag (lifting body: Suite 07 net body force)
       const Froll = v > 1e-6 ? m * G0 * Crr * Math.cos(th) : 0, Fg = m * G0 * Math.sin(th);
       const FreqT = roadLoad(vt, { ...veh, Crr }, { rho, grade: rd.grade }).F; // force needed to hold the target speed
       const braking = S.brakeAt !== undefined && t >= S.brakeAt;
@@ -168,14 +198,17 @@ export default {
       wheelRevs += vm * dt / (2 * Math.PI * R);
       const slope = Math.sign(wf.Fx - lastF); if (slope < 0 && lastSlope > 0) thrustPeaks++; if (slope) lastSlope = slope; lastF = wf.Fx;
       mode = braking ? (vn > 0 ? MODE.BRAKE : MODE.STOP) : vn < 0.05 ? MODE.STOP : Fh > 0 ? (Fw > 0.2 * FreqT ? MODE.ASSIST : MODE.BACKUP) : Fbuf > 0 ? MODE.BUFFER : (Fw + Fbody < Froll + Fg - 1 && !backupOn ? MODE.COAST : backupOn && Fh === 0 && Fbuf === 0 ? MODE.COAST : MODE.WIND);
-      if (i % every === 0) { rec.t.push(t); rec.v.push(vn * 3.6); rec.x.push(x / 1000); rec.U.push(w.U); rec.Fwav.push(wf.Fx); rec.Fw.push(Fw); rec.Fh.push(Fh); rec.Fb.push(Fbuf); rec.Fres.push(Froll + Fg - Fbody); rec.E.push(Ebuf / 1000); rec.mode.push(mode); rec.Pw.push(Math.max(0, Fw * vm)); rec.Ph.push(Fh * vm); rec.Pb.push(Fbuf * vm); rec.Preq.push(FreqT * vt); rec.side.push(wf.Fy); rec.awa.push(Math.abs(aw.beta)); }
+      if (i % every === 0) { rec.t.push(t); rec.v.push(vn * 3.6); rec.x.push(x / 1000); rec.U.push(w.U); rec.Fwav.push(wf.Fx); rec.Fw.push(Fw); rec.Fh.push(Fh); rec.Fb.push(Fbuf); rec.Fres.push(Froll + Fg - Fbody); rec.E.push(Ebuf / 1000); rec.mode.push(mode); rec.Pw.push(Math.max(0, Fw * vm)); rec.Ph.push(Fh * vm); rec.Pb.push(Fbuf * vm); rec.Preq.push(FreqT * vt); rec.side.push(wf.Fy); rec.awa.push(Math.abs(aw.beta)); rec.dir.push(w.dirFrom); rec.hdg.push(rd.hdg); rec.drag.push(-Fbody); rec.brake.push(Fb); rec.grade.push(rd.grade); rec.feath.push(!!wf.feathered); rec.reef.push(reefSt.on ? 1 : 0); }
       v = vn; x += vm * dt; t += dt;
     }
     const KE1 = 0.5 * mEff * v * v;
     const inputs = L.wing + L.hub + L.buf, sinks = L.roll + L.aero + L.brake + L.wingNeg + L.charge + (KE1 - KE0) + PE, resid = inputs - sinks, thru = Math.max(1, inputs + L.roll + L.aero + L.brake + KE0);
     // ---- steady analyses ----
-    const Ubar = S.dayNight ? 5 * p.Uscale : S.ramp ? S.ramp.to * p.Uscale : S.U * p.Uscale, rel = S.rel;
-    const steadyF = (vv, U, twa, Ph = 0) => { const aw = apparentWind(U, twa, 0, vv), wf = wing(aw.Va, aw.beta); return wf.Fx + 0.5 * rho * veh.CdA * aw.ax * Math.abs(aw.ax) - m * G0 * Crr + (Ph > 0 ? Ph / Math.max(vv, 0.3) : 0); };
+    // steady analyses use the same wind as the journey: live Suite 05 wind (speed and angle to the heading) when the journey does
+    const liveSteady = !S.dayNight && p.useLive && s05 && (p.scenario === 's2' || p.scenario === 's16' || p.scenario === 's14');
+    const relLive = liveSteady ? (() => { const r = ((((s05.dir ?? (p.heading + S.rel)) - p.heading) % 360) + 360) % 360; return r > 180 ? 360 - r : r; })() : S.rel;
+    const Ubar = liveSteady ? (s05.Uz ?? S.U) : S.dayNight ? 5 * p.Uscale : S.ramp ? S.ramp.to * p.Uscale : S.U * p.Uscale, rel = relLive;
+    const steadyF = (vv, U, twa, Ph = 0) => { setReef(reefFor(U)); const aw = apparentWind(U, twa, 0, vv), wf = wing(aw.Va, aw.beta), bfs = bodyF(aw.Va, aw.beta); return wf.Fx + (bfs ? bfs.Fx : 0.5 * rho * veh.CdA * aw.ax * Math.abs(aw.ax)) - m * G0 * Crr + (Ph > 0 ? Ph / Math.max(vv, 0.3) : 0); };
     const vSus = (U, twa, Ph = 0) => { const vs = linspace(0.2, 60, 300); let last = 0; for (const vv of vs) if (steadyF(vv, U, twa, Ph) >= 0) last = vv; return last; };
     const vWind = vSus(Ubar, rel), vAll = vSus(Ubar, rel, hubAvail(S.day ?? true));
     const PwindAvailAtTarget = Math.max(0, steadyF(vt, Ubar, rel) + m * G0 * Crr) * vt, Preq = roadLoad(vt, { ...veh, Crr }, { rho }).P;
@@ -200,6 +233,8 @@ export default {
     k('Journey outcome', S.worst ? (success ? 'No fabricated motion ✔' : 'Inconsistent') : success ? 'Success' : 'Failure', '', S.worst ? 'The worst-case test passes when the car only coasts on its initial kinetic energy and stops — no energy is invented.' : travel ? `Success = mean speed ≥ 80 % of ${p.speed} km/h.` : 'Scenario-specific criterion (self-start, stop).', 'calc', success ? 'ok' : 'bad');
     k('Distance travelled', dist / 1000, 'km', `In ${fmt(T / 60, 3)} min of simulated time.`);
     k('Mean speed', meanV * 3.6, 'km/h', 'Distance ÷ duration.', 'calc', meanV >= 0.8 * vt ? 'ok' : 'warn');
+    if (reefable) k('Reef / deploy changes', reefSt.n, '', `Auto-reef: reefed (span ${fmt(spanR, 3)} m, area ×${fmt(spanR / spanD, 3)}) above ${p.reefU} m/s wind or at the side-force cap; deployed below ${fmt(p.reefU - 1.5, 3)} m/s.`, 'calc');
+    if (wingCtl === 'feather') k('Wing feathering events', featherSt.n, '', `Breakaway releases at the safe side force (${fmt(FyMax, 3)} N); while feathered the wing only adds drag (C_D ≈ 0.02).`, 'calc', featherSt.n ? 'warn' : 'ok');
     k('Safe side-force limit', FyMax, 'N', `Wing side force allowed by tyre grip (${fmt(FyGrip, 3)} N) and rollover (${fmt(FyRoll, 3)} N, SSF ${fmt(ssf, 3)}, centre of effort ${fmt(hCE, 3)} m). The wing is depowered to stay inside it.`, 'calc');
     k('Max sustainable speed — wind only', vWind * 3.6, 'km/h', `Steady force balance at U = ${fmt(Ubar, 3)} m/s, TWA ${rel}°.`);
     k('Max sustainable speed — wind + backup', vAll * 3.6, 'km/h', 'Including the continuous hub power available under this scenario.');
@@ -223,6 +258,7 @@ export default {
     if (p.scenario === 's1' || p.scenario === 's9') out.verdicts.push({ test: 'Self-start', status: reach5 !== null ? 'pass' : 'fail', detail: reach5 !== null ? `Reaches 5 km/h after ${fmt(reach5, 3)} s.` : 'Propulsive force never exceeds static breakaway resistance.' });
     // ---- charts ----
     out.charts.push({ title: 'Speed history', type: 'line', x: { label: 'Time', unit: T > 7200 ? 's' : 's' }, y: { label: 'Speed', unit: 'km/h' }, series: [{ name: 'Vehicle speed', x: rec.t, y: rec.v }, { name: 'Wing-height wind (m/s)', x: rec.t, y: rec.U, dash: '3 3' }], annotations: [{ type: 'hline', y: p.speed, label: 'target', color: '#22c55e' }], wide: true, explain: 'Complete operating history. Speed is the outcome of all forces — it is never prescribed. When wind and backup are insufficient the vehicle slows or stops.' });
+    if (reefable) out.charts.push({ title: 'Wing state history (reef & feather)', type: 'line', x: { label: 'Time', unit: 's' }, y: { label: 'Value' }, series: [{ name: 'Wind at wing (m/s)', x: rec.t, y: rec.U }, { name: 'Span in use (m)', x: rec.t, y: rec.reef.map(r => r ? spanR : spanD) }, { name: 'Feathered (1 = yes)', x: rec.t, y: rec.feath.map(f => f ? 1 : 0) }], annotations: [{ type: 'hline', y: p.reefU, label: 'reef threshold', color: '#38bdf8' }], explain: 'Auto-reef state machine: the wings are deployed for light-wind thrust and telescoped (reefed) above the threshold or when the deployed side force would exceed the safe cap; the feathering breakaway is the last line of protection.' });
     out.charts.push({ title: 'Propulsive forces', type: 'line', x: { label: 'Time', unit: 's' }, y: { label: 'Force', unit: 'N' }, series: [{ name: 'Wing thrust available', x: rec.t, y: rec.Fwav, dash: '4 3', width: 1 }, { name: 'Wing thrust used', x: rec.t, y: rec.Fw }, { name: 'Hub', x: rec.t, y: rec.Fh }, { name: 'Buffer', x: rec.t, y: rec.Fb }, { name: 'Resistance (roll + grade − body aero)', x: rec.t, y: rec.Fres }], explain: 'Available thrust (dashed) is what the trimmed wing could produce; the driver depowers it to hold the target. Backup forces fill gaps only up to their real capacity.' });
     out.charts.push({ title: 'Power contributions vs requirement', type: 'stack', x: { label: 'Time', unit: 's' }, y: { label: 'Power', unit: 'W' }, series: [{ name: 'Wind', x: rec.t, y: rec.Pw }, { name: 'Hub', x: rec.t, y: rec.Ph }, { name: 'Buffer', x: rec.t, y: rec.Pb }], annotations: [{ type: 'hline', y: Preq, label: 'required at target', color: '#ef4444' }], explain: 'Stacked source power at the wheels. Whenever the stack is below the red line the vehicle cannot hold its target speed.' });
     out.charts.push({ title: 'Buffer state of energy & operating mode', type: 'line', x: { label: 'Time', unit: 's' }, y: { label: 'Value' }, series: [{ name: 'Buffer energy (kJ)', x: rec.t, y: rec.E }, { name: 'Mode (0 wind · 1 assist · 2 backup · 3 buffer · 4 coast · 5 brake · 6 stop)', x: rec.t, y: rec.mode }], explain: 'The buffer is finite: it falls during discharge and only rises when surplus wind is stored. Mode codes show the sequence of operating states.' });
@@ -240,6 +276,48 @@ export default {
     const ev = []; let lastMode = null; rec.mode.forEach((mo, i) => { if (mo !== lastMode) { ev.push([fmt(rec.t[i], 4), Object.keys(MODE).find(k2 => MODE[k2] === mo), fmt(rec.v[i], 3), fmt(rec.U[i], 3), fmt(rec.E[i], 3)]); lastMode = mo; } });
     out.tables.push({ title: 'Operating history (mode changes)', cols: ['t (s)', 'Mode', 'Speed (km/h)', 'Wind (m/s)', 'Buffer (kJ)'], rows: ev.slice(0, 80) });
     if (p.scenario === 's14' || p.scenario === 's16') { const scale = p.hoursYear * 3600 / T, ncart = (veh.driveWheels || 2) * 24; out.tables.push({ title: 'Durability duty extrapolation (per year)', cols: ['Quantity', 'Per simulated hour', 'Per year'], rows: [['Wheel revolutions', wheelRevs * 3600 / T, wheelRevs * scale], ['NiTi cartridge cycles (one per revolution each)', wheelRevs * ncart * 3600 / T, wheelRevs * ncart * scale], ['Wing thrust load cycles (peaks)', thrustPeaks * 3600 / T, thrustPeaks * scale], ['Distance (km)', dist / 1000 * 3600 / T, dist / 1000 * scale]], explain: 'Cycle counts feed fatigue checks in Suites 15, 17 and 23. NiTi functional fatigue is typically 10⁴–10⁷ cycles depending on strain amplitude.' }); }
+    // 3D dynamic journey playback (solved time histories)
+    {
+      const s06 = ctx.upstream('s06'), modeName = (mo) => Object.keys(MODE).find(k2 => MODE[k2] === mo) || 'WIND';
+      const twistOf = (side) => s06?.twistTip_deg !== undefined && s06?.sideN ? s06.twistTip_deg * side / s06.sideN : 0;
+      out.views.push({ label: '3D journey simulation', icon: '🚗', render: async (el) => {
+        const { drivingSim, modeColor } = await import('../core/sim3d-drive.js');
+        const mats = Object.fromEntries(Object.keys(ctx.materials.COMPONENTS).map(k2 => [k2, ctx.material(k2)]));
+        await drivingSim(el, { vehicle: veh, materials: mats, wingIncidence: 12 }, {
+          t: rec.t, v: rec.v.map(x => x / 3.6), hdg: rec.hdg, U: rec.U, dirFrom: rec.dir, thrust: rec.Fw, side: rec.side, drag: rec.drag, hub: rec.Fh.map((f, i) => f + rec.Fb[i]), twist: rec.side.map(twistOf),
+          pitch: rec.grade.map(g => -Math.atan(g) * 180 / Math.PI), reef: rec.reef.map(r => r ? spanR / spanD : 1),
+          hud: (i) => { const mn = modeName(rec.mode[i]); return [['Time', fmt(rec.t[i], 4) + ' s'], ['Speed', fmt(rec.v[i], 3) + ' km/h'], ['Mode', mn, modeColor(mn)], ['Wing root', rec.feath[i] ? 'FEATHERED' : 'locked', rec.feath[i] ? '#f59e0b' : undefined], ['Wing span', rec.reef[i] ? `REEFED ${fmt(spanR, 3)} m` : `deployed ${fmt(spanD, 3)} m`, rec.reef[i] ? '#38bdf8' : undefined], ['Wind at wing', fmt(rec.U[i], 3) + ' m/s'], ['App. wind angle', fmt(rec.awa[i], 3) + '°'], ['Wing thrust used', fmt(rec.Fw[i], 3) + ' N'], ['Wing power', fmt(rec.Pw[i], 3) + ' W'], ['Hub power', fmt(rec.Ph[i], 3) + ' W'], ['Buffer power', fmt(rec.Pb[i], 3) + ' W'], ['Buffer energy', fmt(rec.E[i], 3) + ' kJ'], ['Distance', fmt(rec.x[i], 4) + ' km']]; },
+        }, { presets: [['s2', 'Wind-powered acceleration'], ['s3', 'Strong crosswind'], ['s4', 'Sudden gust'], ['s5', 'Wind reversal'], ['s11', 'Wind → backup'], ['s17', 'Day/night 24 h'], ['s18', 'Worst case']].filter(([k2]) => k2 !== p.scenario).map(([k2, l]) => ({ label: '▶ ' + l, onClick: () => { ctx.store.setParam('s20', 'scenario', k2, 'user'); window.dispatchEvent(new HashChangeEvent('hashchange')); } })), explain: `Solved: speed, heading/route, wind speed & direction, wing thrust, side force, body drag, hub and buffer forces, operating mode and buffer energy at every ${fmt(dt, 3)} s solver step (Suite 20 force balance). Interpolated: positions between stored samples and the visual wind particles (advected with the solved wind and a log-law profile).${s06?.sideN ? ' Wing twist is scaled linearly from the Suite 06 aeroelastic solution by side force.' : ' Wing twist is not shown (run Suite 06 to couple it).'} Green = wing thrust, red = side force, orange = body drag, purple = hub/buffer force, blue = true wind.` });
+      } });
+    }
+    out.views.push({ label: '2D animation: route map, power & energy', icon: '🗺', render: async (el) => {
+      const A = await import('../core/anim2d.js');
+      const n = rec.t.length, X = [0], Y = [0]; for (let i = 1; i < n; i++) { const dtt = rec.t[i] - rec.t[i - 1], psi = (90 - rec.hdg[i - 1]) * Math.PI / 180, vv = 0.5 * (rec.v[i] + rec.v[i - 1]) / 3.6; X.push(X[i - 1] + vv * dtt * Math.cos(psi)); Y.push(Y[i - 1] + vv * dtt * Math.sin(psi)); }
+      const xmin = Math.min(...X), xmax = Math.max(...X), ymin = Math.min(...Y), ymax = Math.max(...Y);
+      const modeName = (mo) => Object.keys(MODE).find(k2 => MODE[k2] === mo) || 'WIND', MCOL = { WIND: '#22c55e', ASSIST: '#84cc16', BACKUP: '#a855f7', BUFFER: '#f59e0b', COAST: '#94a3b8', BRAKE: '#ef4444', STOP: '#64748b' };
+      const Pmax = Math.max(Preq, ...rec.Pw, ...rec.Ph, ...rec.Pb, 1), Emax = Math.max(1, ...rec.E);
+      A.anim2d(el, { duration: rec.t[n - 1], rate: [1, 2, 4, 8, 16, 60].reduce((b, r) => Math.abs(r - rec.t[n - 1] / 45) < Math.abs(b - rec.t[n - 1] / 45) ? r : b, 1), height: 460, label: 'Journey time', unit: 's', draw: (g, t, W, H) => {
+        const k = A.at(rec.t, t), i = k.i, mapW = Math.min(W * 0.48, 460), mx = 12, my = 12, mh = H - 24;
+        // plan-view map: travelled path coloured by mode, vehicle icon, wind arrow
+        const sx = (mapW - 40) / Math.max(1, xmax - xmin, ymax - ymin), cx = mx + 20, cy = my + mh - 20, P = (j) => [cx + (X[j] - xmin) * sx, cy - (Y[j] - ymin) * sx];
+        g.fillStyle = A.theme().bg2; g.fillRect(mx, my, mapW, mh); A.text(g, `Plan view — ${fmt(Math.max(xmax - xmin, ymax - ymin), 4)} m extent`, mx + 8, my + 16);
+        for (let j = 1; j < n; j += Math.max(1, Math.floor(n / 800))) { const [a1, b1] = P(j - 1), [a2, b2] = P(j); g.strokeStyle = j <= i ? MCOL[modeName(rec.mode[j])] : 'rgba(148,163,184,.25)'; g.lineWidth = j <= i ? 3 : 1.5; g.beginPath(); g.moveTo(a1, b1); g.lineTo(a2, b2); g.stroke(); }
+        const xi = A.lerp(X, k), yi = A.lerp(Y, k), pxv = cx + (xi - xmin) * sx, pyv = cy - (yi - ymin) * sx, psi = -(90 - rec.hdg[i]) * Math.PI / 180;
+        A.carIcon(g, pxv, pyv, psi, 1.2, rec.feath[i] ? 0 : 0.35, MCOL[modeName(rec.mode[i])]);
+        const to = (rec.dir[i] + 180) * Math.PI / 180; A.arrow(g, mx + mapW - 70, my + 60, Math.sin(to) * 3 * rec.U[i], -Math.cos(to) * 3 * rec.U[i], '#38bdf8', 3, `wind ${fmt(rec.U[i], 3)} m/s`);
+        A.text(g, `${modeName(rec.mode[i])}${rec.feath[i] ? ' · wing FEATHERED' : ''}`, mx + 8, my + 34, MCOL[modeName(rec.mode[i])], 'bold 13px Inter,system-ui,sans-serif');
+        // right side: bars + time series with sweeping cursor
+        const rx = mx + mapW + 14, rw = W - rx - 12;
+        A.bar(g, { x: rx, y: my + 4, w: rw, value: rec.Pw[i], max: Pmax, label: 'Wing power', unit: ' W', color: '#22c55e' });
+        A.bar(g, { x: rx, y: my + 22, w: rw, value: rec.Ph[i], max: Pmax, label: 'Hub power', unit: ' W', color: '#a855f7' });
+        A.bar(g, { x: rx, y: my + 40, w: rw, value: rec.Pb[i], max: Pmax, label: 'Buffer power', unit: ' W', color: '#f59e0b' });
+        A.bar(g, { x: rx, y: my + 58, w: rw, value: rec.Preq[i], max: Pmax, label: 'Required at target', unit: ' W', color: '#ef4444' });
+        A.bar(g, { x: rx, y: my + 76, w: rw, value: rec.E[i], max: Emax, label: 'Buffer energy', unit: ' kJ', color: '#eab308' });
+        const ph = (H - 120) / 2 - 6;
+        A.seriesPanel(g, { x: rx, y: my + 100, w: rw, h: ph, T: rec.t, t, title: 'Speed & wind', series: [{ name: 'speed km/h', y: rec.v, color: '#38bdf8' }, { name: 'wind at wing m/s', y: rec.U, color: '#94a3b8' }], hlines: [{ y: p.speed, label: 'target', color: '#22c55e' }] });
+        A.seriesPanel(g, { x: rx, y: my + 106 + ph, w: rw, h: ph, T: rec.t, t, title: 'Forces', unit: 'N', series: [{ name: 'wing thrust used', y: rec.Fw, color: '#22c55e' }, { name: 'hub', y: rec.Fh, color: '#a855f7' }, { name: 'buffer', y: rec.Fb, color: '#f59e0b' }, { name: 'resistance', y: rec.Fres, color: '#ef4444' }] });
+      }, explain: 'Plan view of the solved journey (path coloured by operating mode, grey = still to come), with the solved true-wind vector, live power bars and two time-series panels whose cursor sweeps with the playback. All quantities are Suite 20 solver outputs.' });
+    } });
     // recs
     if (gap > 0 && hubAvail(S.day ?? true) < gap) out.recs.push({ level: 'critical', text: `At ${p.speed} km/h the wind leaves a ${fmt(gap, 3)} W gap and the backup supplies ${fmt(hubAvail(S.day ?? true), 3)} W (${fmt(closure * 100, 3)} % closure). Either reduce demand (lower speed, mass or C_rr), plan journeys in wind windows, or demonstrate a hub delivering ≥ ${fmt(gap, 3)} W from measured heat flow.`, basis: 'Power-gap closure P_backup ≥ P_required − P_wind' });
     if (Ebuf0 > 0) out.recs.push({ level: 'info', text: `The ${fmt(Ebuf0 / 1000, 3)} kJ buffer bridges ≈ ${fmt(Ebuf0 * p.etaBuf / Math.max(1, Preq), 3)} s at ${p.speed} km/h (${fmt(Preq, 3)} W). It smooths gaps but cannot sustain travel; a full hour at 150 W would need 540 kJ plus losses.`, basis: 'Finite storage E = P·t' });
@@ -247,6 +325,7 @@ export default {
     if (maxSideRatio > 0.5) out.recs.push({ level: 'critical', text: `Wing side force reaches ${fmt(maxSideRatio * 100, 3)} % of total grip. Depower the wing in gusts; verify rollover in Suite 11.`, basis: 'Side force / μmg' });
     out.recs.push({ level: 'sustain', text: 'Wind-primary operation has near-zero operating emissions; the dominant footprint is embodied (composites, titanium, NiTi). Prioritise durability and repairability — a short-lived lightweight part can lose its advantage over a heavier long-lived one (Suite 26).', basis: 'Specification: durability integrated into sustainability' });
     out.explain.push({ title: 'What “success” means', text: 'A journey succeeds only if the speed history — computed from forces — achieves the requirement. If environmental and stored energy are insufficient, the simulation slows and stops; the worst-case energy test exists precisely to prove that the software never animates a powered journey without an energy source.' });
+    out.explain.push({ title: 'Lifting body', text: BF ? `Body aerodynamics from Suite 07 (net body thrust incl. drag and side-force coefficient vs apparent-wind angle, acting at ${fmt(BF.hCE_m ?? 0.6, 3)} m); wing thrust × endplate factor ${fmt(epf, 3)}; the wing side-force cap is reduced by the body's rollover moment.` : 'Suite 07 has not published body forces yet: the body is treated as a drag area C_dA with no side force.' });
     out.explain.push({ title: 'Couplings used', text: `Wind: ${isLiveDN || (p.useLive && s05) ? 'Suite 05 live record' : 'scenario definition'}; thrust model: ${s07?.thrustVsAWA ? 'Suite 07 thrust table' : 'trimmed lift/drag polar'}; hub: ${hubProv}; buffer: ${ctx.upstream('s18') ? 'Suite 18' : 'parameter'}; switching thresholds: ${ctx.upstream('s19') ? 'Suite 19' : 'parameter'}; route: ${RT ? `imported (${fmt(RT.length / 1000, 3)} km, ${RT.segs.length} segments)` : 'flat straight'}.` });
     out.outputs = { sustainableSpeed_kmh: vAll * 3.6, sustainableSpeedWind_kmh: vWind * 3.6, range_km: dist / 1000, energyDeficit_J: energyDeficit, journeySuccess: success, sourceShares: shares, powerGap_W: gap, closure, Preq_W: Preq, scenario: p.scenario, ledger: { ...L, resid } };
     out.headline = `${S.label}: ${S.worst ? (success ? 'vehicle coasts to rest — no powered motion without energy.' : 'INCONSISTENT') : success ? 'SUCCESS' : 'FAILURE'} · ${fmt(dist / 1000, 3)} km, mean ${fmt(meanV * 3.6, 3)} km/h · gap ${fmt(gap, 3)} W, closure ${fmt(closure * 100, 3)} %.`;

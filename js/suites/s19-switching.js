@@ -2,6 +2,7 @@
 import { fmt, range, linspace, rng, max, min, mean, interp1, rad } from '../core/num.js';
 import { kmh, roadLoad, apparentWind, wingForces, kaimal, oneMinusCos } from '../core/physics.js';
 import { simulateSwitching, MODES } from '../core/vehicle.js';
+import { h } from '../core/ui.js';
 
 const FAULTS = { none: 'No fault', jammed: 'Jammed coupling (never engages)', flexure: 'Failed flexure (thresholds drift to 40 %)', weak: 'Insufficient backup power (5 W)', brakeGust: 'Gust during braking (interlock check)' };
 
@@ -31,7 +32,8 @@ export default {
     { key: 'delay', label: 'Mechanical engagement delay', unit: 's', type: 'number', min: 0, max: 5, step: 0.05, group: 'Switch design', default: 0.5 },
     { key: 'interlock', label: 'Brake interlock (brake ⇒ backup disengaged)', type: 'bool', group: 'Switch design', default: true },
     { key: 'Pbackup', label: 'Backup hub power available', unit: 'W', type: 'number', min: 0, max: 2000, step: 1, group: 'Backup', default: 0, auto: (c) => { const o = c.upstream('s17'); return o?.Pwheel_W !== undefined ? { value: +Math.max(0, o.Pwheel_W).toFixed(2), prov: 'coupled' } : { value: 0, prov: 'unsupported' }; }, help: 'Zero unless Suite 17 has demonstrated positive continuous hub power.' },
-    { key: 'Ebuf', label: 'Buffer usable energy', unit: 'kJ', type: 'number', min: 0, max: 600, step: 1, group: 'Backup', default: 30, auto: (c) => { const o = c.upstream('s18'); return o?.Euse_J !== undefined ? { value: +(o.Euse_J / 1000).toFixed(2), prov: 'coupled' } : undefined; } },
+    { key: 'reefU', label: 'Reef threshold (wind)', unit: 'm/s', type: 'number', min: 2, max: 20, step: 0.5, group: 'Wind', default: 7 },
+    { key: 'Ebuf', label: 'Buffer usable energy', unit: 'kJ', type: 'number', min: 0, max: 600, step: 1, group: 'Backup', default: 10, auto: (c) => { const o = c.upstream('s18'); return o?.Euse_J !== undefined ? { value: +(o.Euse_J / 1000).toFixed(2), prov: 'coupled' } : undefined; } },
     { key: 'fault', label: 'Fault scenario', type: 'select', group: 'Faults', default: 'none', options: Object.entries(FAULTS).map(([value, label]) => ({ value, label })) },
     { key: 'seed', label: 'Random seed', type: 'number', min: 1, max: 99999, step: 1, group: 'Inflow', default: 7, expert: true },
   ],
@@ -52,7 +54,21 @@ export default {
     }
     const s07 = ctx.upstream('s07');
     const thrustOf = (U) => { const aw = apparentWind(U, p.twa, 0, v); if (s07?.thrustVsAWA?.awa?.length && s07.Va) { const T0 = interp1(s07.thrustVsAWA.awa, s07.thrustVsAWA.thrust, Math.abs(aw.beta)); return { Fx: T0 * (aw.Va / s07.Va) ** 2, total: NaN, beta: aw.beta, Va: aw.Va }; } const wf = wingForces(aw.Va, aw.beta, p.CL, p.CD, veh.wingArea, rho); return { Fx: wf.thrust, total: Math.hypot(wf.L, wf.D), beta: aw.beta, Va: aw.Va }; };
-    const TH = Uw.map(thrustOf), thrust = TH.map(x => x.Fx), totalLoad = TH.map(x => Number.isFinite(x.total) ? x.total : Math.abs(x.Fx) * 2.2);
+    const TH = Uw.map(thrustOf), thrustRaw = TH.map(x => x.Fx).slice(), totalLoad = TH.map(x => Number.isFinite(x.total) ? x.total : Math.abs(x.Fx) * 2.2);
+    // Revision 2 wing-root state machine: LOCKED → (side force > breakaway) → FEATHERED → (side force < 0.6 × breakaway for ≥ 3 s) → re-latched
+    const a01 = ctx.upstream('s01'), featherRoot = (a01?.wingRoot ?? 'feathering') === 'feathering', FySafe = a01?.FySafe_N ?? 600;
+    const sideRaw = TH.map((x, i) => Number.isFinite(x.total) ? Math.sqrt(Math.max(0, x.total ** 2 - x.Fx ** 2)) : Math.abs(totalLoad[i]) * 0.9);
+    const wingState = [], thrust = [], reefState = []; let feath = false, calm = 0, featherEvents = 0, reefOn = false, reefEvents = 0;
+    const spanD = veh.wingHeight, spanR = Math.min(spanD, veh.wingReefSpan ?? spanD), reefable = spanR < spanD - 1e-6, af = spanR / spanD, reefU = p.reefU ?? 7;
+    for (let i = 0; i < t.length; i++) {
+      // Revision 2.2: reef/deploy state with hysteresis (reef above reefU, deploy below reefU − 1.5 m/s)
+      if (reefable) { const want = reefOn ? Uw[i] > reefU - 1.5 : Uw[i] > reefU; if (want !== reefOn) { reefOn = want; reefEvents++; } }
+      reefState.push(reefOn ? 'REEFED' : 'DEPLOYED'); const sc = reefOn ? af : 1; thrustRaw[i] *= sc; sideRaw[i] *= sc;
+      if (featherRoot) { if (!feath && sideRaw[i] > FySafe) { feath = true; featherEvents++; calm = 0; } else if (feath) { const Uh = Uw[i], Fl = sideRaw[i]; calm = Fl < 0.6 * FySafe ? calm + dt : 0; if (calm >= 3) feath = false; void Uh; } }
+      wingState.push(feath ? 'FEATHERED' : 'LOCKED');
+      thrust.push(feath ? -0.5 * rho * apparentWind(Uw[i], p.twa, 0, v).Va ** 2 * veh.wingArea * 0.02 * 0.5 : thrustRaw[i]);
+    }
+    const side = sideRaw.map((f, i) => wingState[i] === 'FEATHERED' ? 0.5 * rho * Uw[i] ** 2 * veh.wingArea * 0.02 : f);
     const engage = p.engageFrac * need, disengage = Math.max(p.disengageFrac, p.engageFrac) * need, wn = Math.sqrt(p.kSens * 1000 / p.mSens);
     const brakeWin = (tt) => tt >= 200 && tt <= 230;
     const fault = p.fault, Pb = fault === 'weak' ? 5 : p.Pbackup;
@@ -73,6 +89,8 @@ export default {
     out.checks.push({ name: 'Sensor natural frequency vs gust band', value: wn / (2 * Math.PI), target: '> 1 Hz recommended', pass: wn / (2 * Math.PI) > 1, detail: 'A slow sensor filters turbulence but delays response.' });
     const k = (label, value, unit, explain, prov = 'calc', status) => out.kpis.push({ label, value, unit, explain, prov, status });
     k('Required forward force', need, 'N', `Road load at ${p.speed} km/h (rolling + drag).`);
+    if (reefable) k('Reef / deploy changes', reefEvents, '', `Reefed (area ×${fmt(af, 3)}) above ${reefU} m/s wind, deployed below ${fmt(reefU - 1.5, 3)} m/s.`, 'calc');
+    if (featherRoot) k('Wing feathering events', featherEvents, '', `Breakaway at ${fmt(FySafe, 4)} N side force (Suite 01); while feathered the wing gives only drag and the automaton treats thrust as lost; it re-latches after 3 s below 60 % of breakaway.`, 'calc', featherEvents ? 'warn' : 'ok');
     k('Engage threshold', engage, 'N', 'Forward thrust below which the backup is requested.', 'user');
     k('Disengage threshold', disengage, 'N', 'Forward thrust above which the wing resumes sole propulsion.', 'user');
     k('Hysteresis band in sensor travel', (disengage - engage) / (p.kSens * 1000) * 1000, 'mm', 'Mechanical displacement window the passive element must resolve.', 'calc', (disengage - engage) / p.kSens > 0.2 ? 'ok' : 'warn');
@@ -100,6 +118,41 @@ export default {
     out.recs.push({ level: 'critical', text: 'Make the brake pedal mechanically disengage the hub coupling and unload the wing (interlock); test jamming and failed-flexure cases on a bench rig before vehicle integration.', basis: 'Fault scenarios of this suite; specification Module 19 validation' });
     out.recs.push({ level: 'good', text: 'Prototype the threshold element as a preloaded bistable flexure sensing wing-root forward force; measure engage/disengage thresholds and hysteresis and import them here.', basis: 'Specification calibration datasets for Module 19' });
     out.explain.push({ title: 'Why thrust, not load', text: 'In a crosswind the wing may carry a large total load while delivering little forward force. A switch that senses total load would believe propulsion is fine and never request the backup. The model therefore resolves the aerodynamic force into the vehicle’s forward axis before applying thresholds.' });
+    // 3D dynamic switching playback (solved hybrid-automaton history)
+    {
+      const MC = { WIND: '#22c55e', BACKUP: '#a855f7', ASSIST: '#84cc16', BUFFER: '#f59e0b', DECEL: '#ef4444', BRAKE: '#ef4444', COAST: '#94a3b8' };
+      out.views.push({ label: '3D switching simulation', icon: '🔀', render: async (el) => {
+        const { drivingSim } = await import('../core/sim3d-drive.js');
+        const mats = Object.fromEntries(Object.keys(ctx.materials.COMPONENTS).map(k2 => [k2, ctx.material(k2)]));
+        await drivingSim(el, { vehicle: veh, materials: mats, wingIncidence: 12 }, {
+          t, v: t.map(() => v), hdg: 90, U: Uw, dirFrom: 90 + p.twa, thrust, side, hub: S.hubForce, drag: t.map(() => need),
+          hud: (i) => [['Time', fmt(t[i], 4) + ' s'], ['Mode', S.modes[i], MC[S.modes[i]] || '#e5e7eb'], ['Wing root', wingState[i], wingState[i] === 'FEATHERED' ? '#f59e0b' : undefined], ['Wing span', reefState[i], reefState[i] === 'REEFED' ? '#38bdf8' : undefined], ['True wind', fmt(Uw[i], 3) + ' m/s'], ['Forward wing thrust', fmt(thrust[i], 4) + ' N'], ['Sensed thrust (filtered)', fmt(S.sensed[i], 4) + ' N'], ['Engage below', fmt(engage, 4) + ' N'], ['Disengage above', fmt(disengage, 4) + ' N'], ['Hub/buffer force', fmt(S.hubForce[i], 4) + ' N', S.hubForce[i] > 0 ? '#a855f7' : undefined], ['Required force', fmt(need, 4) + ' N']],
+        }, { explain: `Solved: wind record (${p.profile}), forward wing thrust from the apparent-wind model${s07?.thrustVsAWA ? ' (Suite 07 table)' : ''}, the mechanical sensor's filtered response, the hysteretic engage/disengage automaton and the hub/buffer force at every ${dt} s step. The car is held at the target speed (switching study, not a journey). Green arrow = wing thrust, purple = backup force, orange = required road force, red = wing side force, blue = true wind. A digital automaton is not proof that the passive mechanism exists.` });
+      } });
+    }
+    out.views.push({ label: '2D animation: state machine & thresholds', icon: '🔀', render: async (el) => {
+      const A = await import('../core/anim2d.js');
+      const MC = { WIND: '#22c55e', ASSIST: '#84cc16', BACKUP: '#a855f7', BUFFER: '#f59e0b', DECEL: '#ef4444', BRAKING: '#ef4444', PARKED: '#64748b' };
+      const nodes = ['WIND', 'ASSIST', 'BACKUP', 'BUFFER', 'DECEL'];
+      const Fmax = Math.max(disengage * 1.6, ...S.sensed.filter(Number.isFinite)) || 1;
+      A.anim2d(el, { duration: t[t.length - 1], rate: 16, height: 460, label: 'Time', unit: 's', draw: (g, tt, W, H) => {
+        const k = A.at(t, tt), i = k.i, cur = S.modes[i];
+        // state diagram
+        const R0 = Math.min(W * 0.14, 110, (H - 120) / 2), cx = 20 + R0 + 30, cy = 44 + R0;
+        nodes.forEach((nm, j) => { const a = -Math.PI / 2 + j * 2 * Math.PI / nodes.length, x = cx + R0 * Math.cos(a), y = cy + R0 * Math.sin(a), on = nm === cur; g.fillStyle = on ? MC[nm] : A.theme().bg2; g.strokeStyle = MC[nm]; g.lineWidth = on ? 3 : 1.5; g.beginPath(); g.arc(x, y, on ? 30 : 24, 0, 7); g.fill(); g.stroke(); g.lineWidth = 1; A.text(g, nm, x - g.measureText(nm).width / 2, y + 4, on ? '#0b1020' : A.theme().fg, 'bold 11px Inter,system-ui,sans-serif'); });
+        A.text(g, `Wing span: ${reefState[i]}`, 20, cy + R0 + 72, reefState[i] === 'REEFED' ? '#38bdf8' : '#22c55e', 'bold 13px Inter,system-ui,sans-serif');
+        A.text(g, `Wing root: ${wingState[i]}`, 20, cy + R0 + 52, wingState[i] === 'FEATHERED' ? '#f59e0b' : '#22c55e', 'bold 13px Inter,system-ui,sans-serif');
+        // threshold gauge (vertical)
+        const gx = cx + R0 + 60, gy = 24, gh = 2 * R0 + 40, Y = (F) => gy + gh - Math.max(0, Math.min(1, F / Fmax)) * gh;
+        g.fillStyle = A.theme().bg2; g.fillRect(gx, gy, 40, gh); const fs = S.sensed[i]; g.fillStyle = fs >= disengage ? '#22c55e' : fs <= engage ? '#a855f7' : '#eab308'; g.fillRect(gx, Y(fs), 40, gy + gh - Y(fs));
+        for (const [F, lab, c] of [[engage, 'engage', '#a855f7'], [disengage, 'disengage', '#22c55e'], [need, 'required', '#ef4444']]) { g.strokeStyle = c; g.setLineDash([4, 3]); g.beginPath(); g.moveTo(gx - 6, Y(F)); g.lineTo(gx + 46, Y(F)); g.stroke(); g.setLineDash([]); A.text(g, `${lab} ${fmt(F, 3)} N`, gx + 50, Y(F) + 4, c); }
+        A.text(g, `sensed thrust ${fmt(fs, 4)} N`, gx - 10, gy + gh + 16);
+        // time series
+        const sx = gx + 150, sw = W - sx - 12;
+        A.seriesPanel(g, { x: sx, y: 14, w: sw, h: (H - 40) / 2, T: t, t: tt, title: 'Wind & forward thrust', series: [{ name: 'true wind m/s', y: Uw, color: '#38bdf8' }, { name: 'thrust N', y: thrust, color: '#22c55e' }, { name: 'sensed N', y: S.sensed, color: '#eab308' }], hlines: [{ y: engage, label: 'engage', color: '#a855f7' }, { y: disengage, label: 'disengage', color: '#22c55e' }] });
+        A.seriesPanel(g, { x: sx, y: 22 + (H - 40) / 2, w: sw, h: (H - 40) / 2, T: t, t: tt, title: 'Backup (hub/buffer) force', unit: 'N', series: [{ name: 'hub/buffer', y: S.hubForce, color: '#a855f7' }, { name: 'wing side force', y: side, color: '#ef4444' }] });
+      }, explain: 'The solved hybrid automaton: the active mode lights up as the filtered (sensed) forward thrust crosses the separate engage/disengage thresholds; the wing-root lock state (locked / feathered at the breakaway side force) is shown below. Time series panels sweep with the playback.' });
+    } });
     out.outputs = { switchCount: S.switches, chatter: S.chatter, engageN: engage, disengageN: disengage, safe: !unsafe && S.chatter === 0, deficitTime_s: deficitTime, requiredForce_N: need };
     out.headline = `${S.switches} transitions, ${S.chatter} chatter events in 10 min; ${fmt(deficitTime, 3)} s with insufficient propulsion. ${unsafe ? 'UNSAFE engagement during braking.' : ''}`;
     out.headlineKind = unsafe || S.chatter > 0 ? 'warn' : 'info';

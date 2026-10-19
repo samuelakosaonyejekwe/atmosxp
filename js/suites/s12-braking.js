@@ -1,9 +1,10 @@
 // Suite 12 — Mechanical braking, stopping & parking stability.
 import { G0, fmt, linspace, range, sum, max, clamp } from '../core/num.js';
+import { h } from '../core/ui.js';
 import { kmh } from '../core/physics.js';
 import { ROADS, wheelLayout, threeWheelLoads, discStep, brakeConvH } from '../core/vehicle.js';
 
-const UNLOAD = { feathered: { label: 'Wing feathered / unloaded (10 % residual)', f: 0.1 }, partial: { label: 'Partially unloaded (50 %)', f: 0.5 }, stuck: { label: 'Wing fails to unload (100 %)', f: 1.0 } };
+const UNLOAD = { release: { label: 'Feathering release linked to brake pedal (Revision 2: C_L ≈ 0, residual ≈ 0)', f: 0.0 }, feathered: { label: 'Wing feathered / unloaded (10 % residual)', f: 0.1 }, partial: { label: 'Partially unloaded (50 %)', f: 0.5 }, stuck: { label: 'Wing fails to unload (100 %)', f: 1.0 } };
 const FAIL = { none: 'No fault', front: 'Front circuit failed', rear: 'Rear circuit failed', lock: 'No modulation (wheels may lock)' };
 
 export default {
@@ -21,7 +22,7 @@ export default {
     { key: 'road', label: 'Road surface', type: 'select', group: 'Stop', default: 'dry asphalt', options: Object.keys(ROADS), auto: (c) => c.upstream('s10')?.road },
     { key: 'slope', label: 'Road gradient (downhill +)', unit: '%', type: 'number', min: -20, max: 20, step: 0.5, group: 'Stop', default: 0 },
     { key: 'thrust', label: 'Wing forward thrust at brake onset', unit: 'N', type: 'number', min: 0, max: 2000, step: 5, group: 'Wing', default: 50, auto: (c) => { const o = c.upstream('s07') || c.upstream('s06'); return o?.thrustN !== undefined ? { value: +Math.max(0, o.thrustN).toFixed(1), prov: 'coupled' } : undefined; } },
-    { key: 'unload', label: 'Wing unloading state', type: 'select', group: 'Wing', default: 'feathered', options: Object.entries(UNLOAD).map(([value, o]) => ({ value, label: o.label })) },
+    { key: 'unload', label: 'Wing unloading state', type: 'select', group: 'Wing', default: 'release', auto: (c) => ({ value: (c.upstream('s01')?.wingRoot ?? 'feathering') === 'feathering' ? 'release' : 'feathered', prov: 'coupled' }), options: Object.entries(UNLOAD).map(([value, o]) => ({ value, label: o.label })) },
     { key: 'fault', label: 'Fault case', type: 'select', group: 'Faults', default: 'none', options: Object.entries(FAIL).map(([value, label]) => ({ value, label })) },
     { key: 'pedal', label: 'Pedal force', unit: 'N', type: 'number', min: 50, max: 800, step: 10, group: 'Actuation', default: 250 },
     { key: 'pedalRatio', label: 'Pedal lever ratio', type: 'number', min: 2, max: 8, step: 0.1, group: 'Actuation', default: 4 },
@@ -49,7 +50,7 @@ export default {
     const clamp0 = p.pedal * p.pedalRatio * p.areaRatio * p.eff;
     // one stop simulation
     const stop = ({ v0 = kmh(p.v0), road = p.road, unloadF = UNLOAD[p.unload].f, fault = p.fault, muPad = muPad0, thrust = p.thrust, record = true } = {}) => {
-      const R_ = ROADS[road]; let v = v0, x = 0, t = 0, Ework = 0, Eloss = 0, Ethr = 0, Egr = 0; const dt = 0.005, T = [], Vs = [], A = [], X = []; let locked = new Array(3).fill(false), a = 0, cannotStop = false;
+      const R_ = ROADS[road]; let v = v0, x = 0, t = 0, Ework = 0, Eloss = 0, Ethr = 0, Egr = 0; const dt = 0.005, T = [], Vs = [], A = [], X = [], LK = [], FB = []; let locked = new Array(3).fill(false), a = 0, cannotStop = false;
       const tOn = p.reaction + 0.2; const Fth = thrust * unloadF;
       const wheelForce = new Array(3).fill(0);
       while (v > 0 && t < 120) {
@@ -73,10 +74,10 @@ export default {
         Ework += sum(Fb) * vm * dt; Eloss += (m * G0 * Math.cos(th) * veh.Crr + 0.5 * rho * veh.CdA * vm * vm) * vm * dt; Ethr += Fth * vm * dt; Egr += m * G0 * Math.sin(th) * vm * dt;
         Fb.forEach((f, i) => wheelForce[i] += f * vm * dt);
         x += vm * dt; t += dt; v = vn;
-        if (record && Math.round(t / dt) % 10 === 0) { T.push(t); Vs.push(v * 3.6); A.push(a); X.push(x); }
+        if (record && Math.round(t / dt) % 10 === 0) { T.push(t); Vs.push(v * 3.6); A.push(a); X.push(x); LK.push(locked.slice()); FB.push(braking ? Fb.slice() : [0, 0, 0]); }
         if (cannotStop && t > tOn + 30) break;
       }
-      return { dist: x, time: t, aMean: v0 / Math.max(1e-6, t - tOn), aMax: a, Ework, Eloss, Ethr, Egr, wheelEnergy: wheelForce, locked: locked.slice(), T, Vs, A, X, cannotStop: cannotStop || v > 0.01, KE: 0.5 * mEff * v0 * v0 };
+      return { dist: x, time: t, aMean: v0 / Math.max(1e-6, t - tOn), aMax: a, Ework, Eloss, Ethr, Egr, wheelEnergy: wheelForce, locked: locked.slice(), T, Vs, A, X, LK, FB, Fth, cannotStop: cannotStop || v > 0.01, KE: 0.5 * mEff * v0 * v0 };
     };
     const base = stop();
     // energy closure: KE + thrust work + gravity work = brake work + losses
@@ -84,7 +85,7 @@ export default {
     out.checks.push({ name: 'Energy closure of the stop', value: closure, target: '|residual| < 0.5 % of KE', pass: base.cannotStop ? undefined : Math.abs(closure) < 0.005, detail: 'KE₀ + thrust work + gravity work − brake work − rolling/aero losses' });
     const an = stop({ unloadF: 0, record: false }); const aAvg = kmh(p.v0) ** 2 / (2 * Math.max(1e-6, an.dist - kmh(p.v0) * (p.reaction + 0.2))); out.checks.push({ name: 'Braking-phase distance ≈ v²/(2ā) (zero thrust)', value: an.dist - kmh(p.v0) * (p.reaction + 0.2), target: fmt(kmh(p.v0) ** 2 / (2 * aAvg), 4) + ' m', pass: true, detail: 'Consistency of integration with mean deceleration' });
     // scenario table
-    const cases = [['Nominal (dry, feathered)', { road: 'dry asphalt', unloadF: 0.1, fault: 'none' }], ['Wet road', { road: 'wet asphalt', unloadF: 0.1, fault: 'none' }], ['Wing fails to unload', { road: 'dry asphalt', unloadF: 1, fault: 'none' }], ['Wet + wing stuck', { road: 'wet asphalt', unloadF: 1, fault: 'none' }], ['Front circuit failed', { road: 'dry asphalt', unloadF: 0.1, fault: 'front' }], ['Rear circuit failed', { road: 'dry asphalt', unloadF: 0.1, fault: 'rear' }], ['No modulation, wet (lock)', { road: 'wet asphalt', unloadF: 0.1, fault: 'lock' }], ['Ice', { road: 'ice', unloadF: 0.1, fault: 'none' }]];
+    const cases = [['Nominal (dry, ' + (UNLOAD[p.unload]?.label.split(' (')[0] || 'feathered') + ')', { road: 'dry asphalt', unloadF: UNLOAD[p.unload].f, fault: 'none' }], ['Wet road', { road: 'wet asphalt', unloadF: UNLOAD[p.unload].f, fault: 'none' }], ['Wing fails to unload', { road: 'dry asphalt', unloadF: 1, fault: 'none' }], ['Wing fails to unload, wings reefed', { road: 'dry asphalt', unloadF: Math.min(1, (veh.wingReefSpan ?? veh.wingHeight) / veh.wingHeight), fault: 'none' }], ['Wet + wing stuck', { road: 'wet asphalt', unloadF: 1, fault: 'none' }], ['Front circuit failed', { road: 'dry asphalt', unloadF: 0.1, fault: 'front' }], ['Rear circuit failed', { road: 'dry asphalt', unloadF: 0.1, fault: 'rear' }], ['No modulation, wet (lock)', { road: 'wet asphalt', unloadF: 0.1, fault: 'lock' }], ['Ice', { road: 'ice', unloadF: 0.1, fault: 'none' }]];
     const caseRes = cases.map(([n, o]) => [n, stop({ ...o, record: false })]);
     // repeated stops fade
     const Ta = (ctx.env?.T ?? 20) + 273.15; let Td = Ta, mu = muPad0; const tt = [], TT = [], distPerStop = [], muSeries = [];
@@ -116,8 +117,8 @@ export default {
     k('Parking holding capacity', Fhold, 'N', 'Lower of lever-generated torque and tyre static grip on the braked wheels.', 'calc', parkOK ? 'ok' : 'bad');
     // verdicts
     out.verdicts.push({ test: 'Vehicle can be stopped with wing as configured', status: base.cannotStop ? 'fail' : 'pass', detail: base.cannotStop ? 'Brake capacity cannot overcome residual wing thrust and gravity.' : `Stops in ${fmt(base.dist, 4)} m (${fmt(base.time, 3)} s).`, fix: 'Increase brake capacity and, above all, provide a reliable mechanical wing-unloading device that acts with the brake pedal.' });
-    const stuck = caseRes[2][1]; out.verdicts.push({ test: 'Stop with wing failing to unload', status: stuck.cannotStop ? 'fail' : stuck.dist < 1.5 * caseRes[0][1].dist ? 'pass' : 'warn', detail: stuck.cannotStop ? 'Cannot stop.' : `${fmt(stuck.dist, 4)} m vs ${fmt(caseRes[0][1].dist, 4)} m nominal.` });
-    const fc = caseRes[4][1]; out.verdicts.push({ test: 'Single-circuit failure (front)', status: fc.cannotStop ? 'fail' : fc.aMean >= 2.2 ? 'pass' : 'warn', detail: `Residual deceleration ${fmt(fc.aMean, 3)} m/s² (secondary-brake benchmark ≈ 2.2–2.9 m/s²).` });
+    const stuck = caseRes[2][1], stuckR = (caseRes.find(c => /reefed/.test(c[0])) || caseRes[2])[1]; out.verdicts.push({ test: 'Stop with wing failing to unload (deployed and reefed)', status: stuck.cannotStop ? 'fail' : stuck.dist < 1.5 * caseRes[0][1].dist ? 'pass' : 'warn', detail: stuck.cannotStop ? 'Cannot stop with the deployed wing stuck.' : `${fmt(stuck.dist, 4)} m deployed, ${stuckR.cannotStop ? 'cannot stop' : fmt(stuckR.dist, 4) + ' m'} reefed, vs ${fmt(caseRes[0][1].dist, 4)} m nominal.` });
+    const fc = (caseRes.find(c => /^Front/i.test(c[0])) || caseRes[caseRes.length - 1])[1]; out.verdicts.push({ test: 'Single-circuit failure (front)', status: fc.cannotStop ? 'fail' : fc.aMean >= 2.2 ? 'pass' : 'warn', detail: `Residual deceleration ${fmt(fc.aMean, 3)} m/s² (secondary-brake benchmark ≈ 2.2–2.9 m/s²).` });
     out.verdicts.push({ test: 'Brake fade', status: fadeRisk === 'low' ? 'pass' : fadeRisk === 'moderate' ? 'warn' : 'fail', detail: `Peak ${fmt(Tmax, 4)} °C; last-stop distance ${fmt(distPerStop[distPerStop.length - 1], 4)} m vs first ${fmt(distPerStop[0], 4)} m.`, fix: 'Thicker/vented discs, higher-temperature pads (sintered), longer intervals or lower descent speed.' });
     out.verdicts.push({ test: 'Parking on slope with gust', status: parkOK ? 'pass' : 'fail', detail: `Capacity ${fmt(Fhold, 4)} N vs demand ${fmt(Fslope + Fwind, 4)} N.`, fix: 'Apply the parking brake to all wheels, increase lever ratio, and always park with the wing secured in its unloaded position.' });
     // charts
@@ -137,6 +138,57 @@ export default {
     out.recs.push({ level: 'sustain', text: `Pad wear particles are a major non-exhaust emission; ${pad.name} — consider low-wear sintered or carbon–ceramic options where fade margins require it, and specify copper-free friction materials.`, basis: 'Materials registry (pad family) and non-exhaust emission practice' });
     out.recs.push({ level: 'good', text: 'Verify on a brake dynamometer (μ vs temperature) and on track with deceleration logging; import the data in “Import experimental data” to calibrate pad μ and convection.', basis: 'Specification calibration datasets for Module 12' });
     out.explain.push({ title: 'Why braking is different here', text: 'A wind car can still be pushed by its wing while the driver brakes. The stop must therefore be analysed with the residual aerodynamic thrust, and the most important safety feature is a dependable way of unloading the wing.' });
+    const build2 = (label, o) => { const r = stop({ ...o, record: true }); if (!r.T.length) return null; const t = [0, ...r.T], v = [kmh(p.v0), ...r.Vs.map(x => x / 3.6)], x = [0, ...r.X], A = [0, ...r.A], LK = [[], ...r.LK]; const Ta0 = (ctx.env?.T ?? 20) + 273.15; let Td = Ta0; const disc_ = ctx.material('brake'); const discT = [Ta0 - 273.15]; for (let i = 0; i < r.T.length; i++) { const dtt = i ? r.T[i] - r.T[i - 1] : r.T[0]; Td = discStep(Td, (r.FB[i]?.[frontIdx] || 0) * (r.Vs[i] / 3.6) * 0.9, dtt, { m: mDisc, c: disc_.cp, A: Adisc, h: brakeConvH(r.Vs[i] / 3.6, 2 * ro), Ta: Ta0 }); discT.push(Td - 273.15); } return { label, r, t, v, x, A, LK, disc: discT }; };
+    // 3D dynamic emergency-stop playback (solved stop histories)
+    {
+      const kT = ctx.upstream('s10')?.radialStiffness_N_m ?? 150000, Ta0 = (ctx.env?.T ?? 20) + 273.15;
+      const build = (label, o) => {
+        const r = stop({ ...o, record: true }); const n = r.T.length; if (!n) return null;
+        const vlead = kmh(p.v0), lead = 2; // 2 s of steady approach before the event for context
+        const t = [0, ...r.T.map(x => x + lead)], v = [vlead, ...r.Vs.map(x => x / 3.6)], x = [-vlead * lead, ...r.X];
+        let Td = Ta0; const disc = [Ta0 - 273.15];
+        for (let i = 0; i < n; i++) { const dtt = i ? r.T[i] - r.T[i - 1] : r.T[0]; const q = (r.FB[i]?.[frontIdx] || 0) * (r.Vs[i] / 3.6) * 0.9; Td = discStep(Td, q, dtt, { m: mDisc, c: disc_.cp, A: Adisc, h: brakeConvH(r.Vs[i] / 3.6, 2 * ro), Ta: Ta0 }); disc.push(Td - 273.15); }
+        const loads = [threeWheelLoads(lay.pts, m * G0 * Math.cos(th), 0, [])].concat(r.A.map(a => threeWheelLoads(lay.pts, m * G0 * Math.cos(th), 0, [{ Fx: mEff * a, z: veh.cgHeight }])));
+        const fr = lay.pts.map((q, i) => i).filter(i => isFront[i]), rr = lay.pts.map((q, i) => i).filter(i => !isFront[i]);
+        const pitch = loads.map(L => -Math.atan(((sum(fr.map(i => L[i])) / fr.length - sum(rr.map(i => L[i])) / rr.length) / kT) / veh.wheelbase) * 180 / Math.PI + 0);
+        const LK = [[false, false, false], ...r.LK], FB = [[0, 0, 0], ...r.FB], A = [0, ...r.A];
+        return { label, r, track: { t, v, x, y: t.map(() => 0), hdg: 90, pitch, thrust: t.map(() => r.Fth), drag: FB.map(f => sum(f)), discTemp: disc, wheelLoad: [0, 1, 2].map(k2 => loads.map(L => L[k2])), markers: r.cannotStop ? [] : [{ x: r.dist, y: 0, len: 4, w: 0.25, color: 0xef4444 }, { x: 0, y: 0, len: 4, w: 0.12, color: 0xfacc15 }],
+          hud: (i) => [['Case', label], ['Time', fmt(t[i], 3) + ' s'], ['Speed', fmt(v[i] * 3.6, 3) + ' km/h'], ['Deceleration', fmt(A[i], 3) + ' m/s²'], ['Brake force (total)', fmt(sum(FB[i]), 4) + ' N'], ['Residual wing thrust', fmt(r.Fth, 3) + ' N', r.Fth > 50 ? '#f59e0b' : undefined], ['Wheels locked', LK[i].filter(Boolean).length ? LK[i].map((l, k2) => l ? lay.pts[k2][2] : '').filter(Boolean).join(', ') : 'none', LK[i].some(Boolean) ? '#ef4444' : '#22c55e'], ['Front disc', fmt(disc[i], 4) + ' °C'], ['Distance from brake event', fmt(Math.max(0, x[i]), 4) + ' m'], ['Stopping distance', r.cannotStop ? 'CANNOT STOP' : fmt(r.dist, 4) + ' m', r.cannotStop ? '#ef4444' : undefined]] } };
+      };
+      const disc_ = disc;
+      const stopCases = [['Nominal (as configured)', {}], ['Wing fails to unload', { unloadF: 1 }], ['Wet road + wing stuck', { road: 'wet asphalt', unloadF: 1 }], ['Front circuit failure', { fault: 'front' }], ['No modulation (lock)', { fault: 'lock' }]];
+      out.views.push({ label: '3D emergency-stop simulation', icon: '🛑', render: async (el) => {
+        const { drivingSim } = await import('../core/sim3d-drive.js');
+        const mats = Object.fromEntries(Object.keys(ctx.materials.COMPONENTS).map(k2 => [k2, ctx.material(k2)]));
+        const built = stopCases.map(([l, o]) => build(l, o)).filter(Boolean);
+        const tmax = Math.max(...built.flatMap(b => b.track.discTemp));
+        const holder = h('div'); el.append(holder);
+        const show = async (b) => { holder.innerHTML = ''; holder.append(h('div', { class: 'row gap wrap', style: 'margin-bottom:6px' }, ...built.map(bb => h('button', { class: 'chip' + (bb === b ? ' on' : ''), onclick: () => show(bb) }, '▶ ' + bb.label)))); const box = h('div'); holder.append(box);
+          await drivingSim(box, { vehicle: veh, materials: mats, wingIncidence: 12 }, b.track, { rate: 0.5, particlesOn: false, discRange: [Ta0 - 273.15, Math.max(Ta0 - 273.15 + 5, tmax)], explain: `Solved (5 ms explicit integration with per-wheel adhesion limits): speed, deceleration, per-wheel brake force and lock state, residual wing thrust (green arrow) and stopping distance (red line; yellow = brakes requested). Calculated from the solved brake power: front-disc temperature (lumped heat balance with convection and radiation, disc colour), dynamic wheel loads (load transfer) and body pitch from tyre compliance (magnified). Orange arrow = total brake force.` }); };
+        await show(built[0]);
+      } });
+    }
+    out.views.push({ label: '2D animation: stop, speed–distance & brake temperature', icon: '🛑', render: async (el) => {
+      const A = await import('../core/anim2d.js');
+      const cases2 = [['Nominal', {}], ['Wing fails to unload', { unloadF: 1 }], ['Wet road + wing stuck', { road: 'wet asphalt', unloadF: 1 }]].map(([l, o]) => build2(l, o)).filter(Boolean);
+      const tEnd = Math.max(...cases2.map(c => c.t[c.t.length - 1])), xEnd = Math.max(...cases2.map(c => c.x[c.x.length - 1]), 1), Tmax2 = Math.max(...cases2.flatMap(c => c.disc)), Tmin2 = Math.min(...cases2.flatMap(c => c.disc));
+      const COL = ['#22c55e', '#f59e0b', '#ef4444'];
+      A.anim2d(el, { duration: tEnd, rate: 0.5, height: 460, label: 'Time', unit: 's', draw: (g, t, W, H) => {
+        // road strip with three lanes (one per case)
+        const rx = 16, rw = W - 32, ry = 14, laneH = 34, X = (x) => rx + 40 + Math.max(0, x) / xEnd * (rw - 70);
+        cases2.forEach((c, ci) => { const y = ry + ci * (laneH + 6); g.fillStyle = A.theme().bg2; g.fillRect(rx, y, rw, laneH); const k = A.at(c.t, t), xx = A.lerp(c.x, k); if (!c.r.cannotStop) { g.fillStyle = COL[ci]; g.fillRect(X(c.r.dist) - 2, y, 4, laneH); } A.carIcon(g, X(xx), y + laneH / 2, 0, 1, 0, COL[ci]); const lk = c.LK[k.i] || []; A.text(g, `${c.label}: ${fmt(A.lerp(c.v, k) * 3.6, 3)} km/h${lk.some(Boolean) ? ' · LOCK ' + lk.map((l, j) => l ? lay.pts[j][2] : '').filter(Boolean).join(',') : ''}${c.r.cannotStop ? ' · CANNOT STOP' : ''}`, X(xEnd * 0.35), y + laneH / 2 + 4, COL[ci]); });
+        const gy = ry + 3 * (laneH + 6) + 6, gh = H - gy - 10, pw = (W - 32) * 0.62;
+        // speed–distance panel with moving markers
+        g.fillStyle = A.theme().bg2; g.fillRect(rx, gy, pw, gh); A.text(g, 'Speed vs distance (km/h, m)', rx + 6, gy + 14);
+        const vmax = Math.max(...cases2.map(c => c.v[0])) * 3.6, PX = (x) => rx + 30 + Math.max(0, x) / xEnd * (pw - 40), PY = (v) => gy + gh - 18 - v / vmax * (gh - 36);
+        cases2.forEach((c, ci) => { g.strokeStyle = COL[ci]; g.lineWidth = 2; g.beginPath(); c.x.forEach((xx, j) => { const a1 = PX(xx), b1 = PY(c.v[j] * 3.6); j ? g.lineTo(a1, b1) : g.moveTo(a1, b1); }); g.stroke(); const k = A.at(c.t, t); g.fillStyle = COL[ci]; g.beginPath(); g.arc(PX(A.lerp(c.x, k)), PY(A.lerp(c.v, k) * 3.6), 5, 0, 7); g.fill(); });
+        g.lineWidth = 1;
+        // gauges: front disc temperature and deceleration (nominal case)
+        const c0 = cases2[0], k0 = A.at(c0.t, t), gx = rx + pw + 16, gw = W - gx - 16;
+        A.gauge(g, { cx: gx + gw / 2, cy: gy + gh * 0.42, r: Math.min(gw / 2.4, gh / 3.2), value: A.lerp(c0.disc, k0), min: Tmin2, max: Math.max(Tmin2 + 1, Tmax2), label: 'Front disc °C (nominal)', unit: ' °C' });
+        A.gauge(g, { cx: gx + gw / 2, cy: gy + gh * 0.9, r: Math.min(gw / 2.4, gh / 3.2), value: A.lerp(c0.A, k0), min: 0, max: 10, label: 'Deceleration m/s²', unit: '', cmapName: 'viridis' });
+      }, explain: 'Three solved stops from the same speed side by side (nominal, wing failing to unload, wet road with stuck wing): vehicles move along their lanes to their solved stopping points, speed–distance curves with live markers, and the front-disc temperature from the lumped heat balance with the solved deceleration.' });
+    } });
     out.outputs = { stoppingDistance_m: base.cannotStop ? Infinity : base.dist, decel_ms2: base.aMean, brakeTempMax_C: Tmax, fadeRisk, parkingHoldOK: parkOK, cannotStopWithStuckWing: stuck.cannotStop, caseMatrix: caseRes.map(([n, r]) => ({ case: n, dist: r.cannotStop ? null : r.dist })) };
     out.headline = base.cannotStop ? `The vehicle CANNOT be stopped from ${p.v0} km/h in this configuration.` : `Stops from ${p.v0} km/h in ${fmt(base.dist, 4)} m (${fmt(base.aMean, 3)} m/s²). Fade test peak ${fmt(Tmax, 4)} °C; parking ${parkOK ? 'holds' : 'FAILS'} on ${p.parkSlope} %.`;
     out.headlineKind = base.cannotStop || !parkOK ? 'fail' : 'info';

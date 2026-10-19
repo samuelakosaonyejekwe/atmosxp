@@ -2,6 +2,7 @@
 import { G0, fmt, linspace, range, sum, max, rad, deg } from '../core/num.js';
 import { kmh, moistAir, flatPlateH } from '../core/physics.js';
 import { ROADS, mfLateral, mfLongitudinal, fiala, dugoff, crrModel, wheelLayout, threeWheelLoads } from '../core/vehicle.js';
+import { h } from '../core/ui.js';
 
 export default {
   description: 'Tyre–road force generation (Magic Formula, Fiala/brush, Dugoff combined slip, friction ellipse), rolling resistance versus speed, pressure and load, wheel-bearing friction (Palmgren) and loss power, Hertzian contact stresses, wheel rotational inertia, tyre hysteresis heating, and traction limits against the wing side force — for dry and wet roads.',
@@ -24,6 +25,7 @@ export default {
     { key: 'kKappa', label: 'Longitudinal stiffness / load', unit: '–', type: 'number', min: 6, max: 30, step: 0.5, group: 'Tyre', default: 18, expert: true },
     { key: 'Cy', label: 'Magic Formula shape C (lateral)', type: 'number', min: 1, max: 2, step: 0.05, group: 'Tyre', default: 1.3, expert: true },
     { key: 'Ey', label: 'Magic Formula curvature E (lateral)', type: 'number', min: -2, max: 1, step: 0.05, group: 'Tyre', default: -0.6, expert: true },
+    { key: 'bearingAuto', label: 'Auto-select bearing for p₀ ≤ 1.5 GPa', type: 'bool', group: 'Bearings', default: true, help: 'Searches a deep-groove ball-bearing catalogue (62xx / 63xx series) for the smallest bearing whose peak Hertz pressure at the most loaded wheel is ≤ 1.5 GPa (Revision 2, D9).' },
     { key: 'dBore', label: 'Bearing bore d', unit: 'mm', type: 'number', min: 10, max: 60, step: 1, group: 'Bearings', default: 25 },
     { key: 'dOuter', label: 'Bearing outer diameter D', unit: 'mm', type: 'number', min: 20, max: 110, step: 1, group: 'Bearings', default: 52 },
     { key: 'C0', label: 'Static load rating C₀', unit: 'kN', type: 'number', min: 2, max: 60, step: 0.1, group: 'Bearings', default: 7.8 },
@@ -55,6 +57,14 @@ export default {
     out.charts.push({ title: 'Rolling-resistance coefficient vs speed & pressure', type: 'line', x: { label: 'Speed', unit: 'km/h' }, y: { label: 'C_rr', unit: '–' }, series: [250, 350, 450, 600, 800].map(pp => ({ name: `${pp} kPa`, x: vs, y: vs.map(s => crrModel(p.Crr0, { p: pp, Fz: p.Fz, Fz0: p.Fz, v: kmh(s), road: p.road })) })), explain: 'Higher inflation pressure lowers hysteresis losses; speed adds a small quadratic rise. Every 0.001 of C_rr costs ≈ 2.9 N (≈ 16 W at 20 km/h) for a 300 kg vehicle.' });
     const crrW = loads.map(F => crrModel(p.Crr0, { p: p.pInf, Fz: F, Fz0: p.Fz, v, road: p.road })), Froll = sum(loads.map((F, i) => crrW[i] * F)), CrrEff = Froll / sum(loads);
     // bearings (two per wheel)
+    // Revision 2 (D9): automatic bearing selection for Hertz p₀ ≤ 1.5 GPa at the most loaded wheel (two bearings per wheel)
+    const BRG = [['6205', 25, 52, 9, 7.94, 7.8], ['6305', 25, 62, 7, 11.5, 11.6], ['6206', 30, 62, 9, 9.53, 11.2], ['6306', 30, 72, 8, 12.3, 16], ['6207', 35, 72, 9, 11.11, 15.3], ['6307', 35, 80, 8, 13.5, 19], ['6208', 40, 80, 9, 12.7, 19], ['6308', 40, 90, 8, 15.08, 24], ['6209', 45, 85, 10, 12.7, 21.6], ['6210', 50, 90, 10, 12.7, 23.2], ['6309', 45, 100, 8, 17.46, 31.5], ['6310', 50, 110, 8, 19.05, 38]];
+    const hertzP0 = (dBore, dOuter, Z, Dw, F) => { const dm_ = (dBore + dOuter) / 2, E_ = 208e9 / (1 - 0.09), rb = Dw / 2000, rin = (dm_ / 2 - Dw / 2) / 1000, Rx_ = 1 / (1 / rb + 1 / rin), Ry_ = 1 / (1 / rb - 1 / (0.52 * Dw / 1000)), Rp_ = 1 / (1 / Rx_ + 1 / Ry_), kE_ = 1.0339 * (Ry_ / Rx_) ** 0.636, e2 = 1.0003 + 0.5968 * Rx_ / Ry_, Qb = 5 * (F / 2) / Z, aa = Math.cbrt(6 * kE_ * kE_ * e2 * Qb * Rp_ / (Math.PI * E_)), bb = Math.cbrt(6 * e2 * Qb * Rp_ / (Math.PI * kE_ * E_)); return 3 * Qb / (2 * Math.PI * aa * bb); };
+    const Fdesign = Math.max(p.Fz, ...loads);
+    const brgTable = BRG.map(b => ({ name: b[0], d: b[1], D: b[2], Z: b[3], Dw: b[4], C0: b[5], p0: hertzP0(b[1], b[2], b[3], b[4], Fdesign) }));
+    let brgChosen = null;
+    if (p.bearingAuto) { brgChosen = brgTable.slice().sort((x, y) => x.D - y.D || x.d - y.d).find(b => b.p0 <= 1.5e9) || brgTable[brgTable.length - 1]; Object.assign(p, { dBore: brgChosen.d, dOuter: brgChosen.D, nBalls: brgChosen.Z, dBall: brgChosen.Dw, C0: brgChosen.C0, Fz: Math.max(p.Fz, Fdesign) }); }
+    out.tables.push({ title: 'Bearing selection (deep-groove ball bearings, 2 per wheel, design load ' + fmt(Fdesign, 4) + ' N)', cols: ['Bearing', 'd (mm)', 'D (mm)', 'Balls', 'Ball Ø (mm)', 'C₀ (kN)', 'p₀ (MPa)', 'Status'], rows: brgTable.map(b => [b.name + (brgChosen && b.name === brgChosen.name ? ' ◀ selected' : ''), b.d, b.D, b.Z, b.Dw, b.C0, b.p0 / 1e6, b.p0 <= 1.5e9 ? 'OK ≤ 1.5 GPa' : 'too high']), explain: 'Peak Hertz pressure on the inner-race groove at the most loaded ball (Stribeck 5F_r/Z), groove conformity 0.52. Catalogue geometry is typical of the 62xx/63xx series; confirm with the supplier datasheet.' });
     const dm = (p.dBore + p.dOuter) / 2, n = v / (2 * Math.PI * R) * 60, omega = v / R;
     const bearing = (Fr) => { const nun = p.nu * n, M0 = nun >= 2000 ? 1e-7 * p.f0 * nun ** (2 / 3) * dm ** 3 : 160e-7 * p.f0 * dm ** 3, f1 = 0.0007 * Math.sqrt(Math.min(1, Fr / (p.C0 * 1000))), M1 = f1 * Fr * dm; return { M0, M1, M: (M0 + M1) / 1000 }; };
     const bw = loads.map(F => { const b = bearing(F / 2); return { ...b, P: 2 * b.M * omega }; }), Pbear = sum(bw.map(b => b.P));
@@ -101,7 +111,7 @@ export default {
     k('Equivalent rotating mass (3 wheels)', mRotEq, 'kg', 'Σ J/R² — adds to vehicle mass during acceleration and braking.');
     // verdicts
     out.verdicts.push({ test: 'Lateral grip vs wing side force', status: latMargin > 2 ? 'pass' : latMargin > 1.2 ? 'warn' : 'fail', detail: `Capacity ${fmt(FyCap, 4)} N vs side force ${fmt(Fs, 4)} N on ${p.road}.`, fix: 'Reduce wing side force (incidence/feathering), increase normal load or choose higher-grip compound; avoid wet/ice operation in strong crosswinds.' });
-    out.verdicts.push({ test: 'Bearing contact stress', status: p0 < 1.5e9 ? 'pass' : p0 < 4.2e9 ? 'warn' : 'fail', detail: `p₀ = ${fmt(p0 / 1e6, 4)} MPa (elliptical contact, groove conformity 0.52).`, fix: 'Select a larger bearing (higher C₀) or more balls.' });
+    out.verdicts.push({ test: 'Bearing contact stress', status: p0 < 1.5e9 ? 'pass' : p0 < 4.2e9 ? 'warn' : 'fail', detail: `p₀ = ${fmt(p0 / 1e6, 4)} MPa at ${fmt(p.Fz, 4)} N wheel load (elliptical contact, groove conformity 0.52)${brgChosen ? ` — selected bearing ${brgChosen.name} (${brgChosen.d}×${brgChosen.D} mm, ${brgChosen.Z} × ${brgChosen.Dw} mm balls)` : ''}.`, fix: 'Select a larger bearing (higher C₀) or more balls.' });
     out.verdicts.push({ test: 'Rolling resistance assumption', status: CrrEff <= veh.Crr * 1.1 ? 'pass' : 'warn', detail: `Effective ${fmt(CrrEff, 3)} vs global assumption ${veh.Crr}.`, fix: 'Raise inflation pressure, use a low-hysteresis silica compound, or update the global C_rr in Suite 01 so energy results stay honest.' });
     out.verdicts.push({ test: 'Tyre thermal state', status: dT < 25 ? 'pass' : 'warn', detail: `ΔT ≈ ${fmt(dT, 3)} K at ${p.speed} km/h.` });
     // tables
@@ -113,6 +123,96 @@ export default {
     out.recs.push({ level: 'good', text: 'Measure C_rr with a coast-down (separating rolling from aerodynamic drag) on the actual route surface and import it here; it is one of the most sensitive parameters of the whole energy balance.', basis: 'Suite 25 sensitivity ranking' });
     out.recs.push({ level: 'sustain', text: 'Low-rolling-resistance silica tread and retreadable carcasses cut both energy demand and tyre-wear particle emissions; specify tyres with EU tyre-label class A rolling resistance where sizes allow.', basis: 'Rolling-resistance and life-cycle considerations' });
     out.explain.push({ title: 'Role of the tyres in a wind-driven car', text: 'In wind mode the tyres do not drive the car: they support it, react the wing’s large side force, and steer. In backup mode the driven wheels must also transmit hub torque. Grip, rolling losses and lateral capacity therefore set limits on every other suite.' });
+    // 3D dynamic rolling-tyre close-up: brush-model contact patch solved at every frame of a slip-angle sweep
+    out.views.push({ label: '3D rolling tyre & contact patch', icon: '🛞', render: async (el) => {
+      const [{ viewer }, { playback, hud, legend3d }, { cmap }] = await Promise.all([import('../core/viz3d.js'), import('../core/sim3d.js'), import('../core/chart.js')]);
+      const box = h('div'); el.append(box);
+      const V = await viewer(box, { height: 460, grid: false }); const THREE = V.THREE;
+      const rT = (p.width / 1000) / 2, Rc = R - rT, nu_ = 120, nv = 28, a = patchL / 2, Ca = p.kAlpha * p.Fz, cp = Ca / (2 * a * a), p0 = 1.5 * p.Fz / (2 * a * (p.width / 1000)) /* parabolic peak, Pa */;
+      const kRad = p.pInf * 1000 * (p.width / 1000) * 2.2, defl = p.Fz / kRad; // radial deflection from inflation stiffness
+      // brush model at slip angle al (rad): bristle deflection y(x), pressure q(x), adhesion/sliding split; x from +a (leading) to −a
+      const brush = (al) => { const ta = Math.tan(Math.abs(al)), sg = Math.sign(al) || 1, N = 60; const xs = [], ys = [], qs = []; let Fy = 0, slide = 0; for (let k = 0; k <= N; k++) { const x = a - 2 * a * k / N, q = p0 * Math.max(0, 1 - (x / a) ** 2) * (p.width / 1000), yAd = (a - x) * ta, yMax = mu * q / cp; const y = Math.min(yAd, yMax); if (yAd > yMax) slide++; xs.push(x); ys.push(sg * y); qs.push(q); Fy += cp * y * (2 * a / N) * sg; } return { xs, ys, qs, Fy, slideFrac: slide / (N + 1) }; };
+      // build tyre surface mesh (static topology; vertices updated per frame)
+      const pos = new Float32Array(nu_ * nv * 3), col = new Float32Array(nu_ * nv * 3), idx = [];
+      for (let i = 0; i < nu_; i++) for (let j = 0; j < nv; j++) { const i1 = (i + 1) % nu_, j1 = (j + 1) % nv; idx.push(i * nv + j, i1 * nv + j, i1 * nv + j1, i * nv + j, i1 * nv + j1, i * nv + j1); }
+      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.BufferAttribute(col, 3)); g.setIndex(idx);
+      const tyreMesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, side: THREE.DoubleSide })); V.root.add(tyreMesh);
+      const rimG = new THREE.Group(); V.root.add(rimG);
+      const rimMat = new THREE.MeshStandardMaterial({ color: 0xc0c6cf, metalness: 0.7, roughness: 0.3 });
+      const rimRing = new THREE.Mesh(new THREE.TorusGeometry(Rc - rT * 0.9, rT * 0.25, 12, 64), rimMat); rimRing.rotation.x = Math.PI / 2; rimG.add(rimRing);
+      for (let k2 = 0; k2 < 6; k2++) { const sp = new THREE.Mesh(new THREE.BoxGeometry(Rc * 0.85, 0.012, 0.03), rimMat); sp.position.x = Rc * 0.42; const pv = new THREE.Group(); pv.rotation.y = k2 * Math.PI / 3; pv.add(sp); rimG.add(pv); }
+      const hubC = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.07, 24), new THREE.MeshStandardMaterial({ color: 0x64748b, metalness: 0.6 })); rimG.add(hubC);
+      rimG.position.z = R; // wheel axis along y
+      const road = new THREE.Mesh(new THREE.PlaneGeometry(4, 2), new THREE.MeshStandardMaterial({ color: 0x374151, roughness: 0.95 })); road.position.z = -0.0005; V.root.add(road);
+      const rgrid = new THREE.GridHelper(4, 80, 0x9ca3af, 0x6b7280); rgrid.rotation.x = Math.PI / 2; rgrid.position.z = 0.0005; V.root.add(rgrid);
+      const fyArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 0.01), 0.3, 0xef4444, 0.06, 0.04); V.root.add(fyArrow);
+      const fzArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, 0.01), 0.3, 0x22c55e, 0.06, 0.04); V.root.add(fzArrow);
+      const vArrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, R * 2 + 0.05), 0.3, 0x38bdf8, 0.06, 0.04); V.root.add(vArrow);
+      // enlarged contact-patch footprint beside the wheel (×FP scale) coloured by solved pressure, displaced by bristle deflection
+      const FP = Math.min(12, 0.18 / (2 * a)), nfx = 48, nfy = 12, fpos = new Float32Array(nfx * nfy * 3), fcol = new Float32Array(nfx * nfy * 3), fidx = [];
+      for (let i = 0; i < nfx - 1; i++) for (let j = 0; j < nfy - 1; j++) { const q0 = i * nfy + j; fidx.push(q0, q0 + nfy, q0 + nfy + 1, q0, q0 + nfy + 1, q0 + 1); }
+      const fg = new THREE.BufferGeometry(); fg.setAttribute('position', new THREE.BufferAttribute(fpos, 3)); fg.setAttribute('color', new THREE.BufferAttribute(fcol, 3)); fg.setIndex(fidx);
+      const fmesh = new THREE.Mesh(fg, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide })); V.root.add(fmesh);
+      const fy0 = -0.32; const fpLabel = h('div', { class: 'sim-legend', style: 'bottom:auto;top:40px;left:8px;right:auto;width:230px' }, h('div', { class: 'small' }, `Contact-patch footprint (enlarged ×${fmt(FP, 3)}), leading edge at +x; lateral shift = bristle deflection`)); box.append(fpLabel);
+      V.controls.target.set(0, -0.12, R * 0.45); V.camera.position.set(0.75, -1.05, 0.5); V.controls.update();
+      const qMax = p0 * (p.width / 1000);
+      legend3d(box, { title: 'Contact pressure (line load, brush model)', lo: 0, hi: qMax / 1000, unit: ' kN/m', cmapName: 'turbo' });
+      const H = hud(box);
+      const T = 16, alMax = 10, omega = v / R; let mag = 30;
+      const magLab = h('span', { class: 'small' }, ''), magIn = h('input', { type: 'range', min: 1, max: 100, value: mag, oninput: (e) => { mag = +e.target.value; } });
+      const pb = playback(box, { duration: T, rate: 1, label: 'Manoeuvre time', onFrame: (t) => {
+        const alDeg = alMax * Math.sin(2 * Math.PI * t / 8), al = rad(alDeg), B = brush(al), FyMF = -mfLateral(al, p.Fz, mu, opts), rot = omega * t;
+        const yMaxAbs = Math.max(...B.ys.map(Math.abs)); magLab.textContent = `Deformation magnification ×${mag} (true-scale peak tread deflection = ${fmt(yMaxAbs * 1000, 3)} mm, radial ${fmt(defl * 1000, 3)} mm)`;
+        for (let i = 0; i < nu_; i++) { const u = 2 * Math.PI * i / nu_; for (let j = 0; j < nv; j++) { const w = 2 * Math.PI * j / nv; let x = (Rc + rT * Math.cos(w)) * Math.cos(u), z = R + (Rc + rT * Math.cos(w)) * Math.sin(u), y = rT * Math.sin(w) * 1.0; let q = 0;
+          // flatten the bottom into the contact patch (deflection magnified) and add lateral bristle deflection
+          const flat = Math.max(0, defl * Math.min(mag, 3));
+          if (z < flat) { z = flat * (z <= 0 ? 1 : 1); }
+          if (Math.abs(x) <= a * Math.max(1, Math.min(mag, 3) ** 0.5) && z <= flat + rT * 0.6) { const xx = Math.max(-a, Math.min(a, x)), kk = Math.round((a - xx) / (2 * a) * (B.xs.length - 1)); const wt = Math.max(0, 1 - (z - flat) / (rT * 0.6)); y += mag * B.ys[kk] * wt; if (z <= flat + 1e-4 || wt > 0.85) q = B.qs[kk]; }
+          const k = (i * nv + j) * 3; pos[k] = x; pos[k + 1] = y; pos[k + 2] = Math.max(flat, z) ;
+          // tread pattern rotating with the wheel (shows rolling) blended with pressure colour in the patch
+          const tread = (Math.floor(((u + rot) % (2 * Math.PI) + 2 * Math.PI) / (2 * Math.PI) * 48) % 2) ? 0.10 : 0.16;
+          if (q > 0) { const c = cmap(q / qMax, 'turbo'); col[k] = c[0] / 255; col[k + 1] = c[1] / 255; col[k + 2] = c[2] / 255; } else { col[k] = col[k + 1] = col[k + 2] = Math.abs(Math.cos(w)) > 0.55 ? tread : 0.07; }
+        } }
+        g.attributes.position.needsUpdate = true; g.attributes.color.needsUpdate = true; g.computeVertexNormals();
+        for (let i = 0; i < nfx; i++) { const kk = Math.round(i / (nfx - 1) * (B.xs.length - 1)), x = B.xs[kk]; for (let j = 0; j < nfy; j++) { const eta = -1 + 2 * j / (nfy - 1), lat = Math.sqrt(Math.max(0, 1 - eta * eta)), k = (i * nfy + j) * 3; fpos[k] = x * FP; fpos[k + 1] = fy0 + eta * (p.width / 2000) * FP + B.ys[kk] * FP * Math.min(mag, 10) / 3; fpos[k + 2] = 0.003; const c = cmap(B.qs[kk] * lat / qMax, 'turbo'); fcol[k] = c[0] / 255; fcol[k + 1] = c[1] / 255; fcol[k + 2] = c[2] / 255; } }
+        fg.attributes.position.needsUpdate = true; fg.attributes.color.needsUpdate = true;
+        rimG.rotation.y = rot;
+        const fy = B.Fy; fyArrow.setDirection(new THREE.Vector3(0, Math.sign(fy) || 1, 0)); fyArrow.setLength(Math.max(0.02, 0.45 * Math.abs(fy) / (mu * p.Fz)), 0.06, 0.04);
+        fzArrow.setLength(0.35, 0.06, 0.04);
+        H.set([['Time', fmt(t, 3) + ' s'], ['Speed', fmt(p.speed, 3) + ' km/h'], ['Wheel speed', fmt(omega * 60 / (2 * Math.PI), 4) + ' rpm'], ['Slip angle α', fmt(alDeg, 3) + '°'], ['F_y brush model', fmt(Math.abs(B.Fy), 4) + ' N'], ['F_y Magic Formula', fmt(Math.abs(FyMF), 4) + ' N'], ['Sliding fraction of patch', fmt(100 * B.slideFrac, 3) + ' %', B.slideFrac > 0.5 ? '#ef4444' : undefined], ['Patch length', fmt(2 * a * 1000, 4) + ' mm'], ['Peak pressure', fmt(p0 / 1000, 4) + ' kPa'], ['Wheel load F_z', fmt(p.Fz, 4) + ' N'], ['Rolling resistance power', fmt(crrW[0] * loads[0] * v, 3) + ' W']]);
+      } });
+      void pb;
+      el.append(h('div', { class: 'row gap wrap', style: 'margin:6px 2px' }, magLab, magIn), h('p', { class: 'small muted' }, `Solved at every frame: brush-model contact patch for the current slip angle (bristle stiffness from the cornering stiffness, parabolic pressure, adhesion/sliding split with μ = ${mu}), lateral force (brush and Magic Formula), and radial deflection from the inflation stiffness. The slip angle follows a prescribed ±${alMax}° sinusoidal sweep at ${p.speed} km/h; the wheel rotates at the solved ω = v/R. Deformations are magnified (slider) — true-scale values are printed. Red arrow = lateral force, green = wheel load, blue = travel direction.`));
+    } });
+    out.views.push({ label: '2D animation: contact-patch pressure & slip', icon: '🛞', render: async (el) => {
+      const A = await import('../core/anim2d.js'), { cmap } = await import('../core/chart.js');
+      const a = patchL / 2, wP = p.width / 1000, Ca = p.kAlpha * p.Fz, cpB = Ca / (2 * a * a), p0 = 1.5 * p.Fz / (2 * a * wP);
+      const brush = (al) => { const ta = Math.tan(Math.abs(al)), sg = Math.sign(al) || 1, N = 60, out2 = []; let Fy = 0, xs = null; for (let k2 = 0; k2 <= N; k2++) { const x = a - 2 * a * k2 / N, q = p0 * Math.max(0, 1 - (x / a) ** 2) * wP, yAd = (a - x) * ta, yMax = mu * q / cpB, sl = yAd > yMax; if (sl && xs === null) xs = x; const y = Math.min(yAd, yMax); out2.push({ x, q, y: sg * y, sl }); Fy += cpB * y * (2 * a / N) * sg; } return { pts: out2, Fy, xs }; };
+      const alMax = 10, als = linspace(-alMax, alMax, 81), FyB = als.map(d => brush(rad(d)).Fy), FyM = als.map(d => -mfLateral(rad(d), p.Fz, mu, opts));
+      const qMax = p0 * wP, yPk = Math.max(...brush(rad(alMax)).pts.map(q => Math.abs(q.y))), MG = Math.max(1, Math.round(0.3 * wP / Math.max(1e-9, yPk)));
+      A.anim2d(el, { duration: 16, rate: 1, height: 430, label: 'Manoeuvre time', unit: 's', draw: (g, t, W, H) => {
+        const alDeg = alMax * Math.sin(2 * Math.PI * t / 8), B = brush(rad(alDeg));
+        const px = 16, py = 16, pw = W * 0.55, ph = H - 32, sx = (pw - 60) / (2 * a), sy = Math.min(sx, (ph - 80) / (wP * 1.6));
+        g.fillStyle = A.theme().bg2; g.fillRect(px, py, pw, ph);
+        const cx = px + pw / 2, cy = py + ph / 2;
+        // pressure map: columns along x, elliptic lateral profile
+        for (const q of B.pts) for (let j = 0; j <= 20; j++) { const eta = -1 + j / 10, lat = Math.sqrt(Math.max(0, 1 - eta * eta)), c = cmap(q.q * lat / qMax, 'turbo'); g.fillStyle = `rgb(${c.map(Math.round).join(',')})`; g.fillRect(cx + q.x * sx - sx * a / 30, cy + eta * wP / 2 * sy - sy * wP / 40 + q.y * sy * MG, sx * a / 15 + 1, sy * wP / 20 + 1); }
+        // bristle deflection arrows (magnified ×25) and sliding boundary
+        for (let k2 = 0; k2 < B.pts.length; k2 += 4) { const q = B.pts[k2]; A.arrow(g, cx + q.x * sx, cy, 0, q.y * sy * MG, q.sl ? '#ef4444' : '#e5e7eb', 1.5); }
+        if (B.xs !== null) { g.strokeStyle = '#ef4444'; g.setLineDash([5, 4]); g.beginPath(); g.moveTo(cx + B.xs * sx, py + 30); g.lineTo(cx + B.xs * sx, py + ph - 20); g.stroke(); g.setLineDash([]); A.text(g, 'sliding | adhesion', cx + B.xs * sx - 52, py + 40, '#ef4444'); }
+        A.arrow(g, px + 20, py + ph - 20, 60, 0, '#38bdf8', 2.5, 'rolling direction'); A.text(g, `Contact patch (top view) · α = ${fmt(alDeg, 3)}° · leading edge right · deflection ×${MG} (true peak ${fmt(Math.max(...B.pts.map(q => Math.abs(q.y))) * 1000, 3)} mm)`, px + 8, py + 16);
+        // Fy–α curve with moving point
+        const qx = px + pw + 14, qw = W - qx - 12, qh = ph * 0.62, X = (d) => qx + 30 + (d + alMax) / (2 * alMax) * (qw - 40), Ymax = Math.max(...FyM.map(Math.abs), ...FyB.map(Math.abs)), Y = (F) => py + qh / 2 - F / Ymax * (qh / 2 - 20);
+        g.fillStyle = A.theme().bg2; g.fillRect(qx, py, qw, qh); A.text(g, 'Lateral force vs slip angle (N, °)', qx + 6, py + 14);
+        for (const [arr, c] of [[FyM, '#a855f7'], [FyB, '#22c55e']]) { g.strokeStyle = c; g.lineWidth = 2; g.beginPath(); arr.forEach((F, j) => { j ? g.lineTo(X(als[j]), Y(F)) : g.moveTo(X(als[j]), Y(F)); }); g.stroke(); }
+        g.lineWidth = 1; g.fillStyle = '#22c55e'; g.beginPath(); g.arc(X(alDeg), Y(B.Fy), 6, 0, 7); g.fill();
+        A.text(g, 'Magic Formula', qx + 8, py + qh - 26, '#a855f7'); A.text(g, 'Brush model', qx + 8, py + qh - 10, '#22c55e');
+        const sl = B.pts.filter(q => q.sl).length / B.pts.length;
+        A.bar(g, { x: qx, y: py + qh + 14, w: qw, value: Math.abs(B.Fy), max: mu * p.Fz, label: 'F_y (brush)', unit: ' N', color: '#22c55e' });
+        A.bar(g, { x: qx, y: py + qh + 34, w: qw, value: sl * 100, max: 100, label: 'Sliding fraction', unit: ' %', color: '#ef4444' });
+        A.bar(g, { x: qx, y: py + qh + 54, w: qw, value: qMax * 1.0 / 1000, max: qMax / 1000, label: 'Peak line load', unit: ' kN/m', color: '#eab308' });
+      }, explain: 'Brush-model contact patch solved at each instant of a ±10° slip-angle sweep: pressure distribution (colour), bristle lateral deflection (arrows, magnified as labelled), adhesion/sliding boundary (red) and the resulting lateral force traced on the brush and Magic-Formula curves.' });
+    } });
     out.outputs = { Crr: CrrEff, rollingForce_N: Froll, muPeak: mu, Fymax_N: FyCap, FxDrivenMax_N: FxCap, bearingLoss_W: Pbear, wheelInertia: Jw, rotEqMass: mRotEq, contactPressure_kPa: pc, kAlpha: p.kAlpha, Calpha_N_rad: p.kAlpha * p.Fz, road: p.road, muLock: road.muLock };
     out.headline = `${p.road}: μ = ${mu}, effective C_rr ${fmt(CrrEff, 3)}, rolling ${fmt(Froll * v, 3)} W + bearings ${fmt(Pbear, 3)} W at ${p.speed} km/h; lateral grip ${fmt(FyCap, 4)} N vs wing side force ${fmt(Fs, 4)} N.`;
     void deg; void range;

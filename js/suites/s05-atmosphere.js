@@ -132,6 +132,68 @@ export default {
     // tables
     out.tables.push({ title: 'Boundary-condition snapshot (exported to all coupled suites)', cols: ['Quantity', 'Value', 'Unit', 'Provenance'], rows: [['Time (local)', cur.time, '', isLive ? 'Forecast/analysis model' : 'Scenario'], ['Air temperature', cur.T, '°C', isLive ? 'Forecast model' : 'Hypothetical'], ['Pressure', cur.p, 'Pa', isLive ? 'Forecast model' : 'Hypothetical'], ['Relative humidity', cur.RH, '%', isLive ? 'Forecast model' : 'Hypothetical'], ['Density', cur.rho, 'kg/m³', 'Calculated'], ['Kinematic viscosity', cur.nu, 'm²/s', 'Calculated'], ['Wind 10 m', cur.U, 'm/s', isLive ? 'Forecast model' : 'Hypothetical'], ['Wind at wing', cur.Uz, 'm/s', 'Calculated'], ['Direction (from)', cur.dir, '°', isLive ? 'Forecast model' : 'Hypothetical'], ['GHI', cur.ghi, 'W/m²', isLive ? 'Forecast model' : 'Hypothetical'], ['DNI', cur.dni, 'W/m²', isLive ? 'Forecast model' : 'Calculated'], ['Cloud', cur.cloud, '%', isLive ? 'Forecast model' : 'Hypothetical'], ['Sky emissivity', cur.eps, '', 'Calculated'], ['Sky temperature', cur.Tsky, '°C', 'Calculated (heuristic, not measured)'], ['Longwave down', cur.LW, 'W/m²', 'Calculated'], ['Solar zenith', cur.zenith, '°', 'Calculated']], explain: 'Every value is labelled by data kind, as the specification requires (observation vs forecast vs calculated).' });
     out.tables.push({ title: 'Statistics of the fetched period', cols: ['Quantity', 'Min', 'Mean', 'P90', 'Max'], rows: [['Wind at wing (m/s)', min(D.map(d => d.Uz)), mean(D.map(d => d.Uz)), percentile(D.map(d => d.Uz), 0.9), max(D.map(d => d.Uz))], ['Air T (°C)', min(D.map(d => d.T)), mean(D.map(d => d.T)), percentile(D.map(d => d.T), 0.9), max(D.map(d => d.T))], ['GHI (W/m²)', min(D.map(d => d.ghi)), mean(D.map(d => d.ghi)), percentile(D.map(d => d.ghi), 0.9), max(D.map(d => d.ghi))], ['Air–sky ΔT (K)', min(D.map(d => d.dTsky)), mean(D.map(d => d.dTsky)), percentile(D.map(d => d.dTsky), 0.9), max(D.map(d => d.dTsky))]] });
+    out.views.push({ label: '3D site wind field & sky', icon: '🌬', render: async (el) => {
+      const [{ viewer }, { playback, hud, legend3d }, { windParticles }] = await Promise.all([import('../core/viz3d.js'), import('../core/sim3d.js'), import('../core/sim3d-drive.js')]);
+      const holder = h('div'); el.append(holder);
+      const modes = [{ key: 'turb', label: `Turbulent record at wing height (${p.spectrum}, ${tt[tt.length - 1]} s, with design gust)` }, { key: 'hourly', label: `Hourly record (${D.length} h${isLive ? ', live' : ''}) — sun, sky & wind evolve` }];
+      const show = async (mode) => {
+        holder.innerHTML = ''; holder.append(h('div', { class: 'row gap wrap', style: 'margin-bottom:6px' }, ...modes.map(m => h('button', { class: 'chip' + (m.key === mode ? ' on' : ''), onclick: () => show(m.key) }, '▶ ' + m.label))));
+        const box = h('div'); holder.append(box);
+        const V = await viewer(box, { height: 470, grid: false }); const THREE = V.THREE;
+        V.camera.far = 3000; V.camera.near = 0.1; V.camera.updateProjectionMatrix();
+        const ground = new THREE.Mesh(new THREE.PlaneGeometry(120, 120), new THREE.MeshStandardMaterial({ color: 0x4d7c4f, roughness: 1 })); V.root.add(ground);
+        // roughness elements scaled to the selected roughness length (≈ obstacle height ~ 10·z0, density increasing with z0)
+        const nObs = Math.min(400, Math.round(20 + 300 * Math.min(1, z0))), hObs = Math.min(18, Math.max(0.1, 10 * z0)), R0 = Math.random;
+        const obsMat = new THREE.MeshStandardMaterial({ color: z0 >= 0.5 ? 0x94a3b8 : 0x2f5d31, roughness: 1 });
+        for (let i = 0; i < nObs; i++) { const hh = hObs * (0.5 + R0()), b = new THREE.Mesh(new THREE.BoxGeometry(0.6 + R0() * (z0 >= 0.5 ? 4 : 1), 0.6 + R0() * (z0 >= 0.5 ? 4 : 1), hh), obsMat); const ang = R0() * 2 * Math.PI, rr = 18 + R0() * 40; b.position.set(rr * Math.cos(ang), rr * Math.sin(ang), hh / 2); V.root.add(b); }
+        // anemometer mast with solved log-law profile arrows
+        const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 12, 8), new THREE.MeshStandardMaterial({ color: 0xe5e7eb })); mast.rotation.x = Math.PI / 2; mast.position.set(0, 0, 6); V.root.add(mast);
+        const zs = [0.5, 1, 2, p.zWing, 4, 6, 8, 10, 12], prof = zs.map(z => new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, z), 1, 0x38bdf8, 0.25, 0.12)); prof.forEach(a => V.root.add(a));
+        const wingMark = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 8), new THREE.MeshBasicMaterial({ color: 0xf59e0b })); wingMark.position.set(0, 0, p.zWing); V.root.add(wingMark);
+        const sun = new THREE.DirectionalLight(0xfff4d6, 2.5); V.scene.add(sun); const sunBall = new THREE.Mesh(new THREE.SphereGeometry(3, 16, 8), new THREE.MeshBasicMaterial({ color: 0xffd34d })); V.root.add(sunBall);
+        const series = mode === 'turb' ? { t: tt, U: uTurb.map(u => u), dir: tt.map(() => cur.dir), day: tt.map(() => cur.isDay), el: tt.map(() => cur.elevationSun), az: tt.map(() => cur.azimuth), ghi: tt.map(() => cur.ghi), T: tt.map(() => cur.T), Tsky: tt.map(() => cur.Tsky) }
+          : { t: D.map((_, i) => i * 3600), U: D.map(d => d.Uz), dir: D.map(d => d.dir), day: D.map(d => d.isDay), el: D.map(d => d.elevationSun), az: D.map(d => d.azimuth), ghi: D.map(d => d.ghi), T: D.map(d => d.T), Tsky: D.map(d => d.Tsky), time: D.map(d => d.time) };
+        const Umax = Math.max(1, ...series.U.filter(Number.isFinite)); let Unow = 0, dirNow = 0;
+        const zRef = p.zWing, logF = (z) => Math.max(0, Math.log(Math.max(z, z0 * 1.5) / z0) / Math.log(zRef / z0));
+        const P = windParticles(V, { count: 3000, half: 45, top: 14, colorMax: Umax * 1.25, size: 0.55, vel: (x, y, z) => { const sp = Unow * logF(z), to = (dirNow + 180) * Math.PI / 180; return [sp * Math.sin(to), sp * Math.cos(to), 0]; } });
+        legend3d(box, { title: 'Wind speed (log-law over terrain)', lo: 0, hi: Umax * 1.25, unit: ' m/s' }); Object.assign(box.lastChild.style, { top: '44px', left: '8px', bottom: 'auto', right: 'auto' });
+        const H = hud(box); V.controls.target.set(0, 0, 4); V.camera.position.set(40, -55, 28); V.controls.update();
+        let last = 0; const T = series.t, n = T.length;
+        playback(box, { duration: T[n - 1], rate: mode === 'turb' ? 8 : 3600, label: mode === 'turb' ? 'Time' : 'Hours ×3600 s', onFrame: (t) => {
+          let i = 0; while (i < n - 2 && T[i + 1] <= t) i++; const f = Math.min(1, Math.max(0, (t - T[i]) / ((T[i + 1] - T[i]) || 1))), L2 = (a) => a[i] + ((a[i + 1] ?? a[i]) - a[i]) * f;
+          Unow = L2(series.U); dirNow = series.dir[i];
+          const to = (dirNow + 180) * Math.PI / 180, dx = Math.sin(to), dy = Math.cos(to);
+          prof.forEach((a, k) => { const sp = Unow * logF(zs[k]); a.setDirection(new THREE.Vector3(dx, dy, 0)); a.setLength(Math.max(0.05, 0.9 * sp), 0.25, 0.12); });
+          const el_ = series.el[i], az = series.az[i] * Math.PI / 180, er = Math.max(-5, el_) * Math.PI / 180;
+          const sp = new THREE.Vector3(Math.sin(az) * Math.cos(er), Math.cos(az) * Math.cos(er), Math.sin(er)).multiplyScalar(90); sun.position.copy(sp); sunBall.position.copy(sp); sunBall.visible = el_ > -2;
+          const dayF = Math.max(0, Math.min(1, (el_ + 6) / 20)); V.scene.background.setRGB(0.03 + 0.3 * dayF, 0.05 + 0.45 * dayF, 0.12 + 0.65 * dayF); sun.intensity = 1.2 * dayF;
+          ground.material.color.setRGB(0.08 + 0.06 * dayF, 0.14 + 0.1 * dayF, 0.08 + 0.05 * dayF);
+          const dt = Math.min(0.5, Math.max(0.01, Math.abs(t - last) / (mode === 'turb' ? 1 : 600))); P.step(dt, t); last = t;
+          H.set([[mode === 'turb' ? 'Time' : 'Local time', mode === 'turb' ? fmt(t, 4) + ' s' : (series.time?.[i] || '').replace('T', ' ')], ['Wind at wing height', fmt(Unow, 3) + ' m/s' + (Umax < 2 ? ' (calm record)' : ''), Unow >= p.Uthreshold ? '#22c55e' : '#f59e0b'], ['Direction (from)', fmt(dirNow, 3) + '°'], ['Roughness z₀', fmt(z0, 3) + ' m'], ['Solar elevation', fmt(el_, 3) + '°'], ['GHI', fmt(L2(series.ghi), 3) + ' W/m²'], ['Air T', fmt(L2(series.T), 3) + ' °C'], ['Sky T (calc.)', fmt(L2(series.Tsky), 3) + ' °C'], ['Gust event', mode === 'turb' && t >= 150 && t <= 150 + p.gustDur ? 'ACTIVE' : '—', mode === 'turb' && t >= 150 && t <= 150 + p.gustDur ? '#ef4444' : undefined]]);
+        } });
+        box.append(h('p', { class: 'small muted' }, mode === 'turb' ? `Solved: synthetic turbulent wind at wing height from the ${p.spectrum} spectrum (TI ${p.turbInt} %) plus the 1-cosine design gust at t = 150 s (HUD flags it), projected over height with the log law (z₀ = ${z0} m); sun position from the NOAA algorithm for the snapshot hour. Tracer particles are advected by this solved field; mast arrows show the solved profile. Terrain obstacles are a visual cue sized from z₀.` : `Solved / retrieved: hourly wind speed and direction at wing height, solar elevation & azimuth (NOAA), GHI, air and calculated sky temperature for ${D.length} h (${isLive ? 'live forecast/analysis' : 'scenario'}). Sky brightness and sun follow the solved solar elevation; particles and mast arrows follow the hourly wind (linear interpolation between hours).`));
+      };
+      await show('turb');
+    } });
+    out.views.push({ label: '2D animation: wind compass & gust trace', icon: '🧭', render: async (el) => {
+      const A = await import('../core/anim2d.js');
+      const Th = D.map((_, i) => i * 3600), dirH = D.map(d => d.dir), UzH = D.map(d => d.Uz), Umx = Math.max(1, ...uTurb, ...UzH);
+      A.anim2d(el, { duration: tt[tt.length - 1], rate: 8, height: 440, label: 'Turbulence record', unit: 's', draw: (g, t, W, H) => {
+        const k = A.at(tt, t), u = A.lerp(uTurb, k), fr = t / tt[tt.length - 1], kh = A.at(Th, fr * Th[Th.length - 1]), dirNow = A.lerp(dirH, kh), UzNow = A.lerp(UzH, kh);
+        // compass: needle points where the wind blows TO; length ∝ speed
+        const R0 = Math.min(W * 0.18, (H - 60) / 2), cx = 24 + R0, cy = 30 + R0;
+        g.strokeStyle = A.theme().grid; g.lineWidth = 1; for (const f of [0.33, 0.66, 1]) { g.beginPath(); g.arc(cx, cy, R0 * f, 0, 7); g.stroke(); }
+        ['N', 'E', 'S', 'W'].forEach((d, j) => A.text(g, d, cx + (R0 + 10) * Math.sin(j * Math.PI / 2) - 4, cy - (R0 + 10) * Math.cos(j * Math.PI / 2) + 4, undefined, 'bold 12px Inter,system-ui,sans-serif'));
+        const to = (dirNow + 180) * Math.PI / 180, L1 = R0 * Math.min(1, UzNow / Umx), L2 = R0 * Math.min(1, u / Umx);
+        A.arrow(g, cx, cy, L1 * Math.sin(to), -L1 * Math.cos(to), '#94a3b8', 4, `hourly ${fmt(UzNow, 3)} m/s`);
+        A.arrow(g, cx, cy, L2 * Math.sin(to + 0.05), -L2 * Math.cos(to + 0.05), '#38bdf8', 2.5, `instant ${fmt(u, 3)} m/s`);
+        A.text(g, `from ${fmt(dirNow, 3)}° · hour ${kh.i + 1}/${D.length} (${(D[kh.i]?.time || '').replace('T', ' ')})`, 16, H - 16);
+        const gust = t >= 150 && t <= 150 + p.gustDur; if (gust) A.text(g, 'DESIGN GUST', cx - 40, cy + R0 + 24, '#ef4444', 'bold 14px Inter,system-ui,sans-serif');
+        const sx = 2 * R0 + 70, sw = W - sx - 12;
+        A.seriesPanel(g, { x: sx, y: 12, w: sw, h: (H - 36) * 0.55, T: tt, t, title: `Wind at wing height (${p.spectrum}, TI ${p.turbInt} %)`, unit: 'm/s', series: [{ name: 'u(t)', y: uTurb, color: '#38bdf8' }], hlines: [{ y: p.Uthreshold, label: 'useful threshold', color: '#22c55e' }] });
+        A.seriesPanel(g, { x: sx, y: 20 + (H - 36) * 0.55, w: sw, h: (H - 36) * 0.45, T: Th, t: fr * Th[Th.length - 1], title: `Hourly record (${D.length} h)`, unit: 'm/s, °/36', series: [{ name: 'wind at wing m/s', y: UzH, color: '#94a3b8' }, { name: 'direction/36', y: dirH.map(d => d / 36), color: '#f59e0b' }] });
+      }, explain: 'Compass needle shows where the solved wind blows to (grey = hourly record swept in step with the timeline, blue = instantaneous turbulent wind at wing height); the gust trace shows the synthetic record with the 1-cosine design gust flagged at t = 150 s.' });
+    } });
     out.views.push({ label: 'Climatology (NASA POWER)', icon: '🗓', render: async (el) => {
       el.append(h('p', { class: 'muted small' }, 'Long-term monthly climatology for the site from NASA POWER (satellite & reanalysis), used to judge whether the snapshot is typical.'));
       const wait = async () => { for (let i = 0; i < 60 && !clim; i++) await new Promise(r => setTimeout(r, 250)); return clim; };
