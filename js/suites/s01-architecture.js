@@ -23,19 +23,22 @@ export default {
   params: [
     { key: 'layout', label: 'Wheel layout', type: 'select', group: 'Architecture', default: 'tadpole', options: [{ value: 'tadpole', label: 'Tadpole (2 front, 1 rear)' }, { value: 'delta', label: 'Delta (1 front, 2 rear)' }], auto: V('layout', 'tadpole') },
     { key: 'wingConfig', label: 'Wing configuration', type: 'select', group: 'Architecture', default: 'strict', options: [{ value: 'strict', label: 'Strict: fixed root, passive morphing only' }, { value: 'practical', label: 'Practical: adjustable root incidence + unloading' }] },
-    { key: 'length', label: 'Overall length', unit: 'm', type: 'number', min: 2.5, max: 6, step: 0.05, group: 'Dimensions', default: 4.4, auto: V('length') },
+    { key: 'rig', label: 'Wing rig', type: 'select', group: 'Architecture', default: 'arch', options: [{ value: 'arch', label: 'AeroArch: one closed box-wing arch on a ring track (Revision 4)' }, { value: 'tandem', label: 'Separate tandem wings (Revisions 1–3)' }], auto: V('wingConfig', 'arch') },
+    { key: 'archCant', label: 'Arch leg inward cant', unit: '°', type: 'number', min: 0, max: 30, step: 1, group: 'Wings', default: 12, auto: V('archCant', 12) },
+    { key: 'archSweep', label: 'Arch leg sweep', unit: '°', type: 'number', min: 0, max: 40, step: 1, group: 'Wings', default: 20, auto: V('archSweep', 20) },
+    { key: 'length', label: 'Overall length', unit: 'm', type: 'number', min: 2.5, max: 6, step: 0.05, group: 'Dimensions', default: 4.6, auto: V('length') },
     { key: 'width', label: 'Body width', unit: 'm', type: 'number', min: 1, max: 2.55, step: 0.05, group: 'Dimensions', default: 1.6, auto: V('width') },
     { key: 'height', label: 'Body height (excl. wings)', unit: 'm', type: 'number', min: 0.7, max: 1.8, step: 0.05, group: 'Dimensions', default: 1.0, auto: V('height') },
-    { key: 'wheelbase', label: 'Wheelbase', unit: 'm', type: 'number', min: 1.5, max: 4, step: 0.05, group: 'Dimensions', default: 2.8, auto: V('wheelbase') },
-    { key: 'track', label: 'Track (twin-wheel axle)', unit: 'm', type: 'number', min: 0.8, max: 2.4, step: 0.05, group: 'Dimensions', default: 1.8, auto: V('track') },
+    { key: 'wheelbase', label: 'Wheelbase', unit: 'm', type: 'number', min: 1.5, max: 4, step: 0.05, group: 'Dimensions', default: 2.9, auto: V('wheelbase') },
+    { key: 'track', label: 'Track (twin-wheel axle)', unit: 'm', type: 'number', min: 0.8, max: 2.4, step: 0.05, group: 'Dimensions', default: 1.9, auto: V('track') },
     { key: 'wheelRadius', label: 'Wheel effective radius', unit: 'm', type: 'number', min: 0.2, max: 0.45, step: 0.01, group: 'Dimensions', default: 0.3, auto: V('wheelRadius') },
-    { key: 'wingArea', label: 'Combined wing reference area (deployed)', unit: 'm²', type: 'number', min: 1, max: 20, step: 0.1, group: 'Wings', default: 5.0, auto: V('wingArea') },
-    { key: 'wingHeight', label: 'Wing span, deployed', unit: 'm', type: 'number', min: 1, max: 6, step: 0.1, group: 'Wings', default: 3.0, auto: V('wingHeight') },
-    { key: 'wingReefSpan', label: 'Wing span, reefed (telescoped)', unit: 'm', type: 'number', min: 0.8, max: 6, step: 0.1, group: 'Wings', default: 2.0, auto: V('wingReefSpan', 2.0), help: 'Revision 2.2: the upper section telescopes into the lower one for transit and strong wind.' },
+    { key: 'wingArea', label: 'Wing reference area (arch: both legs; tandem: all wings deployed)', unit: 'm²', type: 'number', min: 1, max: 20, step: 0.1, group: 'Wings', default: 4.0, auto: V('wingArea') },
+    { key: 'wingHeight', label: 'Arch leg height / wing span (deployed)', unit: 'm', type: 'number', min: 1, max: 6, step: 0.05, group: 'Wings', default: 1.75, auto: V('wingHeight') },
+    { key: 'wingReefSpan', label: 'Wing span, reefed (telescoped)', unit: 'm', type: 'number', min: 0.8, max: 6, step: 0.1, group: 'Wings', default: 1.75, auto: V('wingReefSpan', 1.75), help: 'Tandem rigs only (Revision 2.2): the upper section telescopes into the lower one for transit and strong wind.' },
     { key: 'wingState', label: 'Wing state', type: 'select', group: 'Wings', default: 'auto', options: [{ value: 'auto', label: 'Auto (deploy in light wind, reef above the reef threshold)' }, { value: 'deployed', label: 'Deployed (full span)' }, { value: 'reefed', label: 'Reefed (telescoped)' }], auto: V('wingReef', 'auto') },
     { key: 'nWings', label: 'Number of wings', type: 'select', group: 'Wings', default: 2, options: [1, 2, 3], auto: V('nWings') },
-    { key: 'wingRoot', label: 'Wing root', type: 'select', group: 'Wings', default: 'feathering', options: [{ value: 'feathering', label: 'Free-feathering with torque-limited breakaway (Revision 2)' }, { value: 'fixed', label: 'Fixed root (specification strict)' }], help: 'Feathering pivot at ≈ 21 % chord; the incidence lock releases at the safe side force and the wing weathervanes (C_L ≈ 0, C_D ≈ 0.02).' },
-    { key: 'stowage', label: 'Wing stowage', type: 'select', group: 'Wings', default: 'tilt', options: [{ value: 'tilt', label: 'Tilt-down for parking / transit' }, { value: 'fixed', label: 'Fixed upright' }] },
+    { key: 'wingRoot', label: 'Wing root / gust protection', type: 'select', group: 'Wings', default: 'ring', auto: (c) => ({ value: (c.vehicle.wingConfig || 'arch') === 'arch' ? 'ring' : 'feathering', prov: 'calc' }), options: [{ value: 'ring', label: 'Arch ring track: incidence + torque-limited breakaway to feathered (Revision 4)' }, { value: 'feathering', label: 'Free-feathering with torque-limited breakaway (Revision 2)' }, { value: 'fixed', label: 'Fixed root (specification strict)' }], help: 'Feathering pivot at ≈ 21 % chord; the incidence lock releases at the safe side force and the wing weathervanes (C_L ≈ 0, C_D ≈ 0.02).' },
+    { key: 'stowage', label: 'Wing stowage', type: 'select', group: 'Wings', default: 'fold', auto: (c) => ({ value: (c.vehicle.wingConfig || 'arch') === 'arch' ? 'fold' : 'tilt', prov: 'calc' }), options: [{ value: 'fold', label: 'Arch folds back over the body (parking)' }, { value: 'tilt', label: 'Tilt-down for parking / transit' }, { value: 'fixed', label: 'Fixed upright' }] },
     { key: 'wSkin', label: 'Wing skin thickness', unit: 'mm', type: 'number', min: 0.2, max: 3, step: 0.1, group: 'Wing construction', default: 0.6 },
     { key: 'coreRel', label: 'Wing lattice core relative density', unit: '%', type: 'number', min: 0.5, max: 30, step: 0.5, group: 'Wing construction', default: 3 },
     { key: 'nRibs', label: 'Flexible ribs per wing', type: 'number', min: 2, max: 20, step: 1, group: 'Wing construction', default: 6 },
@@ -46,8 +49,8 @@ export default {
     { key: 'massBasis', label: 'Operating-mass basis', type: 'select', group: 'Mass', default: 'computed', options: [{ value: 'target', label: 'Design target mass (below)' }, { value: 'computed', label: 'Computed mass budget' }], help: 'Which mass becomes the global vehicle mass for every suite.' },
     { key: 'targetMass', label: 'Design target operating mass', unit: 'kg', type: 'number', min: 120, max: 800, step: 5, group: 'Mass', default: 300, auto: V('mass') },
     { key: 'payload', label: 'Occupant + payload', unit: 'kg', type: 'number', min: 0, max: 250, step: 5, group: 'Mass', default: 90, auto: V('payload') },
-    { key: 'skin', label: 'Monocoque skin thickness (each face)', unit: 'mm', type: 'number', min: 0.5, max: 4, step: 0.1, group: 'Construction', default: 1.2 },
-    { key: 'core', label: 'Sandwich core thickness', unit: 'mm', type: 'number', min: 5, max: 40, step: 1, group: 'Construction', default: 15 },
+    { key: 'skin', label: 'Monocoque skin thickness (each face)', unit: 'mm', type: 'number', min: 0.3, max: 4, step: 0.05, group: 'Construction', default: 0.5, help: 'Minimum-gauge design: 2 plies of 200 g/m² woven CFRP (≈ 0.5 mm) for impact/handling damage tolerance; Suite 09 strength SF and panel buckling remain far above 2.5 / 3 at this gauge.' },
+    { key: 'core', label: 'Sandwich core thickness', unit: 'mm', type: 'number', min: 3, max: 40, step: 1, group: 'Construction', default: 6, help: 'Minimum for potted inserts and local crush; set by gauge, not strength (Suite 09).' },
     { key: 'cartPerWheel', label: 'NiTi cartridges per driven wheel', type: 'number', min: 0, max: 64, step: 1, group: 'Propulsion hardware', default: 24 },
     { key: 'cartMass', label: 'Active NiTi mass per cartridge', unit: 'kg', type: 'number', min: 0.005, max: 0.5, step: 0.005, group: 'Propulsion hardware', default: 0.06 },
     { key: 'driveWheels', label: 'Driven (hub-drive) wheels', type: 'select', group: 'Propulsion hardware', default: 2, options: [0, 1, 2, 3], auto: V('driveWheels') },
@@ -56,34 +59,48 @@ export default {
     { key: 'CdA', label: 'Body drag area C_dA', unit: 'm²', type: 'number', min: 0.08, max: 1, step: 0.01, group: 'Road load', default: 0.25, auto: V('CdA') },
     { key: 'designGust', label: 'Design gust for tip-over check', unit: 'm/s', type: 'number', min: 5, max: 40, step: 0.5, group: 'Road load', default: 20 },
   ],
-  presets: [{ label: 'Revision 3 baseline (3 × 2.0 m fixed wings, 3.0 m overall, 5.4 m lifting body)', values: { layout: 'tadpole', length: 5.4, width: 1.6, height: 1.0, wheelbase: 3.3, track: 1.9, wingArea: 4.34, wingHeight: 2.0, wingReefSpan: 2.0, nWings: 3 } }, { label: 'Revision 2.2 baseline (reefable 3.0/2.0 m wings, 5.0 m², track 1.8 m)', values: { layout: 'tadpole', length: 4.4, width: 1.6, height: 1.0, wheelbase: 2.8, track: 1.8, wingArea: 5.0, wingHeight: 3.0, wingReefSpan: 2.0, wingState: 'auto', nWings: 2, wingRoot: 'feathering', stowage: 'tilt' } }, { label: 'Specification starting model (2 × 3 m wings, 8 m², track 1.5 m)', values: { layout: 'tadpole', length: 3.6, width: 1.6, height: 1.1, wheelbase: 2.4, track: 1.5, wingArea: 8, wingHeight: 3, wingReefSpan: 3, wingState: 'deployed', nWings: 2, wingRoot: 'fixed', stowage: 'fixed' } }, { label: 'Delta layout', values: { layout: 'delta' } }, { label: 'Wide-track stability', values: { track: 1.9, height: 1.0 } }, { label: 'Single large wing', values: { nWings: 1, wingArea: 8, wingHeight: 3.6 } }],
+  presets: [{ label: 'Revision 4 AeroArch (default: box-wing arch, 4.0 m² legs, 1.75 m, 3.0 m overall)', values: { rig: 'arch', layout: 'tadpole', length: 4.6, width: 1.6, height: 1.0, wheelbase: 2.9, track: 1.9, wingArea: 4.0, wingHeight: 1.75, wingReefSpan: 1.75, archCant: 12, archSweep: 20, nWings: 2, wingRoot: 'ring', stowage: 'fold' } }, { label: 'Revision 3 baseline (3 × 2.0 m fixed wings, 3.0 m overall, 5.4 m lifting body)', values: { layout: 'tadpole', length: 5.4, width: 1.6, height: 1.0, wheelbase: 3.3, track: 1.9, wingArea: 4.34, wingHeight: 2.0, wingReefSpan: 2.0, nWings: 3, rig: 'tandem', wingRoot: 'feathering', stowage: 'tilt' } }, { label: 'Revision 2.2 baseline (reefable 3.0/2.0 m wings, 5.0 m², track 1.8 m)', values: { layout: 'tadpole', length: 4.4, width: 1.6, height: 1.0, wheelbase: 2.8, track: 1.8, wingArea: 5.0, wingHeight: 3.0, wingReefSpan: 2.0, wingState: 'auto', nWings: 2, rig: 'tandem', wingRoot: 'feathering', stowage: 'tilt' } }, { label: 'Specification starting model (2 × 3 m wings, 8 m², track 1.5 m)', values: { layout: 'tadpole', length: 3.6, width: 1.6, height: 1.1, wheelbase: 2.4, track: 1.5, wingArea: 8, wingHeight: 3, wingReefSpan: 3, wingState: 'deployed', nWings: 2, rig: 'tandem', wingRoot: 'fixed', stowage: 'fixed' } }, { label: 'Delta layout', values: { layout: 'delta' } }, { label: 'Wide-track stability', values: { track: 1.9, height: 1.0 } }, { label: 'Single large wing', values: { nWings: 1, wingArea: 8, wingHeight: 3.6 } }],
 
   async run(p, ctx) {
     const out = { kpis: [], charts: [], tables: [], verdicts: [], recs: [], checks: [], explain: [], views: [] };
-    const veh0 = { ...ctx.vehicle, layout: p.layout, length: p.length, width: p.width, height: p.height, wheelbase: p.wheelbase, track: p.track, wheelRadius: p.wheelRadius, wingArea: p.wingArea, wingHeight: p.wingHeight, wingReefSpan: Math.min(p.wingHeight, p.wingReefSpan), nWings: +p.nWings };
+    const veh0 = { ...ctx.vehicle, layout: p.layout, length: p.length, width: p.width, height: p.height, wheelbase: p.wheelbase, track: p.track, wheelRadius: p.wheelRadius, wingArea: p.wingArea, wingHeight: p.wingHeight, wingReefSpan: Math.min(p.wingHeight, p.wingReefSpan), nWings: +p.nWings, wingConfig: p.rig, archCant: p.archCant, archSweep: p.archSweep };
     const M = (k) => ctx.material(k);
-    const asm = vehicleAssembly(veh0, {}), asmR = vehicleAssembly(veh0, { reefed: true }); const bodyArea = asm.parts[0].area(), meta = asm.meta, R = p.wheelRadius, Hb = p.height;
+    const asm = vehicleAssembly(veh0, {}), asmR = vehicleAssembly(veh0, { reefed: true }), asmF = vehicleAssembly(veh0, { folded: true }); const bodyArea = asm.parts[0].area(), meta = asm.meta, R = p.wheelRadius, Hb = p.height;
     // ---------- component mass budget ----------
     const items = [];
     const add = (name, comp, mass, x, y, z, dims = [0.2, 0.2, 0.2], note = '') => items.push({ name, comp, mat: comp ? M(comp)?.name : '—', m: mass, x, y, z, dims, note });
     const ch = M('chassis'), core = M('chassisCore');
     add('Monocoque sandwich shell', 'chassis', bodyArea * (2 * p.skin / 1000 * ch.rho + p.core / 1000 * core.rho) * 1.12, 0.08 * p.length, 0, R + Hb * 0.36, [p.length, p.width * 0.8, Hb * 0.7], `${fmt(bodyArea, 3)} m² surface; +12 % joints, resin & inserts`);
-    const nW = meta.wingX.length, span = p.wingHeight, areaW = meta.areaFitted ?? p.wingArea, S1 = areaW / nW, cMean = S1 / span, zRoot = meta.height - span;
-    const wingStruct = [];
-    for (let k = 0; k < nW; k++) {
-      const wx = meta.wingX[k], zc = zRoot + span * 0.45;
-      const skinA = 2.05 * S1, sk = M('wingSkin'), sp = M('spar'), rb = M('rib'), lt = M('lattice'), m0 = items.length;
-      add(`Wing ${k + 1} morphing skin (${p.wSkin} mm)`, 'wingSkin', skinA * p.wSkin / 1000 * sk.rho, wx, 0, zc, [cMean, 0.15 * cMean, span]);
-      add(`Wing ${k + 1} box spar (${p.sparT} mm wall)`, 'spar', span * 2 * (0.12 + 0.1) * cMean * p.sparT / 1000 * sp.rho * 1.15, wx, 0, zRoot + span * 0.4, [0.12 * cMean, 0.1 * cMean, span]);
-      add(`Wing ${k + 1} flexible ribs (×${p.nRibs}, ${p.ribT} mm, 50 % lightening)`, 'rib', p.nRibs * 0.1 * cMean * cMean * p.ribT / 1000 * 0.5 * rb.rho, wx, 0, zc, [cMean, 0.1, span]);
-      add(`Wing ${k + 1} metamaterial core (${p.coreRel} % rel. density)`, 'lattice', S1 * 0.085 * cMean * 0.3 * (p.coreRel / 100) * lt.rho, wx, 0, zc, [cMean * 0.6, 0.1 * cMean, span], `${lt.name}; morphing regions = 30 % of wing volume`);
+    const isArch = meta.wingConfig === 'arch' && !!meta.arch, AR4 = meta.arch;
+    const nW = isArch ? 2 : meta.wingX.length, span = isArch ? AR4.legHeight : p.wingHeight, areaW = isArch ? p.wingArea : (meta.areaFitted ?? p.wingArea), S1 = areaW / nW, cMean = isArch ? (AR4.rootChord + AR4.tipChord) / 2 : S1 / span, zRoot = isArch ? AR4.zRoot : meta.height - span;
+    const wingStruct = [], sk = M('wingSkin'), sp = M('spar'), rb = M('rib'), lt = M('lattice');
+    const wingPart = (lab, x, y, z, S, c, len, nRib) => { const m0 = items.length;
+      add(`${lab} morphing skin (${p.wSkin} mm)`, 'wingSkin', 2.05 * S * p.wSkin / 1000 * sk.rho, x, y, z, [c, 0.15 * c, len]);
+      add(`${lab} box spar (${p.sparT} mm wall)`, 'spar', len * 2 * (0.12 + 0.1) * c * p.sparT / 1000 * sp.rho * 1.15, x, y, z, [0.12 * c, 0.1 * c, len]);
+      add(`${lab} flexible ribs (×${nRib}, ${p.ribT} mm, 50 % lightening)`, 'rib', nRib * 0.1 * c * c * p.ribT / 1000 * 0.5 * rb.rho, x, y, z, [c, 0.1, len]);
+      add(`${lab} metamaterial core (${p.coreRel} % rel. density)`, 'lattice', S * 0.085 * c * 0.3 * (p.coreRel / 100) * lt.rho, x, y, z, [c * 0.6, 0.1 * c, len], `${lt.name}; morphing regions = 30 % of wing volume`);
+      wingStruct.push(items.slice(m0).reduce((a2, i) => a2 + i.m, 0)); };
+    if (isArch) {
+      const xa = meta.wingX[0], legLen = span / Math.cos(AR4.sweep * Math.PI / 180), zc = zRoot + span * 0.45;
+      for (const sd of [1, -1]) { wingPart(`Arch leg ${sd > 0 ? 'port' : 'starboard'}`, xa - 0.3 * span * Math.tan(AR4.sweep * Math.PI / 180), sd * (AR4.gap / 2 - 0.2 * span * Math.tan(AR4.cant * Math.PI / 180)), zc, S1, cMean, legLen, p.nRibs); add(`Arch leg ${sd > 0 ? 'port' : 'starboard'} root fitting`, 'rootInsert', 1.2 * (M('rootInsert').rho / 4430), xa, sd * AR4.gap / 2, zRoot, [0.15, 0.15, 0.15]); }
+      const cb = AR4.bridgeArea / Math.max(0.1, AR4.bridgeSpan); wingPart('Arch top bridge', xa - span * Math.tan(AR4.sweep * Math.PI / 180), 0, AR4.zTop - 0.12, AR4.bridgeArea, cb, AR4.bridgeSpan, Math.max(2, Math.round(p.nRibs / 2)));
+    } else for (let k = 0; k < nW; k++) {
+      const wx = meta.wingX[k], m1 = items.length; wingPart(`Wing ${k + 1}`, wx, 0, zRoot + span * 0.45, S1, cMean, span, p.nRibs); void m1;
       add(`Wing ${k + 1} root fitting${p.wingRoot === 'feathering' ? ' + feathering pivot & breakaway lock' : ''}`, 'rootInsert', (p.wingRoot === 'feathering' ? 3.0 : 2.2) * (M('rootInsert').rho / 4430), wx, 0, zRoot, [0.2, 0.2, 0.2]);
-      wingStruct.push(items.slice(m0).filter(i => i.comp !== 'rootInsert').reduce((a2, i) => a2 + i.m, 0));
     }
-    const wingAreal = sum(wingStruct) / areaW;
-    // mast-step bulkheads (one per wing) and keel beam carrying root loads to the wheel hard points (Revision 2.1)
-    for (let k = 0; k < nW; k++) add(`Wing ${k + 1} mast-step bulkhead (CFRP)`, 'chassis', 1.8 * (ch.rho / 1550), meta.wingX[k], 0, R + Hb * 0.35, [0.06, p.width * 0.8, Hb * 0.7]);
-    add('Keel beam (root loads → wheel hard points)', 'chassis', 4.0 * (ch.rho / 1550), (meta.wingX[nW - 1] + (meta.wheelPos.find(w => w[0] > 0)?.[0] ?? 1)) / 2, 0, R + 0.06, [Math.abs((meta.wheelPos.find(w => w[0] > 0)?.[0] ?? 1) - meta.wingX[nW - 1]), 0.12, 0.08]);
+    const wingAreal = sum(wingStruct) / (areaW + (isArch ? AR4.bridgeArea : 0));
+    if (isArch) {
+      // ring-track bulkheads (fore/aft) + ring track, incidence drive & breakaway lock; keel beam to the wheel hard points
+      const xa = meta.wingX[0], c0 = AR4.chord;
+      add('Arch ring-track bulkhead (fore, CFRP)', 'chassis', 1.8 * (ch.rho / 1550), xa + 0.35 * c0, 0, R + Hb * 0.35, [0.06, p.width * 0.8, Hb * 0.7]);
+      add('Arch ring-track bulkhead (aft, CFRP)', 'chassis', 1.8 * (ch.rho / 1550), xa - 0.6 * c0, 0, R + Hb * 0.35, [0.06, p.width * 0.8, Hb * 0.7]);
+      add('Arch ring track, incidence drive & breakaway lock', 'rootInsert', 4.0, xa, 0, zRoot, [0.3, AR4.gap, 0.08], 'single mechanism: incidence for any wind direction + torque-limited breakaway to the feathered position');
+      add('Keel beam (ring-track loads → wheel hard points)', 'chassis', 4.0 * (ch.rho / 1550), (xa + (meta.wheelPos.find(w => w[0] > 0)?.[0] ?? 1)) / 2, 0, R + 0.06, [Math.abs((meta.wheelPos.find(w => w[0] > 0)?.[0] ?? 1) - xa), 0.12, 0.08]);
+    } else {
+      // mast-step bulkheads (one per wing) and keel beam carrying root loads to the wheel hard points (Revision 2.1)
+      for (let k = 0; k < nW; k++) add(`Wing ${k + 1} mast-step bulkhead (CFRP)`, 'chassis', 1.8 * (ch.rho / 1550), meta.wingX[k], 0, R + Hb * 0.35, [0.06, p.width * 0.8, Hb * 0.7]);
+      add('Keel beam (root loads → wheel hard points)', 'chassis', 4.0 * (ch.rho / 1550), (meta.wingX[nW - 1] + (meta.wheelPos.find(w => w[0] > 0)?.[0] ?? 1)) / 2, 0, R + 0.06, [Math.abs((meta.wheelPos.find(w => w[0] > 0)?.[0] ?? 1) - meta.wingX[nW - 1]), 0.12, 0.08]);
+    }
     meta.wheelPos.forEach(([x, y], k) => {
       const wm = M('wheel'), ty = M('tyre');
       add(`Wheel ${k + 1} rim + spokes`, 'wheel', (2 * Math.PI * (R - 0.075) * 0.05 * 0.003 + 6 * 0.5 * R * 0.012 * 0.03) * wm.rho, x, y, R, [2 * R, 0.05, 2 * R]);
@@ -105,17 +122,19 @@ export default {
     const deck = (u0, u1) => { let A = 0, xm = 0, zm = 0; const n = 10; for (let i = 0; i < n; i++) { const q = bodySec(u0 + (u1 - u0) * (i + 0.5) / n), dA = (u1 - u0) * p.length / n * 2 * q.a * 0.9; A += dA; xm += q.x * dA; zm += q.top * dA; } return { A, x: xm / A, z: zm / A }; };
     const uOf = (x) => Math.min(1, Math.max(0, (x + p.length * 0.42) / p.length)), cock = meta.cockpitX || [p.length * 0.58 - 2.0, p.length * 0.58 - 0.8];
     const dCol = deck(Math.min(uOf(cock[1]), 0.9), 0.96), dRad = deck(0.03, Math.max(0.06, uOf(cock[0]) - 0.03));
-    add('Glazed solar-selective collector (nose deck, unshaded)', 'collector', dCol.A * (0.0012 * 2700 + 0.0032 * 2500 + 0.02 * 40), dCol.x, 0, dCol.z, [0.14 * p.length, p.width * 0.6, 0.03], `${fmt(dCol.A, 3)} m² conformal patch: Al absorber 1.2 mm + low-iron glazing 3.2 mm + insulation`);
+    if (isArch) add('Glazed solar-selective collector (arch bridge top, sky-facing)', 'collector', AR4.collectorArea * (0.0012 * 2700 + 0.0032 * 2500 + 0.02 * 40), meta.wingX[0] - span * Math.tan(AR4.sweep * Math.PI / 180), 0, AR4.zTop, [0.8, AR4.bridgeSpan, 0.03], `${fmt(AR4.collectorArea, 3)} m² on the bridge: Al absorber 1.2 mm + low-iron glazing 3.2 mm + insulation; also shades the cockpit`);
+    else add('Glazed solar-selective collector (nose deck, unshaded)', 'collector', dCol.A * (0.0012 * 2700 + 0.0032 * 2500 + 0.02 * 40), dCol.x, 0, dCol.z, [0.14 * p.length, p.width * 0.6, 0.03], `${fmt(dCol.A, 3)} m² conformal patch: Al absorber 1.2 mm + low-iron glazing 3.2 mm + insulation`);
     add('Radiative-cooling emitter (rear deck)', 'radiator', dRad.A * (0.0012 * 2700 + 0.3), dRad.x, 0, dRad.z, [0.16 * p.length, p.width * 0.6, 0.01], `${fmt(dRad.A, 3)} m² conformal patch`);
     add('Heat spreaders, heat pipes, insulation', 'spreader', 4.5, -p.length * 0.1, 0, R + Hb * 0.5, [0.8, 0.6, 0.3]);
     add('Steering system (mechanical)', 'steering', 6.5, meta.wheelPos[0][0], 0, R + 0.1, [0.5, p.track * 0.8, 0.2]);
     add('Cabin canopy / glazing', 'cabin', 1.2 * 0.004 * M('cabin').rho, 0.35, 0, R + Hb * 0.62, [1.1, p.width * 0.5, 0.5]);
     const xOcc = (cock[0] + cock[1]) / 2; // occupant at the forward cockpit centre (Revision 2.1)
     add('Recumbent seat, restraints & controls', null, 9, xOcc, 0, R + 0.12, [0.6, 0.5, 0.3]);
-    add('Wing unloading / incidence mechanism', null, p.wingConfig === 'practical' ? 7 : 2.5, meta.wingX[0], 0, zRoot - 0.1, [0.3, 0.3, 0.2]);
-    const reefable = p.wingReefSpan < p.wingHeight - 1e-6;
+    if (!isArch) add('Wing unloading / incidence mechanism', null, p.wingConfig === 'practical' ? 7 : 2.5, meta.wingX[0], 0, zRoot - 0.1, [0.3, 0.3, 0.2]);
+    const reefable = !isArch && p.wingReefSpan < p.wingHeight - 1e-6;
     if (reefable) add('Wing telescoping reef mechanism (2 wings)', null, 3.5, meta.wingX[0], 0, zRoot + p.wingReefSpan, [0.3, 0.2, 0.1], 'joint collars, guides & mechanical latch');
-    if (p.stowage === 'tilt') add('Wing tilt-down stowage mechanism', null, 6, meta.wingX[0], 0, zRoot - 0.15, [0.4, 0.3, 0.2], 'hinge, latch & gas-strut-free mechanical linkage');
+    if (isArch && p.stowage === 'fold') add('Arch fold hinge & parking latch', null, 3.0, meta.wingX[0], 0, zRoot, [0.3, AR4.gap, 0.1], 'the arch folds back over the body for parking');
+    if (!isArch && p.stowage === 'tilt') add('Wing tilt-down stowage mechanism', null, 6, meta.wingX[0], 0, zRoot - 0.15, [0.4, 0.3, 0.2], 'hinge, latch & gas-strut-free mechanical linkage');
     if (p.spats) meta.wheelPos.forEach(([x, y], k) => add(`Wheel ${k + 1} spat / fairing (CFRP)`, 'chassis', 0.45 * 0.001 * ch.rho * 1.1, x, y, R, [2.1 * R, 0.12, 1.6 * R]));
     const struct = sum(items.map(i => i.m)); add('Fasteners, sealing & miscellaneous (6 %)', null, 0.06 * struct, 0, 0, R + Hb * 0.4, [p.length, p.width, Hb]);
     const empty = sum(items.map(i => i.m));
@@ -130,17 +149,18 @@ export default {
     const frontFrac = (cg[0] - rear) / (front - rear), cgHeight = cg[2];
     const veh = { ...veh0, mass: mOp, cgHeight, payload: p.payload, Crr: p.Crr, CdA: p.CdA, driveWheels: +p.driveWheels };
     const lay = wheelLayout(veh, frontFrac), W = mOp * G0, loads = threeWheelLoads(lay.pts, W);
-    const ssf = trikeSSF(veh, frontFrac), ayLift = rolloverAy(veh, mOp, { frontFrac }), hs = zRoot + span * 0.45;
+    const ssf = trikeSSF(veh, frontFrac), ayLift = rolloverAy(veh, mOp, { frontFrac }), hs = zRoot + span * (isArch ? 0.5 : 0.45);
+    const Csd = isArch ? 1.2 * 0.85 : 1.2; // arch legs act as a laterally separated biplane in crosswind: mutual interference ≈ 0.85
     const tipScan = (fn) => { for (let U = 0.5; U <= 80; U += 0.1) if (Math.min(...fn(U)) <= 0) return U; return 80; };
     const spanR = Math.min(p.wingHeight, p.wingReefSpan), areaR = p.wingArea * spanR / p.wingHeight, hsR = zRoot + spanR * 0.45;
     const BF1 = ctx.upstream('s07')?.bodyForces, rr0 = ctx.env?.rho ?? 1.225, AbT = BF1?.Aref ?? 0.8 * p.length * Hb * 0.75, CYT = BF1?.CYvsAWA?.CY ? Math.max(...BF1.CYvsAWA.CY.map(Math.abs)) : 0.8, hbT = BF1?.hCE_m ?? R + Hb * 0.45;
     const bodyL = (U) => ({ Fy: -0.5 * rr0 * U * U * AbT * CYT, z: hbT });
-    const tipU = tipScan((U) => threeWheelLoads(lay.pts, W, 0, [{ Fy: -0.5 * rr0 * U * U * p.wingArea * 1.2, z: hs }, bodyL(U)]));
+    const tipU = tipScan((U) => threeWheelLoads(lay.pts, W, 0, [{ Fy: -0.5 * rr0 * U * U * p.wingArea * Csd, z: hs }, bodyL(U)]));
     const tipUR = tipScan((U) => threeWheelLoads(lay.pts, W, 0, [{ Fy: -0.5 * rr0 * U * U * areaR * 1.2, z: hsR }, bodyL(U)]));
     void tipOverWind;
     // Revision 2 gust protection: free-feathering root releases at the safe side force; above release the wing weathervanes
     const rhoA = ctx.env?.rho ?? 1.225, mu0 = 0.95, FySafe = Math.min(0.7 * mu0 * mOp * G0, 0.8 * ssf * mOp * G0 * cgHeight / hs);
-    const Urelease = Math.sqrt(FySafe / (0.5 * rhoA * p.wingArea * 1.2));
+    const Urelease = Math.sqrt(FySafe / (0.5 * rhoA * p.wingArea * Csd));
     const FySafeR = Math.min(0.7 * mu0 * mOp * G0, 0.8 * ssf * mOp * G0 * cgHeight / hsR), UreleaseR = Math.sqrt(FySafeR / (0.5 * rhoA * areaR * 1.2));
     const loadedOKR = Math.min(...threeWheelLoads(lay.pts, W, 0, [{ Fy: -FySafeR, z: hsR }])) > 0;
     const Abody = 0.8 * p.length * Hb * 0.75, hBody = R + Hb * 0.45;
@@ -148,9 +168,9 @@ export default {
     const stowedLoads = (U) => threeWheelLoads(lay.pts, W, 0, [{ Fy: -0.5 * rhoA * U * U * (Abody * 0.8 + p.wingArea * 0.35), z: hBody }]);
     const tipFeather = (() => { for (let U = 1; U <= 80; U += 0.25) if (Math.min(...featheredLoads(U)) <= 0) return U; return 80; })();
     const tipStowed = (() => { for (let U = 1; U <= 80; U += 0.25) if (Math.min(...stowedLoads(U)) <= 0) return U; return 80; })();
-    const feather = p.wingRoot === 'feathering', loadedOK = feather ? Math.min(...threeWheelLoads(lay.pts, W, 0, [{ Fy: -FySafe, z: hs }])) > 0 : tipU >= p.designGust;
+    const feather = p.wingRoot === 'feathering' || p.wingRoot === 'ring', loadedOK = feather ? Math.min(...threeWheelLoads(lay.pts, W, 0, [{ Fy: -FySafe, z: hs }])) > 0 : tipU >= p.designGust;
     const gustOK = feather ? tipFeather >= p.designGust && loadedOKR : tipU >= p.designGust;
-    const overallH = meta.height, reefedH = asmR.meta.height, stowedH = meta.height - span + 0.15, gapTandem = nW > 1 ? Math.abs(meta.wingX[1] - meta.wingX[0]) : Infinity;
+    const overallH = meta.height, reefedH = asmR.meta.height, stowedH = isArch ? asmF.meta.height : meta.height - span + 0.15, gapTandem = !isArch && nW > 1 ? Math.abs(meta.wingX[1] - meta.wingX[0]) : Infinity;
     const P20 = roadLoad(kmh(20), veh).P, P40 = roadLoad(kmh(40), veh).P;
     // ---------- requirements compliance ----------
     const reqs = [
@@ -158,7 +178,7 @@ export default {
       ['No battery', 'pass', 'No electrochemical storage; finite mechanical buffer only (bistable cells).'],
       ['No operational electric traction', 'pass', 'Wheel torque only from wind (via tyres) or the thermomechanical hub.'],
       ['No conventional engine, turbine, gearbox or flywheel', 'pass', 'Direct aerodynamic force + wheel-integrated actuators.'],
-      ['Only wheels, steering and brakes move', 'warn', `Disclosed internal motion: ${+p.driveWheels * p.cartPerWheel} NiTi cartridges cycle and contact a stationary cam; buffer trigger; passive switch flexures${p.wingConfig === 'practical' ? '; adjustable wing-root incidence & unloading mechanism' : ''}${p.wingRoot === 'feathering' ? '; wing-root feathering pivot with torque-limited breakaway lock' : ''}${p.stowage === 'tilt' ? '; wing tilt-down stowage hinge & latch' : ''}${p.wingReefSpan < p.wingHeight ? '; telescoping wing reef joint & latch' : ''}.`],
+      ['Only wheels, steering and brakes move', 'warn', `Disclosed internal motion: ${+p.driveWheels * p.cartPerWheel} NiTi cartridges cycle and contact a stationary cam; buffer trigger; passive switch flexures${p.wingConfig === 'practical' ? '; adjustable wing-root incidence & unloading mechanism' : ''}${isArch ? '; arch ring track (incidence for any wind direction, torque-limited breakaway to feathered)' + (p.stowage === 'fold' ? ' and arch fold hinge & latch — these replace per-wing pivots and reefing' : '') : (p.wingRoot === 'feathering' ? '; wing-root feathering pivot with torque-limited breakaway lock' : '') + (p.stowage === 'tilt' ? '; wing tilt-down stowage hinge & latch' : '') + (p.wingReefSpan < p.wingHeight ? '; telescoping wing reef joint & latch' : '')}.`],
       ['Metamaterials essential to function', 'pass', 'Wing morphing core, photonic collectors, thermal metamaterials, NiTi lattice, bistable buffer.'],
       ['Completely noiseless', 'warn', 'Not achievable: tyre–road and airflow noise remain (Suite 21).'],
       ['Robust automatic backup in calm air', 'fail', 'Not demonstrated — must be proven by Suites 15–20 and physical Gates 2–4.'],
@@ -166,9 +186,9 @@ export default {
     // ---------- dimension / design-rule checks ----------
     const dims = [
       ['Overall width ≤ 2.55 m (common road-vehicle limit)', p.width, 2.55, p.width <= 2.55],
-      ['Track ≤ body width + 0.2 m', p.track, p.width + 0.2, p.track <= p.width + 0.2],
+      ['Overall width (track + tyre/spat width) ≤ 2.0 m', p.track + (p.spats ? 0.10 : 0.08), 2.0, p.track + (p.spats ? 0.10 : 0.08) <= 2.0 + 1e-9],
       ['Overall height with wings ≤ 4.0 m (legal maximum; 1 cm modelling tolerance)', overallH, 4.0, overallH <= 4.01],
-      ['Tandem spacing ≥ 1 root chord (wake/downwash interference)', nW > 1 ? gapTandem : 0, nW > 1 ? meta.cr : 0, nW > 1 ? gapTandem >= meta.cr : true],
+      ['Tandem spacing ≥ 1 root chord (wake/downwash interference)', !isArch && nW > 1 ? gapTandem : 0, !isArch && nW > 1 ? meta.cr : 0, isArch || nW <= 1 ? true : gapTandem >= meta.cr],
       ['Wheelbase ≤ 0.85 × length', p.wheelbase, 0.85 * p.length, p.wheelbase <= 0.85 * p.length],
       ['Wing root chords fit body length', meta.cr * nW, p.length * 0.95, meta.cr * nW <= p.length * 0.95],
       ['Ground clearance under body ≥ 0.12 m', R - 0.02 - 0.036 * Hb, 0.12, R - 0.02 - 0.036 * Hb >= 0.12],
@@ -192,12 +212,12 @@ export default {
     k('Static stability factor', ssf, 'g', 'Lateral acceleration at which an inside wheel lifts (trike tipping axis).', 'calc', ssf >= 1 ? 'ok' : ssf >= 0.75 ? 'warn' : 'bad');
     k('Tip-over crosswind, wing loaded & locked', tipU, 'm/s', 'Crosswind whose fully loaded wing side force (C_side 1.2) plus the body side force lifts the windward wheel(s).', 'calc', tipU >= p.designGust ? 'ok' : feather ? 'warn' : 'bad');
     if (feather) { k('Breakaway (feathering) side force', FySafe, 'N', `Release setting = min(0.7 μmg, 0.8·SSF·mg·h_cg/h_CE); reached at ≈ ${fmt(Urelease, 3)} m/s crosswind.`, 'calc'); k('Tip-over crosswind, wing feathered', tipFeather, 'm/s', 'After release the wing weathervanes (C_D ≈ 0.02); body side force (C_y 0.8) remains.', 'calc', tipFeather >= p.designGust ? 'ok' : 'bad'); }
-    if (p.stowage === 'tilt') k('Tip-over crosswind, wings stowed', tipStowed, 'm/s', 'Parked/transit configuration with wings tilted down.', 'calc', tipStowed >= p.designGust ? 'ok' : 'bad');
+    if (p.stowage === 'tilt' || p.stowage === 'fold') k(isArch ? 'Tip-over crosswind, arch folded' : 'Tip-over crosswind, wings stowed', tipStowed, 'm/s', 'Parked/transit configuration with wings tilted down.', 'calc', tipStowed >= p.designGust ? 'ok' : 'bad');
     if (reefable) { k('Overall height, wings reefed', reefedH, 'm', 'Telescoped wings for transit and strong wind (≈ 3.0 m target).', 'calc', reefedH <= 3.01 ? 'ok' : reefedH <= 4.0 ? 'warn' : 'bad'); k('Tip-over crosswind, reefed & locked', tipUR, 'm/s', `Reefed area ${fmt(areaR, 3)} m², centre of effort ${fmt(hsR, 3)} m.`, 'calc', tipUR >= p.designGust ? 'ok' : feather ? 'warn' : 'bad'); }
     k('Overall height (wings deployed)', overallH, 'm', '≤ 4.0 m legal; ≤ 3.0 m recommended for urban overhead structures, trees and sightlines.', 'calc', overallH <= 3.01 ? 'ok' : overallH <= 4.01 ? 'warn' : 'bad');
-    if (p.stowage === 'tilt') k('Parked / transit height (wings down)', stowedH, 'm', 'Body height plus stowed wing thickness (≈ 0.15 m).', 'calc');
+    if (p.stowage === 'tilt' || p.stowage === 'fold') k(isArch ? 'Parked height (arch folded)' : 'Parked / transit height (wings down)', stowedH, 'm', isArch ? 'Arch folded back over the body.' : 'Body height plus stowed wing thickness (≈ 0.15 m).', 'calc');
     k('Wing structure areal mass', wingAreal, 'kg/m²', 'Wing skin, spar, ribs and lattice core ÷ wing area (root fittings belong to the chassis load path); rigid land-yacht wingsails achieve ≈ 3–5 kg/m².', 'calc', wingAreal <= 5 ? 'ok' : wingAreal <= 6.5 ? 'warn' : 'bad');
-    if (nW > 1) k('Tandem spacing / root chord', gapTandem / meta.cr, '–', 'The rear wing works in the front wing’s downwash and wake; ≥ 1 chord keeps interference moderate (thrust of the rear wing still reduced — resolved in Suite 07).', 'calc', gapTandem >= meta.cr ? 'ok' : 'warn');
+    if (!isArch && nW > 1) k('Tandem spacing / root chord', gapTandem / meta.cr, '–', 'The rear wing works in the front wing’s downwash and wake; ≥ 1 chord keeps interference moderate (thrust of the rear wing still reduced — resolved in Suite 07).', 'calc', gapTandem >= meta.cr ? 'ok' : 'warn');
     k('Wheel power at 20 km/h', P20, 'W', 'Ideal level-road wheel power; specification reference 124 W for the 300 kg baseline.');
     k('Wheel power at 40 km/h', P40, 'W', 'Specification reference 406 W.');
     k('Body plan-form thickness ratio (width / length)', p.width / p.length, '–', p.bodyShape === 'lifting' ? 'Lifting body: the plan-form acts as a symmetric airfoil of this t/c in crosswind and as an endplate for the wing roots; its forces are solved in Suite 07.' : 'Conventional body: treated as drag area only.', 'calc');
@@ -207,8 +227,9 @@ export default {
     out.verdicts.push({ test: 'Static stability (trike)', status: ssf >= 1 ? 'pass' : ssf >= 0.75 ? 'warn' : 'fail', detail: `SSF ${fmt(ssf, 3)} g with CG height ${fmt(cgHeight, 3)} m and track ${p.track} m (${p.layout}).`, fix: 'Widen the track, lower the CG, move mass toward the twin-wheel axle.' });
     out.verdicts.push({ test: 'Wing overturning under design gust', status: gustOK && loadedOK ? 'pass' : 'fail', detail: feather ? `Feathering root: lock releases at ${fmt(FySafe, 4)} N (≈ ${fmt(Urelease, 3)} m/s crosswind) with all wheels still loaded (${loadedOK ? 'yes' : 'NO'}); feathered, the car tips only at ${fmt(tipFeather, 3)} m/s vs design gust ${p.designGust} m/s. A locked (non-feathering) wing would tip at ${fmt(tipU, 3)} m/s deployed${reefable ? ` and ${fmt(tipUR, 3)} m/s reefed; reefed lock release at ${fmt(FySafeR, 4)} N with all wheels loaded (${loadedOKR ? 'yes' : 'NO'})` : ''}.` : `Fixed root: tip-over at ${fmt(tipU, 3)} m/s crosswind vs design gust ${p.designGust} m/s.`, fix: 'Use the free-feathering root with breakaway (Revision 2), lower the wing, widen the track; never park with an exposed wing.' });
     if (p.layout === 'tadpole') out.verdicts.push({ test: 'Forward mass bias (≥ 60 % front)', status: frontFrac >= 0.6 ? 'pass' : 'warn', detail: `${fmt(frontFrac * 100, 3)} % on the twin front wheels.`, fix: 'Move the cockpit and buffer toward the front axle (Suite 02 geometry).' });
-    const Hroad = reefable ? reefedH : overallH; out.verdicts.push({ test: 'Overall height vs overhead clearance', status: overallH > 4.01 ? 'fail' : Hroad <= 3.01 ? 'pass' : 'warn', detail: `${fmt(overallH, 3)} m deployed${reefable ? `, ${fmt(reefedH, 3)} m reefed (reef for urban transit and strong wind)` : ''} (1 cm tolerance on the 3.0 m recommendation)${p.stowage === 'tilt' ? `; ${fmt(stowedH, 3)} m parked/transit with wings tilted down` : ''}. ≤ 4.0 m legal; ≤ 3.0 m recommended for overhead structures, trees and sightlines.` });
-    if (nW > 1) out.verdicts.push({ test: 'Tandem-wing interference', status: gapTandem >= meta.cr ? 'info' : 'warn', detail: `Pivot spacing ${fmt(gapTandem, 3)} m = ${fmt(gapTandem / meta.cr, 3)} root chords (clear gap ${fmt(gapTandem - meta.cr, 3)} m). The rear wing operates in the front wing’s downwash and wake, so its effective angle and dynamic pressure are reduced — evaluate the pair in Suite 07 rather than doubling single-wing thrust.` });
+    const Hroad = reefable ? reefedH : overallH; out.verdicts.push({ test: 'Overall height vs overhead clearance', status: overallH > 4.01 ? 'fail' : Hroad <= 3.01 ? 'pass' : 'warn', detail: `${fmt(overallH, 3)} m deployed${reefable ? `, ${fmt(reefedH, 3)} m reefed (reef for urban transit and strong wind)` : ''} (1 cm tolerance on the 3.0 m recommendation)${p.stowage === 'tilt' || p.stowage === 'fold' ? `; ${fmt(stowedH, 3)} m parked (${isArch ? 'arch folded' : 'wings tilted down'})` : ''}. ≤ 4.0 m legal; ≤ 3.0 m recommended for overhead structures, trees and sightlines.` });
+    if (isArch) out.verdicts.push({ test: 'Arch box-wing configuration', status: 'info', detail: `Closed box wing: legs ${fmt(span, 3)} m, gap ${fmt(AR4.gap, 3)} m, cant ${AR4.cant}°, sweep ${fmt(AR4.sweep, 3)}°, bridge ${fmt(AR4.bridgeArea, 3)} m² carrying a ${fmt(AR4.collectorArea, 3)} m² collector. No free tips; in crosswind the legs act as a laterally separated biplane (interference factor 0.85 applied). The ring track rotates the whole arch for incidence and feathering; the frame doubles as a roll-over hoop.` });
+    if (!isArch && nW > 1) out.verdicts.push({ test: 'Tandem-wing interference', status: gapTandem >= meta.cr ? 'info' : 'warn', detail: `Pivot spacing ${fmt(gapTandem, 3)} m = ${fmt(gapTandem / meta.cr, 3)} root chords (clear gap ${fmt(gapTandem - meta.cr, 3)} m). The rear wing operates in the front wing’s downwash and wake, so its effective angle and dynamic pressure are reduced — evaluate the pair in Suite 07 rather than doubling single-wing thrust.` });
     out.verdicts.push({ test: 'Hard requirements', status: 'pass', detail: 'No battery, no fossil fuel, no electric traction, no conventional engine in the architecture.' });
     out.verdicts.push({ test: 'Moving-part restriction', status: 'warn', detail: reqs[4][2] });
     out.verdicts.push({ test: 'Dimensional design rules', status: dims.every(d => d[3]) ? 'pass' : 'fail', detail: dims.filter(d => !d[3]).map(d => d[0]).join('; ') || 'All rules satisfied.' });
@@ -311,12 +332,12 @@ export default {
     out.explain.push({ title: 'Why the architecture matters', text: 'The vehicle is wind-primary: tall wings make propulsion possible but raise the CG and add large side forces. The three-wheel support triangle, mass distribution and wing height therefore jointly decide whether the car can accelerate, corner and stand safely in gusts.' });
     out.explain.push({ title: 'Global effect of this suite', text: 'When this suite runs, its dimensions, layout, CG height and operating mass become the global vehicle for every other suite; those suites are flagged stale and regenerate with the new geometry.' });
     // write back global vehicle
-    const patch = { layout: p.layout, length: p.length, width: p.width, height: p.height, wheelbase: p.wheelbase, track: p.track, wheelRadius: p.wheelRadius, wingArea: p.wingArea, wingHeight: p.wingHeight, wingReefSpan: Math.min(p.wingHeight, p.wingReefSpan), wingReef: p.wingState, bodyShape: p.bodyShape, spats: !!p.spats, nWings: +p.nWings, mass: +mOp.toFixed(2), payload: p.payload, Crr: p.Crr, CdA: p.CdA, cgHeight: +cgHeight.toFixed(4), driveWheels: +p.driveWheels, frontFrac: +frontFrac.toFixed(4) };
+    const patch = { layout: p.layout, length: p.length, width: p.width, height: p.height, wheelbase: p.wheelbase, track: p.track, wheelRadius: p.wheelRadius, wingArea: p.wingArea, wingHeight: p.wingHeight, wingReefSpan: Math.min(p.wingHeight, p.wingReefSpan), wingReef: isArch ? 'none' : p.wingState, wingConfig: p.rig, archCant: p.archCant, archSweep: p.archSweep, bodyShape: p.bodyShape, spats: !!p.spats, nWings: +p.nWings, mass: +mOp.toFixed(2), payload: p.payload, Crr: p.Crr, CdA: p.CdA, cgHeight: +cgHeight.toFixed(4), driveWheels: +p.driveWheels, frontFrac: +frontFrac.toFixed(4) };
     const changed = Object.keys(patch).some(kk => (typeof patch[kk] === 'number' ? Math.abs((ctx.vehicle[kk] ?? NaN) - patch[kk]) > 1e-6 : ctx.vehicle[kk] !== patch[kk]));
     if (changed) ctx.store.setVehicle(patch, 'Suite 01');
     out.headline = `${p.layout === 'tadpole' ? 'Tadpole' : 'Delta'} trike: computed ${fmt(total, 4)} kg (target ${p.targetMass} kg), CG ${fmt(cgHeight, 3)} m high, SSF ${fmt(ssf, 3)} g, tip-over crosswind ${fmt(tipU, 3)} m/s.${changed ? ' Global vehicle updated — dependent suites marked stale.' : ''}`;
     out.headlineKind = tipU < p.designGust || ssf < 0.75 ? 'warn' : 'info';
-    out.outputs = { mass: mOp, massComputed: total, cg, inertia: { Ixx: Ixx * scale, Iyy: Iyy * scale, Izz: Izz * scale, Ixy: Ixy * scale, Ixz: Ixz * scale, Iyz: Iyz * scale }, wheelLoads: loads, wheelLabels: lay.pts.map(q => q[2]), wheelbase: p.wheelbase, track: p.track, cgHeight, ssf, frontFrac, tipOverWind: tipU, massBreakdown: Object.fromEntries(items.map(i => [i.name, i.m])), layout: p.layout, wingRoot: p.wingRoot, FySafe_N: FySafe, releaseWind: Urelease, tipOverLocked: tipU, tipOverFeathered: tipFeather, tipOverStowed: tipStowed, bodySideArea: Abody, hCE: hs, overallHeight: overallH, reefedHeight: reefedH, stowedHeight: stowedH, tipOverReefed: tipUR, FySafeReefed_N: FySafeR, hCEReefed: hsR, areaReefed: areaR, wingState: p.wingState, stowage: p.stowage, wingArealMass: wingAreal };
+    out.outputs = { mass: mOp, massComputed: total, cg, inertia: { Ixx: Ixx * scale, Iyy: Iyy * scale, Izz: Izz * scale, Ixy: Ixy * scale, Ixz: Ixz * scale, Iyz: Iyz * scale }, wheelLoads: loads, wheelLabels: lay.pts.map(q => q[2]), wheelbase: p.wheelbase, track: p.track, cgHeight, ssf, frontFrac, tipOverWind: tipU, massBreakdown: Object.fromEntries(items.map(i => [i.name, i.m])), layout: p.layout, wingRoot: p.wingRoot, FySafe_N: FySafe, releaseWind: Urelease, tipOverLocked: tipU, tipOverFeathered: tipFeather, tipOverStowed: tipStowed, bodySideArea: Abody, hCE: hs, overallHeight: overallH, reefedHeight: reefedH, stowedHeight: stowedH, tipOverReefed: tipUR, FySafeReefed_N: FySafeR, hCEReefed: hsR, areaReefed: areaR, wingState: p.wingState, rig: isArch ? 'arch' : 'tandem', arch: isArch ? { ...AR4, sideCoeff: Csd, hCE: hs } : null, skin_mm: p.skin, core_mm: p.core, foldedHeight: isArch ? stowedH : null, stowage: p.stowage, wingArealMass: wingAreal };
     void groupMass;
     return out;
   },

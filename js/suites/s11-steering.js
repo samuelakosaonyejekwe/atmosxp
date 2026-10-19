@@ -42,7 +42,9 @@ export default {
     const kEff = (fz) => p.kAlpha * (fz / Fzn) ** (p.loadSens - 1);
     const Cf = nF * kEff(fzf) * fzf, Cr = nR * kEff(fzr) * fzr;
     const bi = bicycle({ m, Iz: p.Iz, a, b, Cf, Cr });
-    const hs = veh.wheelRadius + veh.height * 0.7 + veh.wingHeight * 0.45;
+    // centre of effort of the wing side force: AeroArch legs (Suite 01 arch geometry) or tandem wings
+    const arch01 = ctx.upstream('s01')?.arch, isArch = (veh.wingConfig || 'arch') === 'arch';
+    const hs = arch01?.hCE ?? (isArch ? veh.wheelRadius + veh.height * 0.7 + veh.wingHeight * 0.5 : veh.wheelRadius + veh.height * 0.7 + veh.wingHeight * 0.45), csArch = isArch ? 0.85 : 1;
     const tyreF = (al, fz, n) => n * mfLateral(al, fz, mu, { kAlpha: kEff(fz) });
     // generic nonlinear RHS
     const rhs = (delta, Fyw, Nw) => (t, y) => { const [vy, r, , , psi] = y, d = delta(t), aF = Math.atan2(vy + a * r, u) - d, aR = Math.atan2(vy - b * r, u); const FyF = tyreF(aF, fzf, nF), FyR = tyreF(aR, fzr, nR); return [(FyF * Math.cos(d) + FyR + Fyw(t)) / m - u * r, (a * FyF * Math.cos(d) - b * FyR + Nw(t)) / p.Iz, u * Math.cos(psi) - vy * Math.sin(psi), u * Math.sin(psi) + vy * Math.cos(psi), r]; };
@@ -51,17 +53,17 @@ export default {
     const ts = step.t, rr = step.y.map(y => y[1]), vys = step.y.map(y => y[0]), ay = step.y.map((y, i) => { const f = rhs((t) => t >= 0.5 ? d0 : 0, () => 0, () => 0)(ts[i], y); return (f[0] + u * y[1]); });
     const rSS = rr[rr.length - 1], rLin = bi.yawGain(u) * d0;
     // Revision 2: free-feathering wing root — side force capped at the breakaway setting, feathered (C_D≈0.02 + body) above it
-    const a01 = ctx.upstream('s01'), feather = (a01?.wingRoot ?? 'feathering') === 'feathering';
+    const a01 = ctx.upstream('s01'), feather = ['feathering', 'ring'].includes(a01?.wingRoot ?? 'feathering');
     const FySafe = a01?.FySafe_N ?? Math.min(0.7 * mu * W, 0.8 * trikeSSF(veh, p.frontFrac) * W * veh.cgHeight / (veh.wheelRadius + veh.height * 0.7 + veh.wingHeight * 0.45)), Abody = a01?.bodySideArea ?? 0.8 * veh.length * veh.height * 0.75;
     // Lifting body (Revision 2.3): body side force from Suite 07 (bodyForces) at its own low centre of effort; endplate factor on wings
     const s07b = ctx.upstream('s07')?.bodyForces, epf = ctx.upstream('s07')?.endplateFactor ?? 1;
     const hBody = s07b?.hCE_m ?? 0.6, CYb = (() => { const c = s07b?.CYvsAWA; if (c?.awa?.length && (c.CY || c.cy)) return Math.max(...(c.CY || c.cy).map(Math.abs)); return 0.8; })(), Ab = s07b?.Aref ?? Abody;
     const bodySide = (U) => 0.5 * rho * U * U * Ab * CYb;
-    const sideOf = (U) => { const Fw = 0.5 * rho * S * p.Cs * U * U * Math.min(1.15, epf), Fb = bodySide(U); if (!feather || Fw <= FySafe) return { F: Fw + Fb, z: (Fw * hs + Fb * hBody) / Math.max(1e-9, Fw + Fb), feathered: false }; const Fwf = 0.5 * rho * U * U * S * 0.02; return { F: Fwf + Fb, z: (Fwf * hs + Fb * hBody) / Math.max(1e-9, Fwf + Fb), feathered: true }; };
+    const sideOf = (U) => { const Fw = 0.5 * rho * S * p.Cs * csArch * U * U * Math.min(1.15, epf), Fb = bodySide(U); if (!feather || Fw <= FySafe) return { F: Fw + Fb, z: (Fw * hs + Fb * hBody) / Math.max(1e-9, Fw + Fb), feathered: false }; const Fwf = 0.5 * rho * U * U * S * 0.02; return { F: Fwf + Fb, z: (Fwf * hs + Fb * hBody) / Math.max(1e-9, Fwf + Fb), feathered: true }; };
     const gustF = (t) => sideOf(oneMinusCos(t, 1, p.gustDur, p.gustU)).F;
     const bodyNote = `Includes the lifting-body side force (C_Y ${fmt(CYb, 3)} on ${fmt(Ab, 3)} m² at ${fmt(hBody, 3)} m${s07b ? ', Suite 07' : ', default estimate'})${epf !== 1 ? ` and endplate factor ${fmt(epf, 3)} on the wings` : ''}.`;
     const cw = rk45(rhs(() => 0, gustF, (t) => gustF(t) * p.xcp), 0, [0, 0, 0, 0, 0], 8, { rtol: 1e-7, atol: 1e-9, hmax: 0.01 });
-    const latDev = cw.y[cw.y.length - 1][3], headDev = deg(cw.y[cw.y.length - 1][4]), gPeak = sideOf(p.gustU), FsPeak = gPeak.F, FsPeakLocked = 0.5 * rho * S * p.Cs * p.gustU ** 2;
+    const latDev = cw.y[cw.y.length - 1][3], headDev = deg(cw.y[cw.y.length - 1][4]), gPeak = sideOf(p.gustU), FsPeak = gPeak.F, FsPeakLocked = 0.5 * rho * S * p.Cs * csArch * p.gustU ** 2;
     // stability eigenvalues (linear 2-DOF)
     const A11 = -(Cf + Cr) / (m * u), A12 = -(a * Cf - b * Cr) / (m * u) - u, A21 = -(a * Cf - b * Cr) / (p.Iz * u), A22 = -(a * a * Cf + b * b * Cr) / (p.Iz * u);
     const tr = A11 + A22, dt_ = A11 * A22 - A12 * A21, disc = tr * tr / 4 - dt_, eig = disc >= 0 ? [tr / 2 + Math.sqrt(disc), tr / 2 - Math.sqrt(disc)].map(x => ({ re: x, im: 0 })) : [{ re: tr / 2, im: Math.sqrt(-disc) }, { re: tr / 2, im: -Math.sqrt(-disc) }];

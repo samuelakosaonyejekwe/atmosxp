@@ -1,5 +1,5 @@
 // Suite 08 — Coupled fluid–structure interaction and aeroelastic simulation.
-import { WING_PARAMS, buildWing, solveStatic, wingLoads, runGust, sizeSpar, uncoupledOmegas, featherState } from './s06-wing.js';
+import { WING_PARAMS, buildWing, solveStatic, wingLoads, runGust, sizeSpar, uncoupledOmegas, featherState, archFrame } from './s06-wing.js';
 import { beamResultants, beamModes } from '../core/fem.js';
 import { flutterVg } from '../core/aeroelastic.js';
 import { range, fmt, deg, rad, max, gci, interp1 } from '../core/num.js';
@@ -85,6 +85,7 @@ export default {
     out.tables.push({ title: 'Coupling algorithms', cols: ['Algorithm', 'Converged', 'Iterations', 'Final residual', 'Tip twist [°]', 'Wall time [ms]'], rows: ['fixed', 'aitken', 'iqn'].map(m => [m, runs[m].converged ? 'yes' : 'no', runs[m].iterations, runs[m].history[runs[m].history.length - 1], deg(runs[m].sol.phi[N - 1]), runs[m].ms]) });
     out.tables.push({ title: 'Time-step study (peak dynamic root moment)', cols: ['Δt [s]', 'Peak ΔM [N·m]'], rows: [[dt, pk(Gi)], [dt / 2, pk(G2)], [dt / 4, pk(G4)], ['Richardson extrapolated', g.fext], ['Observed order', g.p]] });
     out.views.push({ label: '2D animation: interface-residual convergence & section deformation', icon: '🎞', render: (el) => fsi2D(el, W, p, S, Gi) });
+    if (ctx.vehicle.wingConfig === 'arch') out.views.unshift({ label: '3D FSI: AeroArch legs + bridge through the gust (timeline)', icon: '🎞', render: (el) => fsiArch3D(el, W, p, S, Gi, ctx, Lc, nW) });
     out.views.unshift({ label: '3D FSI: evolving wing & gust flow (timeline)', icon: '🎞', render: (el) => fsi3D(el, W, p, S, Gi) });
     if (!runs.fixed.converged) out.recs.push({ level: 'info', text: `Fixed-point coupling with ω = ${p.omega0} did not converge in 150 exchanges; use Aitken (${runs.aitken.iterations}) or IQN-ILS (${runs.iqn.iterations}) for high-fidelity CFD–FEA coupling.`, basis: 'Algorithm comparison' });
     if (looseErr >= 0.02 || mu < 5) out.recs.push({ level: 'warn', text: 'Use strongly coupled (sub-iterated) partitioned FSI for transient gusts on this wing; the added-mass ratio and loose-coupling error indicate staggered schemes are not accurate enough.', basis: 'Added-mass ratio & loose/strong comparison' });
@@ -189,4 +190,42 @@ async function fsi2D(el, W, p, S, G) {
     draw(0, phS, c.mute, false); draw(d.w * amp, phS + d.ph * aAmp, '#38bdf8cc', true);
     g.fillStyle = c.fg; g.fillText(`75 % span · t = ${fmt(G.t[k], 3)} s · Δw ${fmt(d.w * 1000, 3)} mm (×${amp}) · Δθ ${fmt(deg(d.ph), 3)}° (×${aAmp})`, hw + 40, 18);
   } });
+}
+
+// ---------------- 3-D FSI of the AeroArch (both legs + bridge) ----------------
+// Solved: per-leg coupled static aeroelastic lift and the modal gust lift history (Suite-06 model), the closed-frame
+// FE deflection for the lateral load (the 48-Hz-class sway mode is far above gust frequencies, so the frame responds
+// quasi-statically to L(t)); flow particles in the box-wing vortex system carrying the solved lift.
+async function fsiArch3D(el, W, p, S, G, ctx, Lc, nW) {
+  const [{ vehicleScene, playback, particles, hud, legend3d }, mats, { vehicleFlowModel, sampledField, bodyStations }] = await Promise.all([import('../core/sim3d.js'), import('../core/materials.js'), import('../core/flow3d.js')]);
+  const veh = ctx.vehicle, F0 = archFrame(W, p, ctx, Math.abs(Lc.side * nW)), Lstatic = S.aero.ll.L;
+  el.append(h('p', { class: 'small muted' }, 'Both arch legs and the bridge deform with the solved closed-frame deflection, scaled at every instant by the solved lift history L(t) of the gust (quasi-static frame response — the sway mode is far above the gust frequency). Particles move through the box-wing vortex system (legs + bridge closure) carrying the solved lift. Deformation magnified (label below); colours fixed over the whole history.'));
+  const box = h('div'); el.append(box);
+  const materials = Object.fromEntries(Object.keys(mats.COMPONENTS).map(k => [k, ctx.material(k)]));
+  const SC = await vehicleScene(box, { vehicle: veh, materials, follow: false, height: 480 }), { V, THREE } = SC, Hd = hud(box);
+  const parts = SC.car.children.filter(o => /^Arch (leg (port|starboard) \(skin|top bridge)/.test(o.name)).map(o => ({ o, base: Float32Array.from(o.geometry.attributes.position.array), port: /port/.test(o.name), bridge: /bridge/.test(o.name) }));
+  const AM = F0.AM, inc = rad(10), nL = F0.nLeg, nodes = F0.nodes;
+  const lerpU = (idx) => { const i = Math.max(0, Math.min(nodes.length - 2, Math.floor(idx))), f = idx - i; return [0, 1].map(d => F0.u[3 * i + d] * (1 - f) + F0.u[3 * (i + 1) + d] * f); };
+  const nodeIdx = (P, part) => { if (part.bridge) { const yy = P[1] / Math.cos(inc); return nL + Math.max(0, Math.min(F0.nBr, (AM.bridgeSpan / 2 - yy) / AM.bridgeSpan * F0.nBr)); } const e = Math.max(0, Math.min(1, (P[2] - AM.zRoot) / AM.legHeight)); return part.port ? e * nL : nodes.length - 1 - e * nL; };
+  const umax = Math.max(1e-12, ...nodes.map((_, i) => Math.hypot(F0.u[3 * i], F0.u[3 * i + 1]))), dLmax = Math.max(...G.lift.map(Math.abs)), fMax = (Lstatic + dLmax) / Math.max(1e-9, Lstatic), autoAmp = Math.max(1, Math.round(0.1 * AM.legHeight / (umax * fMax)));
+  const ampIn = h('input', { type: 'range', min: 1, max: Math.max(1000, 3 * autoAmp), value: autoAmp, step: 1 }), ampLab = h('div', { class: 'small mono' }); const lab = () => { ampLab.textContent = `Deformation ×${ampIn.value} (auto ×${autoAmp}; true-scale peak arch deflection = ${fmt(umax * fMax * 1000, 4)} mm)`; }; ampIn.oninput = lab; lab(); box.before(h('label', {}, 'Deformation magnification ', ampIn), ampLab);
+  // flow: canted legs from the CAD meshes, closure at the bridge centre
+  const endOf = (pt, hi) => { const P = pt.base; let zx = hi ? -Infinity : Infinity; for (let k = 2; k < P.length; k += 3) zx = hi ? Math.max(zx, P[k]) : Math.min(zx, P[k]); let sx = 0, sy = 0, n = 0; for (let k = 0; k < P.length; k += 3) if (Math.abs(P[k + 2] - zx) < 0.06) { sx += P[k]; sy += P[k + 1]; n++; } return [sx / n, sy / n, zx]; };
+  const legs = parts.filter(q => !q.bridge), br = parts.find(q => q.bridge); let cb = [0, 0, AM.zTop]; if (br) { const P = br.base; let sx = 0, sy = 0, sz = 0; for (let k = 0; k < P.length; k += 3) { sx += P[k]; sy += P[k + 1]; sz += P[k + 2]; } cb = [3 * sx / P.length, 3 * sy / P.length, 3 * sz / P.length]; }
+  const app = W.app(W.span / 2), Va = app.Va, awa = rad(app.awa), airV = [-Va * Math.cos(awa), Va * Math.sin(awa)];
+  const bounds = [[-6, 6], [-5, 5], [0.02, 4.5]]; let field = null, lastB = -1;
+  const build = (Lper) => { const M = vehicleFlowModel({ air: () => airV, wings: legs.map(q => { const a = endOf(q, false), b = endOf(q, true); return { x: a[0], ya: a[1], z0: a[2], xb: b[0], yb: b[1], z1: b[2], L: Lper, loading: 'box', closure: cb }; }), body: bodyStations(veh), rho: p.rho, Va, rc: 0.08 }); field = sampledField(M.vel, bounds, [25, 21, 13]); };
+  build(Lstatic); const P = particles(V, { count: matchMedia('(max-width:600px)').matches ? 1000 : 2200, bounds, vel: (x, y, z) => field.sample(x, y, z), colorRange: [0.6 * Va, 1.4 * Va + p.gustAmp], size: 0.07 });
+  legend3d(box, { title: 'Air speed (m/s)', lo: 0.6 * Va, hi: 1.4 * Va + p.gustAmp });
+  const T = G.t[G.t.length - 1]; let lastT = 0;
+  V.controls.target.set(cb[0], 0, AM.zRoot + AM.legHeight * 0.5); V.camera.position.set(cb[0] + 6.5, -4.5, 3.2); V.controls.update();
+  const pb = playback(box, { duration: T, rate: 0.5, label: 'FSI time', onFrame: (t) => {
+    const k = Math.min(G.t.length - 1, Math.max(0, Math.round(t / (G.t[1] - G.t[0])))), Lt = Lstatic + G.lift[k], fac = Lt / Math.max(1e-9, Lstatic), amp = +ampIn.value;
+    if (Math.abs(t - lastB) > 0.08) { build(Lt); lastB = t; }
+    for (const part of parts) { const A = part.o.geometry.attributes.position.array, B = part.base; for (let v = 0; v < B.length; v += 3) { const d = lerpU(nodeIdx([B[v], B[v + 1], B[v + 2]], part)), uy = d[0] * fac * amp, uz = d[1] * fac * amp; A[v] = B[v] - uy * Math.sin(inc); A[v + 1] = B[v + 1] + uy * Math.cos(inc); A[v + 2] = B[v + 2] + uz; } part.o.geometry.attributes.position.needsUpdate = true; part.o.geometry.computeVertexNormals(); }
+    const dt = Math.min(0.03, Math.max(0, t - lastT)) || 0.01; lastT = t; P.step(dt * 2, t);
+    SC.setArrow('side', [0, Math.abs(Lc.side * nW) * fac, 0], 0.004); SC.setArrow('thrust', [Lc.thrust * nW * fac, 0, 0], 0.01); SC.setArrow('hub', [0, 0, 0]); SC.setArrow('drag', [0, 0, 0]); SC.setArrow('wind', [airV[0], airV[1], 0], 0.25);
+    Hd.set([['Gust ΔU', fmt(G.gust?.[k] ?? 0, 3) + ' m/s'], ['Leg lift: static + Δ', `${fmt(Lstatic, 3)} + ${fmt(G.lift[k], 3)} N`], ['Frame root moment', fmt(F0.rootM * fac, 3) + ' N·m'], ['Cantilever-leg equivalent', fmt(F0.cantM * fac, 3) + ' N·m'], ['Arch sway (true)', fmt(F0.sway * fac * 1000, 4) + ' mm'], ['Display scale', '×' + amp]]);
+  } });
+  return { dispose: () => pb.dispose() };
 }

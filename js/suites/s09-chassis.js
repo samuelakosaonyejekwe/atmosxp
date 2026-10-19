@@ -119,9 +119,9 @@ export default {
   params: [
     { key: 'faceMat', label: 'Face material', type: 'select', group: 'Laminate', default: 'cfrp-woven', options: faceMats.map(m => ({ value: m.id, label: m.name })), auto: (c) => ({ value: c.material('chassis')?.id || 'cfrp-woven', prov: 'library' }) },
     { key: 'layup', label: 'Face layup (deg)', type: 'text', group: 'Laminate', default: '0,45,-45,0' },
-    { key: 'tPly', label: 'Ply thickness', unit: 'mm', type: 'number', min: 0.05, max: 2, step: 0.05, group: 'Laminate', default: 0.25 },
+    { key: 'tPly', label: 'Ply thickness', unit: 'mm', type: 'number', min: 0.02, max: 2, step: 0.005, group: 'Laminate', default: 0.25, auto: (c) => { const o = c.upstream('s01'); if (!o?.skin_mm) return undefined; const n = String(c.store.params('s09').layup || '0,45,-45,0').split(/[,/ ]+/).filter(Boolean).length || 4; return { value: +(o.skin_mm / n).toFixed(4), prov: 'coupled' }; }, help: 'Coupled from Suite 01 face thickness ÷ number of plies in the layup.' },
     { key: 'coreMat', label: 'Core material', type: 'select', group: 'Laminate', default: 'core-pet', options: coreMats.map(m => ({ value: m.id, label: m.name })), auto: (c) => ({ value: c.material('chassisCore')?.id || 'core-pet', prov: 'library' }) },
-    { key: 'tCore', label: 'Core thickness', unit: 'mm', type: 'number', min: 3, max: 60, step: 1, group: 'Laminate', default: 15 },
+    { key: 'tCore', label: 'Core thickness', unit: 'mm', type: 'number', min: 2, max: 60, step: 0.5, group: 'Laminate', default: 15, auto: (c) => { const o = c.upstream('s01'); return o?.core_mm ? { value: +o.core_mm, prov: 'coupled' } : undefined; } },
     { key: 'case', label: 'Load case', type: 'select', group: 'Loads', default: 'combined', options: [{ value: 'combined', label: 'Combined: bump + braking + wing thrust' }, { value: 'vertical', label: 'Vertical bump only' }, { value: 'braking', label: 'Emergency braking + wing thrust' }] },
     { key: 'loadFactor', label: 'Vertical load factor', unit: 'g', type: 'number', min: 1, max: 5, step: 0.1, group: 'Loads', default: 2.5, help: 'Road-bump design factor on all masses.' },
     { key: 'brakeDecel', label: 'Braking deceleration', unit: 'm/s²', type: 'number', min: 0, max: 12, step: 0.1, group: 'Loads', default: 7.8, auto: (c) => { const o = c.upstream('s12'); return o?.decel_ms2 ? { value: +o.decel_ms2.toFixed(2), prov: 'coupled' } : undefined; } },
@@ -230,16 +230,25 @@ export default {
     {
       const nW = veh.nWings || 2, mu = ctx.upstream('s10')?.muPeak ?? 0.95, ssf = ctx.upstream('s11')?.ssf ?? ctx.upstream('s01')?.ssf ?? (veh.track / 2) * (2 / 3) / veh.cgHeight;
       const zRoot = veh.wheelRadius + veh.height * 0.7, hCE = zRoot + 0.45 * veh.wingHeight, FySafe = Math.min(0.7 * mu * veh.mass * G, 0.8 * ssf * veh.mass * G * veh.cgHeight / hCE);
-      const Mroot = FySafe / nW * (hCE - zRoot) * p.gustFactor; // deployed wing at the breakaway setting × dynamic factor (worst case before release)
-      const Fbear = Mroot / p.stepDepth; // couple reacted as equal and opposite lateral forces at partner (deck) and step (keel)
+      const isArch = veh.wingConfig === 'arch', a6 = ctx.upstream('s06')?.arch;
+      // tandem: cantilever root moment at breakaway; AeroArch: closed-frame root moment (portal action) at breakaway × gust DAF
+      const Mroot = isArch ? (a6?.rootMoment_Nm ?? 0.62 * FySafe / nW * 0.45 * veh.wingHeight * p.gustFactor) : FySafe / nW * (hCE - zRoot) * p.gustFactor;
+      const sepArch = isArch ? (archGeom(veh).rootChord * 0.8) : p.stepDepth, Fbear = Mroot / sepArch; // AeroArch: couple reacted by the fore/aft ring-track bulkheads
       // ring frame: couple applied at the crown of a closed ring of radius ≈ body half-height; max ring moment ≈ M/2 (Roark, ring under a couple)
       const t = p.frameT / 1000, d = p.frameD / 1000, Zf = t * d * d / 6, sigF = 0.5 * Mroot / Zf, Fx = (FM.Xt ?? 600) * 1e6 * 0.35; // quasi-isotropic allowable
       const [kw, kh] = String(p.keelW).split('x').map(v => +v / 1000), tk = p.keelT / 1000, Ik = (kw * kh ** 3 - (kw - 2 * tk) * (kh - 2 * tk) ** 3) / 12, Lk = 0.5 * veh.wheelbase, Mk = Fbear * Lk / 4, sigK = Mk * (kh / 2) / Ik;
       const SFf = Fx / sigF, SFk = Fx / sigK;
       out.kpis.push({ label: 'Design wing-root moment (deployed, at breakaway × dyn.)', value: Mroot, unit: 'N·m', explain: `F_y,safe/n_wings × lever (${fmt(hCE - zRoot, 3)} m) × ${p.gustFactor}. Worst case is the deployed wing just before the breakaway releases.`, prov: 'calc' });
       out.kpis.push({ label: 'Bulkhead ring-frame SF / keel-beam SF', value: `${fmt(SFf, 3)} / ${fmt(SFk, 3)}`, unit: '', explain: `Ring frame σ = 0.5·M/Z = ${fmt(sigF / 1e6, 3)} MPa; keel σ = ${fmt(sigK / 1e6, 3)} MPa from bearing couple ${fmt(Fbear, 3)} N over ${fmt(Lk, 3)} m.`, prov: 'calc', status: Math.min(SFf, SFk) >= 2 ? 'ok' : 'bad' });
-      out.verdicts.push({ test: 'Wing-root load path: bulkhead ring frame & keel (Rev 2.1)', status: Math.min(SFf, SFk) >= 2 ? 'pass' : Math.min(SFf, SFk) >= 1.3 ? 'warn' : 'fail', detail: `Root moment ${fmt(Mroot, 3)} N·m → partner/step forces ${fmt(Fbear, 3)} N; ring-frame SF ${fmt(SFf, 3)}, keel SF ${fmt(SFk, 3)} (target ≥ 2).`, fix: 'Increase frame laminate/depth, partner-to-step separation or keel section.' });
+      out.verdicts.push({ test: isArch ? 'AeroArch load path: ring-track bulkheads & keel' : 'Wing-root load path: bulkhead ring frame & keel (Rev 2.1)', status: Math.min(SFf, SFk) >= 2 ? 'pass' : Math.min(SFf, SFk) >= 1.3 ? 'warn' : 'fail', detail: `Root moment ${fmt(Mroot, 3)} N·m → partner/step forces ${fmt(Fbear, 3)} N; ring-frame SF ${fmt(SFf, 3)}, keel SF ${fmt(SFk, 3)} (target ≥ 2).`, fix: 'Increase frame laminate/depth, partner-to-step separation or keel section.' });
       out.tables.push({ title: 'Wing-root load path (mast-step bulkheads + keel)', cols: ['Item', 'Value'], rows: [['Breakaway side force (both wings)', `${fmt(FySafe, 4)} N`], ['Centre of effort above root (deployed)', `${fmt(hCE - zRoot, 4)} m`], ['Design root moment per wing', `${fmt(Mroot, 4)} N·m`], ['Partner / step bearing force', `${fmt(Fbear, 4)} N`], ['Ring-frame bending stress', `${fmt(sigF / 1e6, 4)} MPa (SF ${fmt(SFf, 3)})`], ['Keel-beam bending stress', `${fmt(sigK / 1e6, 4)} MPa (SF ${fmt(SFk, 3)})`]], explain: 'Hand-calculation check of the discrete load path that the side-section FE does not represent (out-of-plane wing moment).' });
+      if (isArch) { // roll-over hoop: vehicle inverted on the bridge, 1.5 × vehicle weight
+        const g6 = archGeom(veh), P = 1.5 * veh.mass * G, legLen = g6.legHeight / Math.cos(g6.cant * Math.PI / 180), Nleg = P / 2 / Math.cos(g6.cant * Math.PI / 180);
+        const EIleg = a6?.EIroot ?? archEI(ctx).leg, EIbr = a6?.EItip ?? archEI(ctx).bridge, Pcr = Math.PI ** 2 * EIleg / (1.0 * legLen) ** 2; // sway portal with stiff bridge: K ≈ 1.0
+        const Mbr = P * g6.bridgeSpan / 12, hsb = archEI(ctx).hsTip, sigB = Mbr * (hsb / 2) / EIbr * archEI(ctx).Ecap, Xc = (FM.Xc ?? FM.Xt ?? 600) * 1e6 * 0.5, SFb = Pcr / Nleg, SFbr = Xc / Math.max(1, sigB);
+        out.kpis.push({ label: 'Roll-over hoop: leg buckling SF / bridge bending SF', value: `${fmt(SFb, 3)} / ${fmt(SFbr, 3)}`, unit: '', explain: `Inverted vehicle on the arch bridge, 1.5 × weight = ${fmt(P, 3)} N: each canted leg carries ${fmt(Nleg, 3)} N vs Euler P_cr ${fmt(Pcr, 3)} N (K = 1.0, L = ${fmt(legLen, 3)} m); bridge (fixed–fixed, distributed contact) M = ${fmt(Mbr, 3)} N·m.`, prov: 'calc', status: Math.min(SFb, SFbr) >= 2 ? 'ok' : 'bad' });
+        out.verdicts.push({ test: 'AeroArch roll-over protection (inverted, 1.5 × weight)', status: Math.min(SFb, SFbr) >= 2 ? 'pass' : Math.min(SFb, SFbr) >= 1 ? 'warn' : 'fail', detail: `Leg buckling SF ${fmt(SFb, 3)}, bridge bending SF ${fmt(SFbr, 3)} (target ≥ 2). Survival space: bridge underside ${fmt(g6.zTop - 0.12 - veh.wheelRadius - veh.height * 0.62, 3)} m above the seated occupant’s head line.`, fix: 'Thicken the leg caps / torsion tube or add a compression strut in the legs; the arch doubles as the roll-over hoop only if it does not buckle.' });
+      }
     }
     out.outputs = { maxVonMises_MPa: vmMax / 1e6, minSF: Rmin, maxDefl_m: A.maxRel, torsionalStiffness_Nm_deg: KtDeg, bucklingFactor: BF, wrinklingFactor: WF, chassisMass, tsaiWuMax: 1 / Rmin, f1Hz: modesS[0]?.f, rideHz: modes[0]?.f, crashStroke_m: stroke, crushMass_kg: crushMass };
     out.headline = `Min strength ratio ${fmt(Rmin, 3)}, max deflection ${fmt(A.maxRel * 1000, 3)} mm, torsional stiffness ${fmt(KtDeg / 1e3, 3)} kN·m/deg, buckling factor ${fmt(BF, 3)}, crash stroke ${fmt(stroke, 3)} m of ${fmt(overhang, 3)} m available.`;
@@ -338,3 +347,12 @@ async function chassis2D(el, A, modesS) {
   } });
 }
 function cmapRGB(v) { const c = cmap(Math.max(0, Math.min(1, v)), 'turbo'); return `rgb(${c.map(Math.round).join(',')})`; }
+
+// AeroArch geometry & section stiffness helpers (geometry from the parametric CAD, sections from the Suite-06 spar model)
+import { vehicleAssembly as _va } from '../core/cad.js';
+import { WING_PARAMS as _WP, buildWing as _bw } from './s06-wing.js';
+function archGeom(veh) { return _va(veh, {}).meta.arch; }
+function archEI(ctx) {
+  const p6 = { ...Object.fromEntries(_WP.map(q => [q.key, q.default])), span: ctx.vehicle.wingHeight, area: ctx.vehicle.wingArea / (ctx.vehicle.nWings || 2), ...(ctx.store?.params?.('s06') || {}), ...(ctx.upstream('s06')?.sizedSpar || {}) };
+  const W = _bw(p6, ctx), r = W.props(0), t = W.props(W.span); return { leg: r.EI, bridge: t.EI, hsTip: t.hs, Ecap: W.cover.Ex };
+}

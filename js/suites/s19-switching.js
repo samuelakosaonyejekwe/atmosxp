@@ -56,7 +56,7 @@ export default {
     const thrustOf = (U) => { const aw = apparentWind(U, p.twa, 0, v); if (s07?.thrustVsAWA?.awa?.length && s07.Va) { const T0 = interp1(s07.thrustVsAWA.awa, s07.thrustVsAWA.thrust, Math.abs(aw.beta)); return { Fx: T0 * (aw.Va / s07.Va) ** 2, total: NaN, beta: aw.beta, Va: aw.Va }; } const wf = wingForces(aw.Va, aw.beta, p.CL, p.CD, veh.wingArea, rho); return { Fx: wf.thrust, total: Math.hypot(wf.L, wf.D), beta: aw.beta, Va: aw.Va }; };
     const TH = Uw.map(thrustOf), thrustRaw = TH.map(x => x.Fx).slice(), totalLoad = TH.map(x => Number.isFinite(x.total) ? x.total : Math.abs(x.Fx) * 2.2);
     // Revision 2 wing-root state machine: LOCKED → (side force > breakaway) → FEATHERED → (side force < 0.6 × breakaway for ≥ 3 s) → re-latched
-    const a01 = ctx.upstream('s01'), featherRoot = (a01?.wingRoot ?? 'feathering') === 'feathering', FySafe = a01?.FySafe_N ?? 600;
+    const a01 = ctx.upstream('s01'), featherRoot = ['feathering', 'ring'].includes(a01?.wingRoot ?? 'feathering'), FySafe = a01?.FySafe_N ?? 600;
     const sideRaw = TH.map((x, i) => Number.isFinite(x.total) ? Math.sqrt(Math.max(0, x.total ** 2 - x.Fx ** 2)) : Math.abs(totalLoad[i]) * 0.9);
     const wingState = [], thrust = [], reefState = []; let feath = false, calm = 0, featherEvents = 0, reefOn = false, reefEvents = 0;
     const spanD = veh.wingHeight, spanR = Math.min(spanD, veh.wingReefSpan ?? spanD), reefable = spanR < spanD - 1e-6, af = spanR / spanD, reefU = p.reefU ?? 7;
@@ -126,7 +126,7 @@ export default {
         const mats = Object.fromEntries(Object.keys(ctx.materials.COMPONENTS).map(k2 => [k2, ctx.material(k2)]));
         await drivingSim(el, { vehicle: veh, materials: mats, wingIncidence: 12 }, {
           t, v: t.map(() => v), hdg: 90, U: Uw, dirFrom: 90 + p.twa, thrust, side, hub: S.hubForce, drag: t.map(() => need),
-          hud: (i) => [['Time', fmt(t[i], 4) + ' s'], ['Mode', S.modes[i], MC[S.modes[i]] || '#e5e7eb'], ['Wing root', wingState[i], wingState[i] === 'FEATHERED' ? '#f59e0b' : undefined], ['Wing span', reefState[i], reefState[i] === 'REEFED' ? '#38bdf8' : undefined], ['True wind', fmt(Uw[i], 3) + ' m/s'], ['Forward wing thrust', fmt(thrust[i], 4) + ' N'], ['Sensed thrust (filtered)', fmt(S.sensed[i], 4) + ' N'], ['Engage below', fmt(engage, 4) + ' N'], ['Disengage above', fmt(disengage, 4) + ' N'], ['Hub/buffer force', fmt(S.hubForce[i], 4) + ' N', S.hubForce[i] > 0 ? '#a855f7' : undefined], ['Required force', fmt(need, 4) + ' N']],
+          hud: (i) => [['Time', fmt(t[i], 4) + ' s'], ['Mode', S.modes[i], MC[S.modes[i]] || '#e5e7eb'], ['Wing root', wingState[i], wingState[i] === 'FEATHERED' ? '#f59e0b' : undefined], ...(reefable ? [['Wing span', reefState[i], reefState[i] === 'REEFED' ? '#38bdf8' : undefined]] : []), ['True wind', fmt(Uw[i], 3) + ' m/s'], ['Forward wing thrust', fmt(thrust[i], 4) + ' N'], ['Sensed thrust (filtered)', fmt(S.sensed[i], 4) + ' N'], ['Engage below', fmt(engage, 4) + ' N'], ['Disengage above', fmt(disengage, 4) + ' N'], ['Hub/buffer force', fmt(S.hubForce[i], 4) + ' N', S.hubForce[i] > 0 ? '#a855f7' : undefined], ['Required force', fmt(need, 4) + ' N']],
         }, { explain: `Solved: wind record (${p.profile}), forward wing thrust from the apparent-wind model${s07?.thrustVsAWA ? ' (Suite 07 table)' : ''}, the mechanical sensor's filtered response, the hysteretic engage/disengage automaton and the hub/buffer force at every ${dt} s step. The car is held at the target speed (switching study, not a journey). Green arrow = wing thrust, purple = backup force, orange = required road force, red = wing side force, blue = true wind. A digital automaton is not proof that the passive mechanism exists.` });
       } });
     }
@@ -140,7 +140,7 @@ export default {
         // state diagram
         const R0 = Math.min(W * 0.14, 110, (H - 120) / 2), cx = 20 + R0 + 30, cy = 44 + R0;
         nodes.forEach((nm, j) => { const a = -Math.PI / 2 + j * 2 * Math.PI / nodes.length, x = cx + R0 * Math.cos(a), y = cy + R0 * Math.sin(a), on = nm === cur; g.fillStyle = on ? MC[nm] : A.theme().bg2; g.strokeStyle = MC[nm]; g.lineWidth = on ? 3 : 1.5; g.beginPath(); g.arc(x, y, on ? 30 : 24, 0, 7); g.fill(); g.stroke(); g.lineWidth = 1; A.text(g, nm, x - g.measureText(nm).width / 2, y + 4, on ? '#0b1020' : A.theme().fg, 'bold 11px Inter,system-ui,sans-serif'); });
-        A.text(g, `Wing span: ${reefState[i]}`, 20, cy + R0 + 72, reefState[i] === 'REEFED' ? '#38bdf8' : '#22c55e', 'bold 13px Inter,system-ui,sans-serif');
+        if (reefable) A.text(g, `Wing span: ${reefState[i]}`, 20, cy + R0 + 72, reefState[i] === 'REEFED' ? '#38bdf8' : '#22c55e', 'bold 13px Inter,system-ui,sans-serif');
         A.text(g, `Wing root: ${wingState[i]}`, 20, cy + R0 + 52, wingState[i] === 'FEATHERED' ? '#f59e0b' : '#22c55e', 'bold 13px Inter,system-ui,sans-serif');
         // threshold gauge (vertical)
         const gx = cx + R0 + 60, gy = 24, gh = 2 * R0 + 40, Y = (F) => gy + gh - Math.max(0, Math.min(1, F / Fmax)) * gh;

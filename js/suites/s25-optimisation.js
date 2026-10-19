@@ -1,12 +1,14 @@
 // Suite 25 — Sensitivity, uncertainty quantification, surrogate modelling & multidisciplinary optimisation.
 import { h, table } from '../core/ui.js';
+import { vehicleAssembly } from '../core/cad.js';
 import { fmt, linspace, range, mean, std, clamp, bisect, lhs, rng, scaleSample, histogram, metrics, G0 } from '../core/num.js';
 import { morris, sobol, tornado, nsga2, gpFit, hypervolume2, propagate } from '../core/analysis.js';
 
 // Reduced whole-vehicle model (physics-based, millisecond evaluation) used by every study in this suite.
 const NITI = { rho: 6450, c: 837, k: 18, Lh: 19000, swing: 15 };
 function model(x, c) {
-  const span = c.span0 * Math.sqrt(x.S / c.S0), AR = span ** 2 / (x.S / c.nW), a = x.alpha * Math.PI / 180;
+  // AeroArch: two legs mirrored in the body plane form a Prandtl box wing → AR_eff = (2·leg)²/(2S)/k (k from the CAD gap/span ratio)
+  const span = c.span0 * Math.sqrt(x.S / c.S0), AR = c.arch ? (2 * span / c.arch.cosCant) ** 2 / (2 * x.S) / c.arch.k : span ** 2 / (x.S / c.nW), a = x.alpha * Math.PI / 180;
   const CL = Math.min(1.3, 2 * Math.PI * a * AR / (AR + 2)), CD = 0.025 + CL ** 2 / (Math.PI * 0.8 * AR);
   const mExtra = 2.5 * x.S + 6 * x.Ac + 2 * x.nCart * x.mc + 20, mTot = x.m + mExtra;
   const road = (v) => mTot * G0 * x.Crr + 0.5 * c.rho * x.CdA * v * v;
@@ -88,7 +90,8 @@ export default {
   async run(p, ctx) {
     const out = { kpis: [], charts: [], tables: [], verdicts: [], recs: [], checks: [], explain: [], views: [] };
     const v = ctx.vehicle, rho = ctx.env?.rho || 1.225, L = v.wheelbase, tr = v.track;
-    const c = { span0: v.wingHeight, S0: v.wingArea, nW: v.nWings || 2, rho, R: v.wheelRadius, h: v.height, vTarget: p.vTarget_kmh / 3.6, hContact: p.hContact, mechEff: p.mechEff, tipArm: (tr / 2) * (0.42 * L) / Math.hypot(L, tr / 2), cosPsi: L / Math.hypot(L, tr / 2), sig0: 40, Calpha: 3 * 6000 };
+    const AMx = v.wingConfig === 'arch' ? vehicleAssembly(v, {}).meta.arch : null, archC = AMx ? (() => { const L = AMx.legHeight / Math.cos(AMx.cant * Math.PI / 180), g = (AMx.gap + AMx.bridgeSpan) / 2, b = 2 * L; return { k: (1 + 0.45 * g / b) / (1.04 + 2.81 * g / b), cosCant: Math.cos(AMx.cant * Math.PI / 180) }; })() : null;
+    const c = { arch: archC, span0: v.wingHeight, S0: v.wingArea, nW: v.nWings || 2, rho, R: v.wheelRadius, h: v.height, vTarget: p.vTarget_kmh / 3.6, hContact: p.hContact, mechEff: p.mechEff, tipArm: (tr / 2) * (0.42 * L) / Math.hypot(L, tr / 2), cosPsi: L / Math.hypot(L, tr / 2), sig0: 40, Calpha: 3 * 6000 };
     const base = { S: v.wingArea, alpha: p.alpha, Crr: v.Crr, CdA: v.CdA, nCart: p.nCart, mc: p.mc, Ac: p.Ac, dT: p.dT, q: p.q, w: p.w, t: p.t, U: p.U };
     base.m = Math.max(100, v.mass - (2.5 * base.S + 6 * base.Ac + 2 * base.nCart * base.mc + 20));
     const B = model(base, c);

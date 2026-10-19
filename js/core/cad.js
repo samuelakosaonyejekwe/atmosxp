@@ -151,7 +151,7 @@ export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence = 10, air
   const frame = (name, x) => { const q = bodySec(uOf(x)), m = new Mesh(name, { color: color('chassis', '#3b4250'), group: 'Chassis', component: 'chassis' }); const N = 36; const ring = (sc, xx) => range(N).map(k => { const t = 2 * Math.PI * k / N, c = Math.cos(t), sn = Math.sin(t); return m.v(xx, q.a * sc * Math.sign(c) * Math.abs(c) ** (2 / 2.6), q.cz + q.b * sc * Math.sign(sn) * Math.abs(sn) ** (2 / 2.6)); }); const o0 = ring(0.97, x - 0.02), o1 = ring(0.97, x + 0.02), i0 = ring(0.8, x - 0.02), i1 = ring(0.8, x + 0.02); for (let k = 0; k < N; k++) { const k1 = (k + 1) % N; m.q(o0[k], o0[k1], o1[k1], o1[k]); m.q(i0[k1], i0[k], i1[k], i1[k1]); m.q(o1[k], o1[k1], i1[k1], i1[k]); m.q(i0[k], i0[k1], o0[k1], o0[k]); } return fixOrientation(m); };
   let wingX, LE, cr, ct, span, areaFitted, reefSpan, spanDep, archMeta = null;
   if (arch) {
-    const hLeg = veh.wingHeight, cm = veh.wingArea / (2 * hLeg), c = cm * 1.2, ctip = cm * 0.8, sweep = rad(veh.archSweep ?? 20), cant = rad(veh.archCant ?? 12), xa = cockX[0] + 0.05 - pivot * cm * 1.2 * 0.2, q = bodySec(uOf(xa));
+    const hLeg = veh.wingHeight, cm = veh.wingArea / (2 * hLeg), c = cm * 1.2, ctip = cm * 0.8, sweep = rad(veh.archSweep ?? 20), cant = rad(veh.archCant ?? 12), xa = cockX[0] + 0.05 - pivot * cm * 1.2 * 0.2 - (veh.archAft ?? 0.25), q = bodySec(uOf(xa));
     const g = Math.min(veh.archGap ?? 2 * q.a * 0.9, 2 * q.a * 0.92), ys = g / 2, zRoot = q.cz + q.b * Math.max(0.05, 1 - (ys / q.a) ** 2.6) ** (1 / 2.6) - 0.03;
     const yTip = ys - hLeg * Math.sin(cant), zTop = zRoot + hLeg * Math.cos(cant), fold = rad(folded ? 78 : 0), inc = rad(wingIncidence);
     const A = [];

@@ -1,5 +1,5 @@
 // Suite 07 — Aerodynamics and computational fluid dynamics.
-import { naca4, cst } from '../core/cad.js';
+import { naca4, cst, vehicleAssembly } from '../core/cad.js';
 import { panelSolver, viscous, polar, coeffs, finiteWing } from '../core/aero.js';
 import { resampleAirfoil } from '../core/mesh.js';
 import { poiseuille } from '../core/lbm-core.js';
@@ -87,35 +87,45 @@ export default {
     const v = p.speed / 3.6, AW = apparentWind(p.Uw, p.dir, p.heading, v), Va = Math.max(AW.Va, 1e-3), beta = AW.beta, ab = Math.abs(beta);
     const w2 = ctx.upstream('s02')?.wing, nW = veh.nWings || 2, spanDep = w2?.span || veh.wingHeight, reefSpan = Math.min(spanDep, veh.wingReefSpan ?? spanDep);
     const span = p.wingState === 'reefed' ? reefSpan : spanDep, S = (w2?.area || veh.wingArea) * span / spanDep, Sw = S / nW, cmean = Sw / span;
-    const AR = span * span / Sw, ARe = AR * p.endplate, Re = Math.max(2e4, Va * cmean / nu);
+    // Revision 4 AeroArch: one closed box wing (two canted, swept legs + top bridge) on a ring track. Mirrored about the
+    // body/ground plane the legs form a Prandtl box wing of span b = 2·leg length and mean gap g (root gap ↔ bridge span):
+    // induced-drag factor k = (1 + 0.45 g/b)/(1.04 + 2.81 g/b) → AR_eff = (b²/S_mirrored)/k; lift slope × cos Λ.
+    const arch = veh.wingConfig === 'arch', VM = arch ? vehicleAssembly(veh, {}).meta : null, AM = VM?.arch;
+    const legLen = arch ? AM.legHeight / Math.cos(rad(AM.cant)) : span, gMean = arch ? (AM.gap + AM.bridgeSpan) / 2 : 0, bBox = 2 * legLen, kBox = arch ? (1 + 0.45 * gMean / bBox) / (1.04 + 2.81 * gMean / bBox) : 1;
+    const cosL = arch ? Math.cos(rad(AM.sweep)) : 1, AR = arch ? bBox * bBox / (2 * S) : span * span / Sw, ARe = arch ? AR / kBox : AR * p.endplate, Re = Math.max(2e4, Va * cmean / nu);
     const af = resolveAirfoil(p, ctx), pts = panelPts(af.points, p.panels);
     ctx.progress(0.1, 'polar');
     const xtr = p.transition === 'forced' ? p.xtr : 1;
     const pol = polar(pts, Re, { alphas: range(p.alphaMax + 7).map(i => i - 6), xtrU: xtr, xtrL: xtr });
     await ctx.yield();
-    const C3 = (a) => { const c = coeffs(pol, a); if (Math.abs(a) > pol.alphaStall + 8) return { ...c, CDi: 0 }; const f = finiteWing(c.CL, c.CD, ARe, p.oswald); return { CL: f.CL, CD: f.CD, CDi: f.CDi, regime: c.regime }; };
+    const C3 = (a) => { const c = coeffs(pol, a); if (Math.abs(a) > pol.alphaStall + 8) return { ...c, CDi: 0 }; const f = finiteWing(c.CL * cosL, c.CD, ARe, p.oswald); return { CL: f.CL, CD: f.CD, CDi: f.CDi, regime: c.regime }; };
     // Body as a lifting surface: plan-form airfoil of chord L (sharp tail → Kutta), height h with ground reflection,
     // AR_eff = 2h²/S_side; low-AR lift CL = (πAR/2)(α + 2m) + 2 sin²α cosα (attached + cross-flow), induced drag CL²/(πAR e).
     // Zero-lift drag is already in the vehicle C_dA term, so only lift and induced drag are added here.
     const Lb = veh.length, hb = veh.height, Sb = p.bodyFill * Lb * hb, ARb = 2 * hb * hb / Sb, mB = (p.bodyCamberPct || 0) / 100, hCEb = veh.wheelRadius + 0.5 * hb;
     const bodyAt = (bAbs, VA = Va) => {
-      if (!p.bodyLift || bAbs < 0.5) return { L: 0, Di: 0, thrust: 0, side: 0, CL: 0 };
+      if (!p.bodyLift || bAbs < 0.5) return { L: 0, Di: 0, thrust: 0, side: 0, CL: 0, xcp: 0 };
       const a = rad(Math.min(bAbs, 180 - bAbs)), sgn = bAbs > 90 ? -1 : 1; // the body axis is fixed; beyond 90° the tail leads (no camber benefit)
-      const CL = (Math.PI * ARb / 2) * (a + (bAbs <= 90 ? 2 * mB : 0)) * Math.cos(a) ** 2 + 2 * Math.sin(a) ** 2 * Math.cos(a), q = 0.5 * rho * VA * VA, L = q * Sb * CL, Di = q * Sb * CL * CL / (Math.PI * ARb * p.bodyE);
-      const b = rad(bAbs); void sgn; return { L, Di, CL, thrust: L * Math.sin(b) - Di * Math.cos(b), side: L * Math.abs(Math.cos(b)) + Di * Math.sin(b) };
+      const CLp = (Math.PI * ARb / 2) * (a + (bAbs <= 90 ? 2 * mB : 0)) * Math.cos(a) ** 2, CLc = 2 * Math.sin(a) ** 2 * Math.cos(a), CL = CLp + CLc, q = 0.5 * rho * VA * VA, L = q * Sb * CL, Di = q * Sb * CL * CL / (Math.PI * ARb * p.bodyE);
+      // centre of pressure: potential (low-AR) lift near the leading quarter, cross-flow lift at the plan-area centroid
+      const xLE = bAbs <= 90 ? 0.58 * veh.length : -0.42 * veh.length, dir = bAbs <= 90 ? -1 : 1, xcp = (CLp * (xLE + dir * 0.25 * veh.length) + CLc * (0.08 * veh.length)) / Math.max(1e-9, CL);
+      const b = rad(bAbs); void sgn; return { L, Di, CL, xcp, thrust: L * Math.sin(b) - Di * Math.cos(b), side: L * Math.abs(Math.cos(b)) + Di * Math.sin(b) };
     };
     // Tandem interference: the downstream wing sits in the front wing's induced sidewash ε ≈ 2C_L/(πAR_eff), weighted by
     // how much it is actually downstream (|cos β|) and decaying with the cross-flow offset gap·|sin β| (in chords).
     const cr = cmean * 1.1, gapX = Math.max(0.36 * veh.length, 1.12 * cr);
+    const epsArch = (b, CLf) => deg(CLf / (Math.PI * ARe)) * Math.abs(Math.sin(rad(b))) * Math.exp(-gMean * Math.abs(Math.cos(rad(b))) / (0.5 * cmean));
     const epsAt = (b, CLf) => nW < 2 ? 0 : deg(2 * CLf / (Math.PI * ARe)) * Math.abs(Math.cos(rad(b))) * Math.exp(-gapX * Math.abs(Math.sin(rad(b))) / (0.5 * cmean));
     const forceAt = (bAbs, alpha, VA = Va, tandem = true) => {
       const c1 = C3(alpha); let c = c1, eps = 0;
-      if (tandem && nW >= 2) { eps = epsAt(bAbs, c1.CL); const c2 = C3(alpha - eps), e = rad(eps); c = { ...c1, CL: (c1.CL + c2.CL * Math.cos(e)) / 2, CD: (c1.CD + c2.CD + c2.CL * Math.sin(e)) / 2 }; }
-      const F = wingForces(VA, bAbs, c.CL * p.interf, c.CD, S, rho), Db = 0.5 * rho * veh.CdA * VA * VA, B = bodyAt(bAbs, VA);
+      if (arch && tandem) { // lateral biplane interference: in a crosswind the windward leg (upwash) precedes the leeward leg (downwash)
+        eps = epsArch(bAbs, c1.CL); const cw = C3(alpha + 0.3 * eps), cl = C3(alpha - eps), e = rad(eps); c = { ...c1, CL: (cw.CL + cl.CL * Math.cos(e)) / 2, CD: (cw.CD + cl.CD + cl.CL * Math.sin(e)) / 2 };
+      } else if (tandem && nW >= 2) { eps = epsAt(bAbs, c1.CL); const c2 = C3(alpha - eps), e = rad(eps); c = { ...c1, CL: (c1.CL + c2.CL * Math.cos(e)) / 2, CD: (c1.CD + c2.CD + c2.CL * Math.sin(e)) / 2 }; }
+      const F = wingForces(VA, bAbs, c.CL * p.interf, c.CD, S, rho), Db = 0.5 * rho * (veh.CdA + (arch ? 0.012 * AM.bridgeArea : 0)) * VA * VA, B = bodyAt(bAbs, VA);
       return { ...F, c, eps, Db, body: B, net: F.thrust + B.thrust - Db * Math.cos(rad(bAbs)), sideTot: F.side + B.side + Db * Math.sin(rad(bAbs)) };
     };
     // D3 free-feathering root: safe side force and the feathered (weathervaned) state, C_L ≈ 0, C_D ≈ 0.02
-    const mu0 = ctx.upstream('s10')?.muPeak ?? 0.95, ssf0 = ctx.upstream('s11')?.ssf ?? ctx.upstream('s01')?.ssf ?? (veh.track / 2) * (2 / 3) / veh.cgHeight, hCE0 = veh.wheelRadius + veh.height * 0.7 + span * 0.45;
+    const mu0 = ctx.upstream('s10')?.muPeak ?? 0.95, ssf0 = ctx.upstream('s11')?.ssf ?? ctx.upstream('s01')?.ssf ?? (veh.track / 2) * (2 / 3) / veh.cgHeight, hCE0 = arch ? AM.zRoot + 0.45 * AM.legHeight : veh.wheelRadius + veh.height * 0.7 + span * 0.45;
     const FyGrip = 0.7 * mu0 * veh.mass * G0, FyRoll = 0.8 * ssf0 * veh.mass * G0 * veh.cgHeight / hCE0, FySafe = Math.min(FyGrip, FyRoll);
     const feathered = (bAbs, VA = Va) => { const F = wingForces(VA, bAbs, 0, 0.02, S, rho), Db = 0.5 * rho * veh.CdA * VA * VA, B = bodyAt(bAbs, VA); return { ...F, c: { CL: 0, CD: 0.02, regime: 'feathered' }, eps: 0, Db, body: B, net: F.thrust + B.thrust - Db * Math.cos(rad(bAbs)), sideTot: F.side + B.side + Db * Math.sin(rad(bAbs)), feathered: true }; };
     const safe = (F, bAbs) => (p.breakaway === false || F.sideTot <= FySafe) ? F : feathered(bAbs);
@@ -131,8 +141,8 @@ export default {
     for (const b of awa) { let bb = { net: -Infinity }, bu = -Infinity, bn = -Infinity; for (const a of linspace(-5, 35, 81)) { const F = forceAt(b, a); bu = Math.max(bu, F.net); bn = Math.max(bn, forceAt(b, a, Va, false).net); if ((p.breakaway === false || F.sideTot <= FySafe) && F.net > bb.net) bb = { ...F, alpha: a }; } if (!Number.isFinite(bb.net)) bb = { ...feathered(b), alpha: b }; thrOpt.push(bb.net); sideOpt.push(bb.sideTot); incOpt.push(b - bb.alpha); thrFix.push(safe(forceAt(b, b - p.incidence), b).net); cxOpt.push(bb.net / (0.5 * rho * Va * Va * S)); thrUnsafe.push(bu); thrNoTandem.push(bn); }
     ctx.progress(0.5, 'verification');
     // geometry levers: centre of effort & CG
-    const L = veh.length, x1W = -L * 0.42 + 0.10 * L + 0.25 * cr, wingX = [x1W, x1W + gapX].slice(0, nW), xCE = mean(wingX) + 0.05 * cmean, cg = ctx.upstream('s01')?.cg || [0, 0, veh.cgHeight];
-    const zCE = veh.wheelRadius + veh.height * 0.7 + span * 0.45, yaw = Fop.sideTot * (xCE - cg[0]), heel = (Fop.sideTot - (Fop.body?.side || 0)) * zCE + (Fop.body?.side || 0) * hCEb, restoring = veh.mass * G0 * (veh.track / 2) * 0.6;
+    const L = veh.length, x1W = -L * 0.42 + 0.10 * L + 0.25 * cr, wingX = arch ? [VM.wingX[0]] : [x1W, x1W + gapX].slice(0, nW), xCE = mean(wingX) + 0.05 * cmean, cg = ctx.upstream('s01')?.cg || [0, 0, veh.cgHeight];
+    const zCE = hCE0, yaw = Fop.sideTot * (xCE - cg[0]), heel = (Fop.sideTot - (Fop.body?.side || 0)) * zCE + (Fop.body?.side || 0) * hCEb, restoring = veh.mass * G0 * (veh.track / 2) * 0.6;
     const Froll = veh.mass * G0 * veh.Crr;
     // panel-count convergence (inviscid CL at 6°)
     const Ns = [50, 100, 200], cls = Ns.map(N => panelSolver(panelPts(af.points, N)).solve(6).CL), G = gci(cls[2], cls[1], cls[0], 1 / Ns[2], 1 / Ns[1], 1 / Ns[0]);
@@ -169,17 +179,30 @@ export default {
     k('Heeling moment / restoring capacity', heel / restoring, '', 'Overturning moment relative to an approximate gravity restoring moment (detailed in Suite 11).', 'calc', heel / restoring < 0.5 ? 'ok' : heel / restoring < 0.9 ? 'warn' : 'bad');
     k('CL,max (2-D) / stall angle', `${fmt(pol.CLmax, 3)} @ ${pol.alphaStall}°`, '', 'From the boundary-layer separation model.', 'calc');
     k('Best thrust over all AWA', max(thrOpt), 'N', `Achieved near ${awa[thrOpt.indexOf(max(thrOpt))]}° apparent-wind angle with optimum incidence.`, 'calc');
-    k('Tandem interference: rear-wing sidewash ε', FopLocked.eps, '°', `Induced sidewash of the front wing at the rear wing (gap ${fmt(gapX, 3)} m, |cos β| weighting, cross-flow decay).`, 'calc');
-    k('Tandem interference penalty on net thrust', FopNoTandem.net - FopLocked.net, 'N', 'Net thrust lost because the rear wing operates in the front wing’s downwash (same incidence).', 'calc');
+    if (arch) { k('Box-wing induced-drag factor k (Prandtl)', kBox, '', `Closed arch mirrored in the body/ground plane: span b = ${fmt(bBox, 3)} m, mean gap g = ${fmt(gMean, 3)} m (g/b = ${fmt(gMean / bBox, 3)}). k < 1 means less induced drag than a monoplane of the same span.`, 'calc'); k('Effective aspect ratio (box wing)', ARe, '', `b²/S (mirrored) = ${fmt(AR, 3)} divided by k; lift slope also × cos Λ = ${fmt(cosL, 3)} for ${AM.sweep}° sweep.`, 'calc'); k('Lateral leg interference ε (leeward leg)', FopLocked.eps, '°', 'In a crosswind the windward leg precedes the leeward one: leeward α reduced by ε, windward raised by 0.3ε (lift redistributes, total induced drag per Munk’s stagger theorem).', 'calc'); }
+    else k('Tandem interference: rear-wing sidewash ε', FopLocked.eps, '°', `Induced sidewash of the front wing at the rear wing (gap ${fmt(gapX, 3)} m, |cos β| weighting, cross-flow decay).`, 'calc');
+    if (!arch) k('Tandem interference penalty on net thrust', FopNoTandem.net - FopLocked.net, 'N', 'Net thrust lost because the rear wing operates in the front wing’s downwash (same incidence).', 'calc');
     k('Safe side force (breakaway)', FySafe, 'N', `min(0.7 μmg = ${fmt(FyGrip, 3)} N, 0.8·SSF·mg·h_cg/h_CE = ${fmt(FyRoll, 3)} N), SSF ${fmt(ssf0, 3)}, h_CE ${fmt(hCE0, 3)} m.`, 'calc');
     k('Wing root state', Fop.feathered ? 'FEATHERED' : 'locked', '', Fop.feathered ? `Locked side force ${fmt(FopLocked.sideTot, 3)} N would exceed ${fmt(FySafe, 3)} N; reported forces are the feathered loads.` : 'Operating inside the safe envelope.', 'calc', Fop.feathered ? 'warn' : 'ok');
     const bodyAWA = range(37).map(i => i * 5), bodyTh = bodyAWA.map(b => bodyAt(b).thrust), bodySd = bodyAWA.map(b => bodyAt(b).side), Bop = bodyAt(ab);
     k('Body lifting-surface thrust / side force', `${fmt(Bop.thrust, 3)} / ${fmt(Bop.side, 3)}`, 'N', `Monocoque as a low-AR airfoil: AR_eff = 2h²/S = ${fmt(ARb, 3)} with ground reflection, C_L = ${fmt(Bop.CL, 3)} (side-panel camber ${p.bodyCamberPct} %). Included in the net force.`, 'calc');
     k('Wing-root end-plate factor (body)', p.endplate, '×AR', 'Sealed root gap: the body acts as an end plate, raising the wings’ effective aspect ratio.', 'calc');
     out.charts.push({ title: 'Body as a wing: thrust and side force vs apparent-wind angle', x: { label: 'Apparent-wind angle β', unit: '°' }, y: { label: 'Force', unit: 'N' }, series: [{ name: 'Body thrust', x: bodyAWA, y: bodyTh }, { name: 'Body side force', x: bodyAWA, y: bodySd, dash: '5 3' }], annotations: [{ type: 'vline', x: ab, label: 'current β' }], explain: 'The plan-form acts as a very low aspect-ratio wing with a sharp trailing edge; ground reflection doubles its effective aspect ratio and the metamaterial side panels camber it to leeward. Its centre of effort is low (≈ wheel radius + h/2), so it adds thrust with little overturning moment.' });
+    // Directional (weathercock) balance: centre of effort of the total aerodynamic side force vs the centre of lateral resistance
+    // of the tyres (cornering stiffness ∝ axle load → CLR at the axle-load-weighted position, i.e. the CG station).
+    {
+      const xWing = xCE, xBody = Fop.body?.xcp ?? 0.08 * veh.length, sW = Fop.sideTot - (Fop.body?.side || 0), sB = Fop.body?.side || 0;
+      const xCEtot = (sW * xWing + sB * xBody) / Math.max(1e-9, sW + sB), wl = ctx.upstream('s01')?.wheelLoads, wb = veh.wheelbase, xf = 0.58 * wb, xr = -0.42 * wb;
+      const fF = Array.isArray(wl) && wl.length >= 3 ? (wl[0] + wl[1]) / (wl[0] + wl[1] + wl[2]) : 0.6, xCLR = fF * xf + (1 - fF) * xr, lead = xCEtot - xCLR, Nyaw = Fop.sideTot * lead;
+      k('Aerodynamic centre of effort vs centre of lateral resistance', `${fmt(xCEtot, 3)} / ${fmt(xCLR, 3)} m (lead ${fmt(lead, 3)} m)`, '', `x positions in the vehicle frame (body reference, +x forward): wing CE ${fmt(xWing, 3)} m (arch station), body CE ${fmt(xBody, 3)} m, CLR from the axle-load split (front ${fmt(fF * 100, 3)} %). Lead > 0: CE ahead of CLR (bears away — directionally unstable “lee helm”); lead < 0: CE behind (luffs into the wind — weathercock stable “weather helm”).`, 'calc', Math.abs(lead) < 0.15 * wb ? 'ok' : 'warn');
+      k('Aerodynamic yaw moment about the CLR', Nyaw, 'N·m', 'Side force × lead; the steering must trim this moment (Suite 11).', 'calc');
+      out.verdicts.push({ test: 'Directional balance (CE vs CLR, weathercock stability)', status: lead <= 0 && -lead < 0.2 * wb ? 'pass' : lead > 0 && lead < 0.05 * wb ? 'warn' : lead > 0 ? 'fail' : 'warn', detail: `CE ${fmt(Math.abs(lead), 3)} m ${lead > 0 ? 'ahead of' : 'behind'} the CLR → yaw moment ${fmt(Nyaw, 3)} N·m (${lead > 0 ? 'tends to bear away; unstable' : 'mild weather helm; stable'}).`, fix: 'Move the arch aft (or the axle-load split forward) until the CE sits slightly behind the CLR.' });
+      out.yawBalance = { xCE: xCEtot, xCLR, lead, Nyaw };
+    }
     // Deployed vs reefed at 4 / 6 / 10 m/s beam true wind (current vehicle speed), optimum safe incidence, camber morphing,
     // tandem interference and the state-dependent breakaway limit (lower centre of effort when reefed).
     const perfAt = (U, spanX) => {
+      if (arch) { const aw = apparentWind(U, p.heading + 90, p.heading, v), b = Math.abs(aw.beta), VA = Math.max(aw.Va, 1e-3); let best = null; for (const a of linspace(-5, 35, 81)) { const F = forceAt(b, a, VA); if ((p.breakaway === false || F.sideTot <= FySafe) && (!best || F.net > best.net)) best = { net: F.net, side: F.sideTot, CL: F.c.CL }; } if (!best) { const F = feathered(b, VA); best = { net: F.net, side: F.sideTot, CL: 0, feathered: true }; } return { ...best, FyS: FySafe }; }
       const SX = (w2?.area || veh.wingArea) * spanX / spanDep, cmx = SX / nW / spanX, ARx = spanX * spanX / (SX / nW) * p.endplate, aw = apparentWind(U, p.heading + 90, p.heading, v), b = Math.abs(aw.beta), VA = Math.max(aw.Va, 1e-3);
       const hx = veh.wheelRadius + veh.height * 0.7 + spanX * 0.45, FyS = Math.min(FyGrip, 0.8 * ssf0 * veh.mass * G0 * veh.cgHeight / hx), gx = Math.max(0.36 * veh.length, 1.12 * cmx * 1.1);
       const cw = (a) => { const c = coeffs(pol, a); if (Math.abs(a) > pol.alphaStall + 8) return c; const f = finiteWing(c.CL, c.CD, ARx, p.oswald); return { CL: f.CL, CD: f.CD }; };
@@ -191,7 +214,8 @@ export default {
       return { ...best, FyS };
     };
     const windsP = [4, 6, 10], perfD = windsP.map(U => perfAt(U, spanDep)), perfR = windsP.map(U => perfAt(U, reefSpan));
-    out.tables.push({ title: `Deployed (${fmt(spanDep, 3)} m) vs reefed (${fmt(reefSpan, 3)} m) — net forward force and side force, beam true wind at ${p.speed} km/h`, cols: ['True wind', 'Deployed net thrust [N]', 'Deployed side [N]', 'Reefed net thrust [N]', 'Reefed side [N]', 'Safe side limit dep./reef. [N]'], rows: windsP.map((U, i) => [`${U} m/s`, fmt(perfD[i].net, 4) + (perfD[i].feathered ? ' (feathered)' : ''), fmt(perfD[i].side, 4), fmt(perfR[i].net, 4) + (perfR[i].feathered ? ' (feathered)' : ''), fmt(perfR[i].side, 4), `${fmt(perfD[i].FyS, 4)} / ${fmt(perfR[i].FyS, 4)}`]), explain: `Optimum safe incidence, ${p.camberMorph ? `leeward camber ${p.camberPct} % (solved NACA ${af.name.replace('NACA ', '')})` : 'symmetric section'}, tandem downwash interference and the free-feathering limit. Deploy in light wind for area; reef in strong wind for a lower centre of effort and a higher breakaway margin.` });
+    if (arch) out.tables.push({ title: `AeroArch box wing — net forward force and side force, beam true wind at ${p.speed} km/h`, cols: ['True wind', 'Net thrust [N]', 'Side force [N]', 'Safe side limit [N]', 'State'], rows: windsP.map((U, i) => [`${U} m/s`, fmt(perfD[i].net, 4), fmt(perfD[i].side, 4), fmt(perfD[i].FyS, 4), perfD[i].feathered ? 'feathered (breakaway)' : 'locked']), explain: `Optimum safe incidence (whole arch rotates on the ring track), ${p.camberMorph ? `leeward camber ${p.camberPct} %` : 'symmetric section'}, box-wing induced drag (k = ${fmt(kBox, 3)}), sweep ${AM.sweep}°, lateral leg interference, bridge profile drag and the lifting body. The arch does not reef; it folds for parking.` });
+    else out.tables.push({ title: `Deployed (${fmt(spanDep, 3)} m) vs reefed (${fmt(reefSpan, 3)} m) — net forward force and side force, beam true wind at ${p.speed} km/h`, cols: ['True wind', 'Deployed net thrust [N]', 'Deployed side [N]', 'Reefed net thrust [N]', 'Reefed side [N]', 'Safe side limit dep./reef. [N]'], rows: windsP.map((U, i) => [`${U} m/s`, fmt(perfD[i].net, 4) + (perfD[i].feathered ? ' (feathered)' : ''), fmt(perfD[i].side, 4), fmt(perfR[i].net, 4) + (perfR[i].feathered ? ' (feathered)' : ''), fmt(perfR[i].side, 4), `${fmt(perfD[i].FyS, 4)} / ${fmt(perfR[i].FyS, 4)}`]), explain: `Optimum safe incidence, ${p.camberMorph ? `leeward camber ${p.camberPct} % (solved NACA ${af.name.replace('NACA ', '')})` : 'symmetric section'}, tandem downwash interference and the free-feathering limit. Deploy in light wind for area; reef in strong wind for a lower centre of effort and a higher breakaway margin.` });
     k('Net thrust at 4 / 6 m/s beam wind (deployed)', `${fmt(perfD[0].net, 3)} / ${fmt(perfD[1].net, 3)}`, 'N', 'Light-wind performance of the default rig with camber morphing (beam reach, current vehicle speed).', 'calc', perfD[0].net > Froll ? 'ok' : 'warn');
     // verdicts
     out.verdicts.push({ test: 'Useful forward propulsion', status: Fop.net > Froll ? 'pass' : Fop.net > 0 ? 'warn' : 'fail', detail: `Net forward force ${fmt(Fop.net, 3)} N vs rolling resistance ${fmt(Froll, 3)} N at ${fmt(Va, 3)} m/s apparent wind, β = ${fmt(beta, 3)}°.`, fix: 'Change heading toward a beam/broad reach (see thrust vs AWA), use optimum incidence, or wait for stronger wind; high lift alone does not give thrust.' });
@@ -235,7 +259,7 @@ export default {
     out.explain.push({ title: 'Lift is not thrust', text: `Lift acts perpendicular to the apparent wind and drag parallel to it. Only the projection L·sinβ − D·cosβ onto the travel direction propels the car. At β = ${fmt(beta, 3)}° the ${fmt(Fop.L, 3)} N of lift yields ${fmt(Fop.thrust, 3)} N of thrust and ${fmt(Fop.sideTot, 3)} N of side force that the tyres must resist.` });
     out.explain.push({ title: 'Solver hierarchy', text: 'Full-Reynolds-number section polars come from the coupled panel / integral-boundary-layer method (verified against thin-airfoil theory and Kutta–Joukowski). The live LBM tab adds an unsteady, reduced-Re view of separation and vortex shedding. Higher-fidelity 3-D RANS/LES escalation is reserved for configurations that pass this screening.' });
     out.convergence = { title: 'LBM Poiseuille benchmark profile error', series: [{ name: '|u_num − u_exact| / u_max', x: pois.y, y: pois.num.map((u, i) => Math.max(1e-8, Math.abs(u - pois.exact[i]) / pois.umax)) }] };
-    out.outputs = { bodyForces: { awa: bodyAWA, thrust: bodyTh, side: bodySd, hCE_m: hCEb }, endplateFactor: p.endplate, wingState: p.wingState, camberPct: p.camberMorph ? p.camberPct : 0, perfStates: { winds: windsP, deployed: perfD, reefed: perfR }, feathered: !!Fop.feathered, FySafe, tandemPenaltyN: FopNoTandem.net - FopLocked.net, rearSidewashDeg: FopLocked.eps, polar: { alpha: A, CL: pol.CL, CD: pol.CD }, CLmax: pol.CLmax, alphaStall: pol.alphaStall, Re, Va, awa: beta, alpha: alphaOp, incidence: delta, thrustN: Fop.net, wingThrustN: Fop.thrust, liftN: Fop.L, dragN: Fop.D, sideN: Fop.sideTot, yawMoment: yaw, heelMoment: heel, CdA_body: veh.CdA, thrustVsAWA: { awa, thrust: thrOpt, side: sideOpt, incidence: incOpt }, rho, airfoil: af.name };
+    out.outputs = { yawBalance: out.yawBalance, bodyForces: { awa: bodyAWA, thrust: bodyTh, side: bodySd, hCE_m: hCEb }, endplateFactor: arch ? ARe / (legLen * legLen / Sw) : p.endplate, wingConfig: arch ? 'arch' : 'tandem', boxWing: arch ? { k: kBox, gOverB: gMean / bBox, ARmirrored: AR, ARe, sweepFactor: cosL } : null, wingState: p.wingState, camberPct: p.camberMorph ? p.camberPct : 0, perfStates: { winds: windsP, deployed: perfD, reefed: perfR }, feathered: !!Fop.feathered, FySafe, tandemPenaltyN: FopNoTandem.net - FopLocked.net, rearSidewashDeg: FopLocked.eps, polar: { alpha: A, CL: pol.CL, CD: pol.CD }, CLmax: pol.CLmax, alphaStall: pol.alphaStall, Re, Va, awa: beta, alpha: alphaOp, incidence: delta, thrustN: Fop.net, wingThrustN: Fop.thrust, liftN: Fop.L, dragN: Fop.D, sideN: Fop.sideTot, yawMoment: yaw, heelMoment: heel, CdA_body: veh.CdA, thrustVsAWA: { awa, thrust: thrOpt, side: sideOpt, incidence: incOpt }, rho, airfoil: af.name };
     out.headline = `At ${p.speed} km/h with ${fmt(p.Uw, 3)} m/s true wind from ${p.dir}°: apparent wind ${fmt(Va, 3)} m/s at ${fmt(beta, 3)}° → lift ${fmt(Fop.L, 3)} N, net forward force ${fmt(Fop.net, 3)} N, side force ${fmt(Fop.sideTot, 3)} N.`;
     out.headlineKind = Fop.net > Froll ? 'ok' : 'warn';
     out.credibility = out.checks.every(c => c.pass) ? 'Numerically verified' : 'Analytical screening';
@@ -326,7 +350,13 @@ async function flow3DView(el, o) {
   const leg = legend3d(box, { title: 'Air speed |V| (m/s)', lo: 0.7 * Va, hi: 1.3 * Va });
   // side of the apparent wind in the scene frame (x forward, y left; physics fy is to the right)
   const side = (-AW.ay) >= 0 ? 1 : -1, z0 = env.z0 ?? 0.1;
-  const wingInfo = S.wingObjs.map((w, k) => { const B = w.base; let zmin = Infinity, zmax = -Infinity; for (let i = 2; i < B.length; i += 3) { zmin = Math.min(zmin, B[i]); zmax = Math.max(zmax, B[i]); } return { x: S.asm.meta.wingX[k], z0: zmin, z1: zmax }; });
+  // AeroArch: the two legs are canted lifting lines closed by the bridge; the whole arch (legs, bridge, spars, fairings) turns on the ring track
+  const archMode = veh.wingConfig === 'arch';
+  if (archMode) { S.wingObjs.length = 0; for (const o2 of S.car.children) if (/^Arch (leg|top bridge|.*collector)/.test(o2.name) || /^Solar-selective collector \(arch/.test(o2.name)) S.wingObjs.push({ o: o2, base: Float32Array.from(o2.geometry.attributes.position.array), leg: /^Arch leg (port|starboard) \(skin/.test(o2.name) }); }
+  const endPt = (B, hi) => { let zx = hi ? -Infinity : Infinity; for (let k = 2; k < B.length; k += 3) zx = hi ? Math.max(zx, B[k]) : Math.min(zx, B[k]); let sx = 0, sy = 0, n = 0; for (let k = 0; k < B.length; k += 3) if (Math.abs(B[k + 2] - zx) < 0.06) { sx += B[k]; sy += B[k + 1]; n++; } return [sx / n, sy / n, zx]; };
+  const brObj = archMode ? S.wingObjs.find(w => /bridge/.test(w.o.name)) : null; let closure = null; if (brObj) { const B = brObj.base; let sx = 0, sy = 0, sz = 0; for (let k = 0; k < B.length; k += 3) { sx += B[k]; sy += B[k + 1]; sz += B[k + 2]; } closure = [3 * sx / B.length, 3 * sy / B.length, 3 * sz / B.length]; }
+  const wingInfo = archMode ? S.wingObjs.filter(w => w.leg).map(w => { const a = endPt(w.base, false), b = endPt(w.base, true); return { x: a[0], ya: a[1], z0: a[2], xb: b[0], yb: b[1], z1: b[2], loading: 'box', closure }; })
+    : S.wingObjs.map((w, k) => { const B = w.base; let zmin = Infinity, zmax = -Infinity; for (let i = 2; i < B.length; i += 3) { zmin = Math.min(zmin, B[i]); zmax = Math.max(zmax, B[i]); } return { x: S.asm.meta.wingX[k], z0: zmin, z1: zmax }; });
   const zCE = mean(wingInfo.map(w => 0.5 * (w.z0 + w.z1)));
   const prof = (z) => Math.log(Math.max(z, 2 * z0) / z0) / Math.log(Math.max(zCE, 2 * z0) / z0);
   // sweep table from the solved force model (constant apparent-wind speed)
@@ -346,12 +376,13 @@ async function flow3DView(el, o) {
     if (showStream.checked) { const ux = airAt(zCE), sp = Math.hypot(...ux), dx = ux[0] / sp, dy = ux[1] / sp, seeds = []; for (const zz of [0.6, 1.4, 2.2, 3.0, 3.8, 4.6]) for (const off of linspace(-3, 3, 9)) seeds.push([-dx * 8 - dy * off, -dy * 8 + dx * off, zz]); streamG = streamlines(V, seeds, (x, y, z) => field.sample(x, y, z), { steps: 360, ds: 0.06, colorRange: [0.7 * Va, 1.3 * Va] }); }
     // wing colouring: section Cp at the current α, scaled by the half-elliptic spanwise loading
     const sol = pol.solver.solve(clamp(st.alpha, -15, 25)), pan = sol.panels, cp = Array.from(sol.Cp), np = af.points.length, cpOf = af.points.map(([x, y]) => { let bi = 0, bd = Infinity; for (let i = 0; i < pan.length; i++) { const d = (pan[i].xm - x) ** 2 + (pan[i].ym - y) ** 2; if (d < bd) { bd = d; bi = i; } } return cp[bi]; });
+    if (archMode) { S.wingObjs.filter(w => w.leg).forEach((w, k) => { const wi = wingInfo[k], g = w.o.geometry, n = g.attributes.position.count, col = new Float32Array(n * 3), B = w.base; for (let i = 0; i < n; i++) { const eta = Math.min(1, Math.max(0, (B[i * 3 + 2] - wi.z0) / (wi.z1 - wi.z0))), v2 = (0.55 + 0.45 * Math.sqrt(1 - eta * eta)) * Math.min(1.5, Math.abs(st.F.L) / Math.max(1, Math.abs(opF.L))), rgb = cmap(v2 / 1.5, 'turbo'); col.set([rgb[0] / 255, rgb[1] / 255, rgb[2] / 255], i * 3); } g.setAttribute('color', new THREE.BufferAttribute(col, 3)); w.o.material.vertexColors = true; w.o.material.color.set(0xffffff); w.o.material.needsUpdate = true; }); } else
     S.wingObjs.forEach((w, k) => { const wi = wingInfo[k], g = w.o.geometry, n = g.attributes.position.count, col = new Float32Array(n * 3), Pz = w.base; for (let i = 0; i < n; i++) { const j = i % np, eta = Math.min(1, Math.max(0, (Pz[i * 3 + 2] - wi.z0) / (wi.z1 - wi.z0))), c = i < n - 2 ? cpOf[j] * (4 / Math.PI) * Math.sqrt(Math.max(0, 1 - eta * eta)) * Math.sign(st.F.L || 1) : 0, rgb = cmap((c - cpLo) / (cpHi - cpLo), 'coolwarm'); col.set([rgb[0] / 255, rgb[1] / 255, rgb[2] / 255], i * 3); } g.setAttribute('color', new THREE.BufferAttribute(col, 3)); w.o.material.vertexColors = true; w.o.material.color.set(0xffffff); w.o.material.needsUpdate = true; });
     leg.set(0.7 * Va, 1.3 * Va);
     return M;
   };
   // wing incidence: rotate each wing about its quarter-chord axis relative to the as-built incidence δ
-  const setIncidence = (d) => { S.wingObjs.forEach((w, k) => { const P2 = w.o.geometry.attributes.position.array, B = w.base, a = rad(d - delta), c = Math.cos(a), sn = Math.sin(a), xc = wingInfo[k].x; for (let i = 0; i < B.length; i += 3) { const dx = B[i] - xc, dy = B[i + 1]; P2[i] = xc + c * dx - sn * dy; P2[i + 1] = sn * dx + c * dy; P2[i + 2] = B[i + 2]; } w.o.geometry.attributes.position.needsUpdate = true; w.o.geometry.computeVertexNormals(); }); };
+  const setIncidence = (d) => { S.wingObjs.forEach((w, k) => { const P2 = w.o.geometry.attributes.position.array, B = w.base, a = rad(d - delta), c = Math.cos(a), sn = Math.sin(a), xc = archMode ? (closure ? closure[0] : 0) : wingInfo[k].x; for (let i = 0; i < B.length; i += 3) { const dx = B[i] - xc, dy = B[i + 1]; P2[i] = xc + c * dx - sn * dy; P2[i + 1] = sn * dx + c * dy; P2[i + 2] = B[i + 2]; } w.o.geometry.attributes.position.needsUpdate = true; w.o.geometry.computeVertexNormals(); }); };
   const st0 = state(0); build(st0); fieldKey = Math.round(st0.b / 2);
   P = particles(V, { count: matchMedia('(max-width:600px)').matches ? 1200 : 2600, bounds, vel: (x, y, z) => field.sample(x, y, z), colorRange: [0.7 * Va, 1.3 * Va], size: 0.07 });
   let lastT = 0; const zR = S.asm.meta.height - S.asm.meta.span * 0.45;

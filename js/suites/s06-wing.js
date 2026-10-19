@@ -1,5 +1,7 @@
 // Suite 06 — Fixed skeleton, passive aeroelastic wings and morphing metamaterial surfaces.
-import { lamina, laminate, parseLayup, plyStresses, beamModel, beamModes, beamResultants, beamStatic } from '../core/fem.js';
+import { lamina, laminate, parseLayup, plyStresses, beamModel, beamModes, beamResultants, beamStatic, frameK } from '../core/fem.js';
+import { luSolve, eigGen, zeros } from '../core/num.js';
+import { vehicleAssembly } from '../core/cad.js';
 import { sectionModel, liftingLine, staticAeroelastic, divergenceQ, flutterVg, gustResponse, oneMinusCosGust, flutterModeShape } from '../core/aeroelastic.js';
 import { naca4, airfoilStats } from '../core/cad.js';
 import { logWind, apparentWind, ROUGHNESS } from '../core/physics.js';
@@ -333,12 +335,35 @@ export default {
       k('Reef joint bushing contact pressure', pc, 'MPa', `Couple carried by two bushings ${fmt(p.overlap, 3)} m apart (each 25 % of the overlap long, ${fmt(wb * 1000, 3)} mm wide): F = M/L + V/2 = ${fmt(Fb, 3)} N.`, 'calc', pc <= p.bushAllow ? 'ok' : 'bad');
       out.verdicts.push({ test: 'Telescoping reef joint (overlap & bushing pressure)', status: p.overlap >= ovMin && pc <= p.bushAllow ? 'pass' : 'fail', detail: `Overlap ${fmt(p.overlap, 3)} m vs required ≥ 1.5 t = ${fmt(ovMin, 3)} m; bushing pressure ${fmt(pc, 3)} MPa vs allowable ${p.bushAllow} MPa at the current load.`, fix: 'Lengthen the overlap or widen the bushings; the joint must also be checked at the breakaway load.' });
     }
-    const states = ['deployed', 'reefed'], winds = [4, 6, 10], perf = [];
+    const states = ctx.vehicle.wingConfig === 'arch' ? ['deployed'] : ['deployed', 'reefed'], winds = [4, 6, 10], perf = []; // the arch does not reef (it folds)
     for (const st of states) for (const U of winds) { const pp = { ...p, wingState: st, U10: U, twa: 90 }; const W2 = buildWing(pp, ctx), S2 = solveStatic(W2, pp, { tol: 1e-6, maxIt: 40 }), L2 = wingLoads(W2, S2.aero.ll, pp.rho), F2 = featherState(W2, pp, ctx, L2, nW); perf.push({ st, U, thrust: F2.released ? F2.feathered.thrust : L2.thrust * nW, side: F2.released ? F2.feathered.side : L2.side * nW, rel: F2.released }); }
-    out.tables.push({ title: 'Deployed vs reefed wing — thrust and side force (beam true wind, current vehicle speed, both wings)', cols: ['True wind (10 m)', 'Deployed thrust [N]', 'Deployed side [N]', 'Reefed thrust [N]', 'Reefed side [N]'], rows: winds.map(U => { const d = perf.find(q => q.st === 'deployed' && q.U === U), r = perf.find(q => q.st === 'reefed' && q.U === U); return [`${U} m/s`, fmt(d.thrust, 4) + (d.rel ? ' (feathered)' : ''), fmt(d.side, 4), fmt(r.thrust, 4) + (r.rel ? ' (feathered)' : ''), fmt(r.side, 4)]; }), explain: 'Coupled aeroelastic solution with camber morphing, washout and the free-feathering breakaway. Deploy in light wind; reef when the deployed side force approaches the breakaway setting.' });
-    out.charts.push({ title: 'Deployed vs reefed: forward thrust by true wind (beam reach)', type: 'bar', categories: winds.map(U => `${U} m/s`), y: { label: 'Thrust (both wings)', unit: 'N' }, series: [{ name: 'Deployed', values: winds.map(U => perf.find(q => q.st === 'deployed' && q.U === U).thrust) }, { name: 'Reefed', values: winds.map(U => perf.find(q => q.st === 'reefed' && q.U === U).thrust) }], explain: 'The reefable wing keeps the large-area light-wind thrust when deployed and the low side force / low centre of effort when reefed.' });
+    out.tables.push({ title: 'Deployed vs reefed wing — thrust and side force (beam true wind, current vehicle speed, both wings)', cols: ['True wind (10 m)', 'Deployed thrust [N]', 'Deployed side [N]', 'Reefed thrust [N]', 'Reefed side [N]'], rows: winds.map(U => { const d = perf.find(q => q.st === 'deployed' && q.U === U), r = perf.find(q => q.st === 'reefed' && q.U === U) || d; return [`${U} m/s`, fmt(d.thrust, 4) + (d.rel ? ' (feathered)' : ''), fmt(d.side, 4), states.length > 1 ? fmt(r.thrust, 4) + (r.rel ? ' (feathered)' : '') : 'n/a (arch folds)', states.length > 1 ? fmt(r.side, 4) : '—']; }), explain: 'Coupled aeroelastic solution with camber morphing, washout and the free-feathering breakaway. Deploy in light wind; reef when the deployed side force approaches the breakaway setting.' });
+    out.charts.push({ title: 'Deployed vs reefed: forward thrust by true wind (beam reach)', type: 'bar', categories: winds.map(U => `${U} m/s`), y: { label: 'Thrust (both wings)', unit: 'N' }, series: [{ name: 'Deployed', values: winds.map(U => perf.find(q => q.st === 'deployed' && q.U === U).thrust) }, ...(states.length > 1 ? [{ name: 'Reefed', values: winds.map(U => perf.find(q => q.st === 'reefed' && q.U === U).thrust) }] : [])], explain: 'The reefable wing keeps the large-area light-wind thrust when deployed and the low side force / low centre of effort when reefed.' });
     k('Flutter speed deployed / reefed', `${fmt(SZ.check?.VF ?? FL.Vflutter, 3)} / ${fmt(SZ.check?.VFreef ?? NaN, 3)}`, 'm/s', 'Typical-section V–g flutter in both configurations (both must exceed the target).', 'calc');
     out.outputs_perf = perf;
+    // ---- Revision 4 AeroArch: closed portal frame (legs + bridge) ----
+    let ARCH = null;
+    if (ctx.vehicle.wingConfig === 'arch') {
+      const FSa = featherState(W, p, ctx, loads, nW), opF = archFrame(W, p, ctx, Math.abs(loads.side * nW));
+      const daf = Number.isFinite(opF.fSway) ? gustDAF(opF.fSway, p.gustDur, p.zeta) : 1.5, design = FSa.FySafe * Math.max(1, daf);
+      let D = archFrame(W, p, ctx, design), sized = null;
+      if (D.R < 2) { // re-size cap plies for SF ≥ 2 at the design (breakaway × gust DAF) load
+        let lo = p.tPly, hi = 2, Wx = null; for (let i = 0; i < 18; i++) { const m = Math.sqrt(lo * hi); Wx = buildWing({ ...p, tPly: m }, ctx); if (archFrame(Wx, p, ctx, design).R >= 2.2) hi = m; else lo = m; }
+        sized = hi; D = archFrame(buildWing({ ...p, tPly: hi }, ctx), p, ctx, design);
+      }
+      ARCH = { opF, D, daf, design, sized }; const ARC = ARCH;
+      out.views.unshift({ label: '2D animation: AeroArch frame sway under the gust', icon: '🎞', render: (el) => archSway2D(el, ARC, p) });
+      k('AeroArch root moment: closed frame vs cantilever leg', `${fmt(opF.rootM, 3)} / ${fmt(opF.cantM, 3)} N·m (×${fmt(opF.ratio, 3)})`, '', 'Portal action of the bridge: the closed arch carries the same lateral load with a fraction of the cantilever root moment.', 'calc', opF.ratio < 0.8 ? 'ok' : 'warn');
+      k('Arch sway deflection / joint moment (operating)', `${fmt(opF.sway * 1000, 3)} mm / ${fmt(opF.jointM, 3)} N·m`, '', 'Top lateral deflection and the bending moment at the leg–bridge joints.', 'calc');
+      k('Arch sway frequency / gust DAF', `${fmt(opF.fSway, 3)} Hz / ${fmt(daf, 3)}`, '', `Lowest in-plane sway mode of the frame and the dynamic amplification of a ${p.gustDur} s 1-cos gust on it.`, 'calc');
+      k('Arch strength factor at design load', D.R, '', `Design lateral load = breakaway setting ${fmt(FSa.FySafe, 3)} N × DAF ${fmt(daf, 3)} = ${fmt(design, 3)} N; root moment ${fmt(D.rootM, 3)} N·m.${sized ? ` Cap plies re-sized to ${fmt(sized, 3)} mm for SF ≥ 2.` : ''}`, sized ? 'generated' : 'calc', D.R >= 2 ? 'ok' : 'bad');
+      k('Sweep-induced washout (bend–twist from 20° sweep)', opF.sweepWashout, '°', `Bending slope at the leg top × tan Λ: swept legs wash out under load (Λ = ${opF.AM.sweep}°).`, 'calc');
+      out.verdicts.push({ test: 'AeroArch closed frame — strength at design load (SF ≥ 2)', status: D.R >= 2 ? 'pass' : 'fail', detail: `SF ${fmt(D.R, 3)} at ${fmt(design, 3)} N lateral (both legs); root ${fmt(D.rootM, 3)} N·m, joint ${fmt(D.jointM, 3)} N·m, peak ${fmt(D.maxM, 3)} N·m.${sized ? ` Caps re-sized to ${fmt(sized, 3)} mm.` : ''}` });
+      out.verdicts.push({ test: 'AeroArch portal action (root-moment relief vs cantilever legs)', status: opF.ratio < 0.8 ? 'pass' : 'warn', detail: `Closed frame root moment = ${fmt(opF.ratio * 100, 3)} % of an equivalent cantilever leg.` });
+      const path = [], Mp = [], Mc = []; let sAcc = 0; D.Mend.forEach((m, e) => { const [a, b] = D.els[e], L = Math.hypot(D.nodes[b][0] - D.nodes[a][0], D.nodes[b][1] - D.nodes[a][1]); path.push(sAcc, sAcc + L); Mp.push(m.M1, m.M2); sAcc += L; });
+      out.charts.push({ title: 'AeroArch bending moment along the frame (port root → bridge → starboard root), design load', x: { label: 'Path length', unit: 'm' }, y: { label: 'Bending moment', unit: 'N·m' }, series: [{ name: 'Closed frame', x: path, y: Mp }], annotations: [{ type: 'hline', y: 0, color: '#94a3b8' }, { type: 'hline', y: D.cantM, label: 'cantilever-leg root moment', color: '#ef4444' }], explain: 'The bridge makes the arch a fixed-base portal: moments change sign along each leg and the root moment is far below that of a free cantilever leg carrying the same load.' });
+      void Mc;
+    }
     // ---- Revision 2: D4 sizing record and D3 free-feathering root ----
     const FS = featherState(W, p, ctx, loads, nW);
     if (SZ.sized) {
@@ -351,7 +376,7 @@ export default {
     k('Safe side force (breakaway setting)', FS.FySafe, 'N', `min(0.7 μmg = ${fmt(FS.FyGrip, 3)} N, 0.8·SSF·mg·h_cg/h_CE = ${fmt(FS.FyRoll, 3)} N) with SSF ${fmt(FS.ssf, 3)} and centre of effort ${fmt(FS.hCE, 3)} m.`, 'calc');
     k('Wing root state (D3)', FS.released ? 'FEATHERED (released)' : 'locked', '', FS.released ? `Side force ${fmt(FS.side, 3)} N exceeds the breakaway setting: the wings weathervane (C_L ≈ 0). Feathered thrust ${fmt(FS.feathered.thrust, 3)} N, side ${fmt(FS.feathered.side, 3)} N.` : `Side force ${fmt(FS.side, 3)} N below the breakaway setting ${fmt(FS.FySafe, 3)} N.`, 'calc', FS.released ? 'warn' : 'ok');
     out.verdicts.push({ test: 'Rollover protection — free-feathering root (D3)', status: !FS.released ? 'pass' : p.breakaway ? 'pass' : 'fail', detail: !FS.released ? `Locked; side force ${fmt(FS.side, 3)} N ≤ breakaway ${fmt(FS.FySafe, 3)} N.` : p.breakaway ? `Released and feathered: residual side force ${fmt(FS.feathered.side, 3)} N (from ${fmt(FS.side, 3)} N), thrust ${fmt(FS.feathered.thrust, 3)} N — propulsion paused, vehicle protected.` : `Side force ${fmt(FS.side, 3)} N exceeds the safe limit ${fmt(FS.FySafe, 3)} N and the breakaway is disabled.` });
-    out.outputs = { perfStates: perf, wingState: p.wingState, camberPct: W.mC * 100, featherReleased: FS.released, FySafe: FS.FySafe, featheredThrustN: FS.feathered.thrust, featheredSideN: FS.feathered.side, sizedSpar: SZ.sized ? { tPly: p.tPly, rTube: p.rTube, tTube: p.tTube, leBallast: p.leBallast } : null, CL: ll.CL, CD: ll.CD, liftN: loads.lift * nW, dragN: loads.drag * nW, thrustN: loads.thrust * nW, sideN: loads.side * nW, rollMomentN: (loads.roll + loads.side * p.zRoot) * nW, twistTip_deg: tipTw, tipDefl_m: tipW, rootMoment_Nm: rootM, rootTorque_Nm: rootT, rootShear_N: ll.L, flutterSpeed: FL.Vflutter, divergenceSpeed: VD, f1Hz: fb.f, fTorsionHz: ft.f, wingMass, safeWind: Number.isFinite(Usafe) ? Usafe : 25, rootStrengthRatio: rootR, zRoot: p.zRoot, span, setAngle: W.setAngle, awa: W.app(0.05 * span).awa };
+    out.outputs = { arch: ARCH ? { rootMoment_Nm: ARCH.D.rootM, rootMomentOperating_Nm: ARCH.opF.rootM, jointMoment_Nm: ARCH.D.jointM, ratioToCantilever: ARCH.opF.ratio, swayHz: ARCH.opF.fSway, gustDAF: ARCH.daf, SF: ARCH.D.R, designLateral_N: ARCH.design, sweepWashout_deg: ARCH.opF.sweepWashout } : null, perfStates: perf, wingState: p.wingState, camberPct: W.mC * 100, featherReleased: FS.released, FySafe: FS.FySafe, featheredThrustN: FS.feathered.thrust, featheredSideN: FS.feathered.side, sizedSpar: SZ.sized ? { tPly: p.tPly, rTube: p.rTube, tTube: p.tTube, leBallast: p.leBallast } : null, CL: ll.CL, CD: ll.CD, liftN: loads.lift * nW, dragN: loads.drag * nW, thrustN: loads.thrust * nW, sideN: loads.side * nW, rollMomentN: (loads.roll + loads.side * p.zRoot) * nW, twistTip_deg: tipTw, tipDefl_m: tipW, rootMoment_Nm: rootM, rootTorque_Nm: rootT, rootShear_N: ll.L, flutterSpeed: FL.Vflutter, divergenceSpeed: VD, f1Hz: fb.f, fTorsionHz: ft.f, wingMass, safeWind: Number.isFinite(Usafe) ? Usafe : 25, rootStrengthRatio: rootR, zRoot: p.zRoot, span, setAngle: W.setAngle, awa: W.app(0.05 * span).awa };
     out.headline = `Thrust ${fmt(loads.thrust * nW, 3)} N, side force ${fmt(loads.side * nW, 3)} N, tip twist ${fmt(tipTw, 3)}°, divergence ${fmt(VD, 3)} m/s, flutter ${fmt(FL.Vflutter, 3)} m/s, safe up to ${UsafeTxt} m/s true wind.`;
     out.headlineKind = Usafe >= 8 && loads.thrust > 0 ? 'ok' : 'warn';
     return out;
@@ -463,3 +488,60 @@ async function wing2D(el, o) {
     g.fillStyle = c.fg; g.fillText(`V = ${fmt(Vm, 3)} m/s · V_F = ${fmt(FL.Vflutter, 3)} m/s`, hw + 90, 18);
   } });
 }
+
+// ---------------- Revision 4 AeroArch: closed portal-frame structure (two legs + top bridge) ----------------
+// 2-D frame FE in the plane of the arch (lateral y, height z): canted legs fixed at the ring-track roots, rigid joints to
+// the bridge. Lateral aerodynamic load on both legs in the same direction (crosswind). Section properties along each leg
+// from the Suite-06 spar model (caps + torsion tube); bridge = tip section.
+export function archFrame(W, p, ctx, sideBoth, { nLeg = 12, nBr = 4 } = {}) {
+  const AM = vehicleAssembly(ctx.vehicle, {}).meta.arch, H = AM.legHeight, yr = AM.gap / 2, yt = AM.bridgeSpan / 2;
+  const nodes = [], els = [];
+  for (let i = 0; i <= nLeg; i++) nodes.push([yr + (yt - yr) * i / nLeg, H * i / nLeg]);              // port leg (0 … nLeg)
+  for (let i = 1; i <= nBr; i++) nodes.push([yt - 2 * yt * i / nBr, H]);                              // bridge
+  for (let i = nLeg - 1; i >= 0; i--) nodes.push([-yr - (yt - yr) * (i - nLeg) / nLeg * -1 + 0 * i, H * i / nLeg]); // starboard leg (top → root)
+  for (let i = nLeg + nBr; i < nodes.length; i++) { const k = nodes.length - 1 - i; nodes[i] = [-(yr + (yt - yr) * k / nLeg), H * k / nLeg]; }
+  for (let i = 0; i < nodes.length - 1; i++) els.push([i, i + 1]);
+  const legLen = Math.hypot(H, yr - yt), sec = (frac) => W.props(Math.min(W.span, Math.max(0, frac * W.span)));
+  const elProps = els.map(([a, b], e) => { const onBridge = e >= nLeg && e < nLeg + nBr, frac = onBridge ? 1 : (e < nLeg ? (e + 0.5) / nLeg : (nodes.length - 1 - e - 0.5) / nLeg), P = sec(frac); return { EI: P.EI, EA: P.EI / (0.3 * P.hs) ** 2, m: P.m, frac, onBridge }; });
+  const nd = nodes.length * 3, K = zeros(nd, nd).map(r => Array.from(r)), M = zeros(nd, nd).map(r => Array.from(r));
+  els.forEach(([a, b], e) => { const q = elProps[e], fk = frameK(1, q.EA, q.EI, nodes[a][0], nodes[a][1], nodes[b][0], nodes[b][1]), map = [3 * a, 3 * a + 1, 3 * a + 2, 3 * b, 3 * b + 1, 3 * b + 2]; for (let i = 0; i < 6; i++) for (let j = 0; j < 6; j++) K[map[i]][map[j]] += fk.K[i][j]; const lm = q.m * fk.L / 2; for (const n of [a, b]) { M[3 * n][3 * n] += lm; M[3 * n + 1][3 * n + 1] += lm; M[3 * n + 2][3 * n + 2] += lm * fk.L * fk.L / 24 + 1e-9; } });
+  const root2 = nodes.length - 1, fixed = new Set([0, 1, 2, 3 * root2, 3 * root2 + 1, 3 * root2 + 2]), free = [...Array(nd).keys()].filter(d => !fixed.has(d));
+  // lateral load: box-wing loading 0.55 + 0.45√(1−η²) on each leg, total sideBoth/2 per leg, acting in +y on both legs
+  const F = new Array(nd).fill(0), shape = (e) => 0.55 + 0.45 * Math.sqrt(Math.max(0, 1 - e * e)); let wsum = 0; const w = [];
+  for (let i = 0; i <= nLeg; i++) { const e = i / nLeg, ww = shape(e) * (i === 0 || i === nLeg ? 0.5 : 1); w.push(ww); wsum += ww; }
+  for (let i = 0; i <= nLeg; i++) { const f = sideBoth / 2 * w[i] / wsum; F[3 * i] += f; F[3 * (nodes.length - 1 - i)] += f; }
+  const Kr = free.map(i => free.map(j => K[i][j])), Fr = free.map(d => F[d]), ur = luSolve(Kr, Fr), u = new Array(nd).fill(0); free.forEach((d, k) => u[d] = ur[k]);
+  // element end moments (local)
+  const Mend = els.map(([a, b], e) => { const q = elProps[e], fk = frameK(1, q.EA, q.EI, nodes[a][0], nodes[a][1], nodes[b][0], nodes[b][1]), de = [3 * a, 3 * a + 1, 3 * a + 2, 3 * b, 3 * b + 1, 3 * b + 2].map(d => u[d]), dl = fk.T.map(r => r.reduce((s2, v, k) => s2 + v * de[k], 0)), kl = [[q.EA / fk.L, 0, 0, -q.EA / fk.L, 0, 0], [0, 12 * q.EI / fk.L ** 3, 6 * q.EI / fk.L ** 2, 0, -12 * q.EI / fk.L ** 3, 6 * q.EI / fk.L ** 2], [0, 6 * q.EI / fk.L ** 2, 4 * q.EI / fk.L, 0, -6 * q.EI / fk.L ** 2, 2 * q.EI / fk.L], [-q.EA / fk.L, 0, 0, q.EA / fk.L, 0, 0], [0, -12 * q.EI / fk.L ** 3, -6 * q.EI / fk.L ** 2, 0, 12 * q.EI / fk.L ** 3, -6 * q.EI / fk.L ** 2], [0, 6 * q.EI / fk.L ** 2, 2 * q.EI / fk.L, 0, -6 * q.EI / fk.L ** 2, 4 * q.EI / fk.L]], f = kl.map(r => r.reduce((s2, v, k) => s2 + v * dl[k], 0)); return { M1: f[2], M2: -f[5], N: -f[0], frac: q.frac, onBridge: q.onBridge }; });
+  const rootM = Math.max(Math.abs(Mend[0].M1), Math.abs(Mend[els.length - 1].M2)), jointM = Math.max(Math.abs(Mend[nLeg - 1].M2), Math.abs(Mend[nLeg + nBr].M1)), maxM = Math.max(...Mend.flatMap(m => [Math.abs(m.M1), Math.abs(m.M2)]));
+  let cantM = 0; for (let i = 0; i <= nLeg; i++) cantM += sideBoth / 2 * w[i] / wsum * H * i / nLeg; // same leg as a free cantilever
+  const sway = u[3 * nLeg], tipSlope = u[3 * nLeg + 2];
+  // strength at the leg root (first-ply failure of the caps)
+  const P0 = sec(0), eps = rootM * (P0.hs / 2) / P0.EI, R = Math.min(...plyStresses(W.cover, [eps, 0, 0]).map(q => q.R));
+  // sway frequency (generalised eigenproblem on the free DOFs)
+  let fSway = NaN; try { const Mr = free.map(i => free.map(j => M[i][j])); const eg = eigGen(Kr.map(r => Float64Array.from(r)), Mr.map(r => Float64Array.from(r))); fSway = Math.sqrt(Math.max(0, eg.values[0])) / (2 * Math.PI); } catch { /* singular */ }
+  // geometric washout from leg sweep: bending slope × tan Λ reduces the streamwise angle of attack
+  const sweepWashout = -Math.atan(Math.abs(tipSlope)) * Math.tan(rad(AM.sweep)) * 180 / Math.PI;
+  return { AM, nodes, els, u, Mend, rootM, jointM, maxM, cantM, ratio: rootM / Math.max(1e-9, cantM), sway, tipSlope, R, fSway, sweepWashout, legLen, nLeg, nBr };
+}
+// dynamic amplification of a 1-cos gust on the frame's sway mode (SDOF, Newmark average acceleration)
+export function gustDAF(fn, Tg, zeta = 0.02) {
+  const w = 2 * Math.PI * fn, dt = Math.min(Tg, 1 / fn) / 200, n = Math.round((Tg + 6 / fn) / dt); let x = 0, v = 0, a = 0, peak = 0;
+  for (let i = 1; i <= n; i++) { const t = i * dt, f = t <= Tg ? 0.5 * (1 - Math.cos(2 * Math.PI * t / Tg)) : 0, keff = w * w + 2 * zeta * w * 2 / dt + 4 / dt / dt, rhs = w * w * f + 4 / dt / dt * x + 4 / dt * v + a + 2 * zeta * w * (2 / dt * x + v), xn = rhs / keff, vn = 2 / dt * (xn - x) - v, an = 4 / dt / dt * (xn - x) - 4 / dt * v - a; x = xn; v = vn; a = an; peak = Math.max(peak, Math.abs(x)); }
+  return peak;
+}
+
+async function archSway2D(el, ARCH, p) {
+  const { anim2d } = await import('../core/sim3d.js'), D = ARCH.D, F = D.nodes;
+  el.append(h('p', { class: 'small muted' }, `Solved closed-frame (portal) deflection at the design lateral load, animated through a ${p.gustDur} s 1-cos gust on the sway mode (${fmt(D.fSway ?? ARCH.opF.fSway, 3)} Hz, DAF ${fmt(ARCH.daf, 3)}). Grey = undeformed arch; displacements magnified to 10 % of the leg height (factor shown). Colour = local bending moment.`));
+  const umax = Math.max(1e-12, ...F.map((_, i) => Math.hypot(D.u[3 * i], D.u[3 * i + 1]))), mag = 0.1 * D.AM.legHeight / umax, Mmax = Math.max(1e-9, D.maxM), T = p.gustDur + 2;
+  return anim2d(el, { duration: T, label: 'Gust time', height: 380, draw: (g, t, W, H, c) => {
+    const f = t <= p.gustDur ? 0.5 * (1 - Math.cos(2 * Math.PI * t / p.gustDur)) * ARCH.daf : ARCH.daf * Math.exp(-(t - p.gustDur) * 2) * Math.cos(2 * Math.PI * (ARCH.opF.fSway || 1) * (t - p.gustDur) * 0.25);
+    const ys = F.map(n => n[0]), sc = Math.min((W - 80) / (Math.max(...ys) - Math.min(...ys) + 1.2), (H - 70) / (D.AM.legHeight * 1.2)), X = (y) => W / 2 + y * sc, Y = (z) => H - 30 - z * sc;
+    g.strokeStyle = c.mute; g.lineWidth = 2; g.setLineDash([5, 4]); g.beginPath(); F.forEach((n, i) => i ? g.lineTo(X(n[0]), Y(n[1])) : g.moveTo(X(n[0]), Y(n[1]))); g.stroke(); g.setLineDash([]);
+    D.els.forEach(([a, b], e) => { const m = Math.abs(D.Mend[e].M1 + D.Mend[e].M2) / 2 * Math.abs(f) / ARCH.daf, cc = cmapS(m / Mmax); g.strokeStyle = cc; g.lineWidth = 6; g.beginPath(); g.moveTo(X(F[a][0] + f * mag * D.u[3 * a] / Math.max(1, ARCH.daf)), Y(F[a][1] + f * mag * D.u[3 * a + 1] / Math.max(1, ARCH.daf))); g.lineTo(X(F[b][0] + f * mag * D.u[3 * b] / Math.max(1, ARCH.daf)), Y(F[b][1] + f * mag * D.u[3 * b + 1] / Math.max(1, ARCH.daf))); g.stroke(); });
+    g.fillStyle = '#475569'; g.fillRect(X(-D.AM.gap / 2 - 0.25), Y(0), (D.AM.gap + 0.5) * sc, 8);
+    g.fillStyle = c.fg; g.fillText(`load factor ${fmt(f, 3)} × design · root moment ${fmt(D.rootM * Math.abs(f) / ARCH.daf, 3)} N·m · sway ${fmt(D.sway * 1000 * Math.abs(f) / ARCH.daf, 3)} mm (drawn ×${fmt(mag, 3)})`, 10, 18);
+  } });
+}
+function cmapS(v) { const r = Math.round(255 * Math.min(1, v * 1.6)), gg = Math.round(200 * (1 - Math.min(1, v))), b = Math.round(255 * Math.max(0, 1 - v * 2)); return `rgb(${r},${gg},${b})`; }

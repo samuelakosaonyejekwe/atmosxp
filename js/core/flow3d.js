@@ -39,17 +39,22 @@ export function vehicleFlowModel({ air, wings, body = [], rho = 1.225, Va, nSeg 
   const segs = [], semis = [], doub = [];
   const add = (ax, ay, az, bx, by, bz, G) => { segs.push([ax, ay, az, bx, by, bz, G]); if (ground) segs.push([ax, ay, -az, bx, by, -bz, -G]); };
   for (const w of wings) {
-    const span = w.z1 - w.z0, zc = 0.5 * (w.z0 + w.z1), [ux, uy] = air(zc), V = Math.hypot(ux, uy) || 1e-6, dx = ux / V, dy = uy / V;
-    // lift unit vector ⟂ air with positive forward component (convention of the thrust resolution L·sinβ)
+    // lifting line from (x, ya, z0) to (xb, yb, z1); default vertical at y = 0. loading 'box' keeps a finite tip value
+    // (closed box wing, Prandtl) and, with `closure` = [x, y, z], the tip circulation continues along the bridge to the
+    // closure point and is shed there (two legs → one merged trailing vortex at the bridge centre).
+    const xa = w.x, ya = w.ya || 0, xb = w.xb ?? w.x, yb = w.yb || 0, len = Math.hypot(xb - xa, yb - ya, w.z1 - w.z0);
+    const zc = 0.5 * (w.z0 + w.z1), [ux, uy] = air(zc), V = Math.hypot(ux, uy) || 1e-6, dx = ux / V, dy = uy / V;
     let nx = -dy, ny = dx; if (w.nDir) { if (nx * w.nDir[0] + ny * w.nDir[1] < 0) { nx = -nx; ny = -ny; } } else if (nx < 0 || (Math.abs(nx) < 1e-9 && ny < 0)) { nx = -nx; ny = -ny; }
     const s = (Math.abs(nx - dy) + Math.abs(ny + dx) < 1e-9) ? 1 : -1; // V×ẑ = [Vy, −Vx]
-    const G0 = 4 * w.L / (Math.PI * rho * (Va || V) * span); // half-elliptic loading, maximum at the body (end plate)
+    const box = w.loading === 'box', shape = (e) => box ? 0.55 + 0.45 * Math.sqrt(Math.max(0, 1 - e * e)) : Math.sqrt(Math.max(0, 1 - e * e)), meanShape = box ? 0.55 + 0.45 * Math.PI / 4 : Math.PI / 4;
+    const G0 = w.L / (rho * (Va || V) * len * meanShape);
+    const P = (e) => [xa + (xb - xa) * e, ya + (yb - ya) * e, w.z0 + (w.z1 - w.z0) * e];
     for (let i = 0; i < nSeg; i++) {
-      const e0 = i / nSeg, e1 = (i + 1) / nSeg, em = (e0 + e1) / 2, G = s * G0 * Math.sqrt(Math.max(0, 1 - em * em));
-      const za = w.z0 + e0 * span, zb = w.z0 + e1 * span;
-      add(w.x, 0, za, w.x, 0, zb, G);
-      semis.push([w.x, 0, zb, dx, dy, 0, G], [w.x, 0, za, dx, dy, 0, -G]);
-      if (ground) semis.push([w.x, 0, -zb, dx, dy, 0, -G], [w.x, 0, -za, dx, dy, 0, G]);
+      const e0 = i / nSeg, e1 = (i + 1) / nSeg, G = s * G0 * shape((e0 + e1) / 2), A = P(e0), B = P(e1), last = i === nSeg - 1;
+      add(A[0], A[1], A[2], B[0], B[1], B[2], G);
+      semis.push([A[0], A[1], A[2], dx, dy, 0, -G]); if (ground) semis.push([A[0], A[1], -A[2], dx, dy, 0, G]);
+      if (last && w.closure) { const C = w.closure; add(B[0], B[1], B[2], C[0], C[1], C[2], G); semis.push([C[0], C[1], C[2], dx, dy, 0, G]); if (ground) semis.push([C[0], C[1], -C[2], dx, dy, 0, -G]); }
+      else { semis.push([B[0], B[1], B[2], dx, dy, 0, G]); if (ground) semis.push([B[0], B[1], -B[2], dx, dy, 0, -G]); }
     }
     w.G0 = G0; w.n = [nx, ny]; w.sign = s;
   }

@@ -46,7 +46,10 @@ export default {
     { key: 'gustAmp', label: '1-cos gust amplitude', unit: 'm/s', type: 'number', min: 0, max: 25, step: 0.5, group: 'Gusts & turbulence', default: 6 },
     { key: 'gustDur', label: '1-cos gust duration', unit: 's', type: 'number', min: 0.5, max: 20, step: 0.5, group: 'Gusts & turbulence', default: 4 },
     { key: 'seed', label: 'Random seed (stochastic wind)', type: 'number', min: 1, max: 99999, step: 1, group: 'Gusts & turbulence', default: 42, expert: true },
-    { key: 'Uthreshold', label: 'Useful-wind threshold', unit: 'm/s', type: 'number', min: 1, max: 12, step: 0.5, group: 'Operating window', default: 4.5, help: 'Wind speed above which the wings are expected to provide useful propulsion (refined by Suites 07 and 20).' },
+    { key: 'Uthreshold', label: 'Useful-wind threshold (wind at wing height)', unit: 'm/s', type: 'number', min: 0.5, max: 15, step: 0.1, group: 'Operating window', default: 4.5, help: 'Auto-derived: wind at wing height for which beam-reach thrust at standstill exceeds the starting resistance 1.6·C_rr·m·g (Suite 07 thrust table; analytic fallback with C_L from Suite 07 or 1.0).', auto: (c) => {
+      const v = c.vehicle, Fst = 1.6 * (v.Crr ?? 0.006) * (v.mass ?? 300) * 9.80665, o7 = c.upstream('s07'), rho = 1.225;
+      if (o7?.thrustVsAWA?.awa?.length && o7.Va > 0) { const a = o7.thrustVsAWA.awa, T = o7.thrustVsAWA.thrust; let k = 0; for (let i = 1; i < a.length; i++) if (Math.abs(a[i] - 90) < Math.abs(a[k] - 90)) k = i; const T90 = T[k]; if (T90 > 0) return { value: +(o7.Va * Math.sqrt(Fst / T90)).toFixed(2), prov: 'calc' }; }
+      const CL = o7?.CLmax ? 0.85 * o7.CLmax : 1.0; return { value: +Math.sqrt(Fst / (0.5 * rho * (v.wingArea ?? 4) * CL)).toFixed(2), prov: 'calc' }; } },
   ],
   presets: Object.entries(SCENARIOS).filter(([k]) => k !== 'live').slice(0, 6).map(([k, v]) => ({ label: v.label.split('(')[0].trim(), values: { scenario: k } })),
 
