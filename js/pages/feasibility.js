@@ -10,17 +10,21 @@ export const title = 'Mandatory feasibility tests';
 
 const SET = [['favorable', 'Windy (favourable)'], ['sunnyCalm', 'Daytime, low wind'], ['clearNight', 'Clear night, calm'], ['cloudyNight', 'Humid / cloudy night'], ['gust', 'Gusting'], ['reversal', 'Changing (wind reversal)'], ['worstCase', 'Worst-case energy'], ['live', 'Live weather at site']];
 
+function resetChain() { for (const id of FEASIBILITY_CHAIN) { const lk = store.locks(id), P = store.params(id), PV = store.prov(id); for (const k of Object.keys(P)) if (!lk[k]) { delete P[k]; delete PV[k]; } delete store.project.outputs[id]; } store.touch({ type: 'reset-chain' }); }
+
 export async function render(root) {
   root.append(h('h1', {}, 'Mandatory feasibility tests'), h('p', { class: 'muted', style: 'max-width:980px' }, 'Every candidate configuration must pass four distinct tests: aerodynamic, thermal, mechanical and integrated-vehicle feasibility — under daytime, night-time, windy, low-wind, gusting, humid, cloudy and changing conditions. The coupled chain of suites (atmosphere → architecture → tyres → CFD → wing → handling → photonics → thermal → NiTi → hub → buffer → switching → vehicle energy) is executed for each scenario with the current project configuration. A thermomechanical system that exceeds its environmental exergy fails, whatever its recovery force; a wing with high lift but insufficient forward force earns no propulsion credit.'));
   const speed = h('input', { type: 'number', value: 20, min: 5, max: 60, step: 1, class: 'search', style: 'max-width:90px' });
   const pick = h('div', { class: 'row gap wrap' }, ...SET.map(([k, l]) => h('label', { class: 'chip' }, h('input', { type: 'checkbox', checked: k !== 'live', value: k }), ' ' + l)));
   const prog = progressBar(), status = h('div', { class: 'small muted' }), results = h('div');
   const runBtn = h('button', { class: 'btn primary', onclick: () => go() }, '▶ Run all scenarios');
-  root.append(section('Configuration', h('div', { class: 'row gap wrap' }, h('label', {}, 'Target cruising speed ', speed, ' km/h'), runBtn), h('div', { class: 'small muted', style: 'margin:8px 0' }, 'Scenarios'), pick, prog, status), results);
+  const resetChk = h('input', { type: 'checkbox', checked: true });
+  const resetBtn = h('button', { class: 'btn', title: 'Clear previous feasibility results and reset chain inputs', onclick: () => { resetChain(); results.innerHTML = ''; prog.set(0); status.textContent = 'Reset — chain inputs returned to automatic defaults; previous results cleared.'; } }, '⟲ Reset');
+  root.append(section('Configuration', h('div', { class: 'row gap wrap' }, h('label', {}, 'Target cruising speed ', speed, ' km/h'), runBtn, resetBtn, h('label', { class: 'small muted' }, resetChk, ' Reset all chain inputs to automatic defaults before running (keeps locked values)')), h('div', { class: 'small muted', style: 'margin:8px 0' }, 'Scenarios'), pick, prog, status), results);
   const prevScenario = store.params('s05').scenario;
 
   async function go() {
-    runBtn.disabled = true; results.innerHTML = '';
+    runBtn.disabled = true; results.innerHTML = ''; if (resetChk.checked) resetChain();
     const chosen = [...pick.querySelectorAll('input:checked')].map(i => i.value), vT = kmh(+speed.value), rows = [];
     for (const [si, sc] of chosen.entries()) {
       status.textContent = `Scenario ${si + 1}/${chosen.length}: ${SCENARIOS[sc].label}`;

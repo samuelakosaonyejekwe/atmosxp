@@ -1,6 +1,6 @@
 // Generic suite page: input generation modes, coupling, execution, results, explanations, recommendations,
 // verification, theory/IBC/CVV/format documentation, experiment import & calibration, exports.
-import { h, $, tabs, kpiGrid, verdicts, table, recList, paramControl, section, callout, errorBox, toast, progressBar, nextFrame, provChip } from './ui.js';
+import { h, $, tabs, kpiGrid, verdicts, table, recList, paramControl, section, callout, errorBox, toast, progressBar, nextFrame, provChip, modal } from './ui.js';
 import { chart, download } from './chart.js';
 import { store, hashObj, DEPENDS, CREDIBILITY } from './state.js';
 import * as num from './num.js';
@@ -68,11 +68,27 @@ export async function renderSuite(root, id) {
   let mode = store.mode(id);
   const modeBar = h('div', { class: 'modes', role: 'radiogroup', 'aria-label': 'Input generation mode' }, ...MODES.map(m => h('button', { class: 'mode' + (m.id === mode ? ' on' : ''), title: m.tip, onclick: () => { mode = m.id; store.setMode(id, m.id); drawInputs(); [...modeBar.children].forEach((b, i) => b.classList.toggle('on', MODES[i].id === mode)); } }, m.label)));
   const paramsBox = h('div', { class: 'params' });
-  const runBtn = h('button', { class: 'btn primary run', onclick: () => run() }, '▶ Run analysis');
+  const runBtn = h('button', { class: 'btn primary run', onclick: () => run(true) }, '▶ Run analysis');
   const regenBtn = h('button', { class: 'btn', title: 'Regenerate all unlocked inputs from coupled results and library values', onclick: () => { resolveAndStore(true); drawInputs(); run(); } }, '↻ Auto-generate inputs');
   const autoChk = h('input', { type: 'checkbox', checked: localStorage.getItem('axp.autorun') !== '0', onchange: (e) => localStorage.setItem('axp.autorun', e.target.checked ? '1' : '0') });
   const prog = progressBar();
-  left.append(h('h3', { class: 'card-title' }, 'Inputs'), modeBar, h('div', { class: 'row gap' }, runBtn, regenBtn), h('label', { class: 'small muted autorun' }, autoChk, ' Re-run automatically when an input changes'), prog, paramsBox);
+  // Reset options: restore this suite to a clean state before (or instead of) running
+  const resetKey = 'axp.resetBeforeRun.' + id;
+  const resetChk = h('input', { type: 'checkbox', checked: localStorage.getItem(resetKey) === '1', onchange: (e) => localStorage.setItem(resetKey, e.target.checked ? '1' : '0') });
+  const doReset = ({ inputs = true, locks = false, results = true, experiments = false } = {}) => {
+    if (inputs) { const lk = locks ? {} : store.locks(id); const P = store.params(id), PV = store.prov(id); for (const k of Object.keys(P)) if (!lk[k]) { delete P[k]; delete PV[k]; } }
+    if (locks) store.project.locks[id] = {};
+    if (results) { delete store.project.outputs[id]; out.innerHTML = ''; out.append(h('div', { class: 'callout info' }, 'Suite reset — inputs regenerated from defaults and coupled upstream results. Press Run analysis.')); }
+    if (experiments) delete store.project.experiments[id];
+    store.touch({ type: 'reset-suite', id }); resolveAndStore(false); drawInputs(); prog.set(0);
+  };
+  const resetBtn = h('button', { class: 'btn', title: 'Reset this suite before running', onclick: () => {
+    const o = { inputs: h('input', { type: 'checkbox', checked: true }), locks: h('input', { type: 'checkbox' }), results: h('input', { type: 'checkbox', checked: true }), experiments: h('input', { type: 'checkbox' }) };
+    modal('Reset this suite', h('div', {}, h('p', { class: 'muted' }, 'Choose what to reset. Unlocked inputs return to their automatic values (defaults + coupled upstream results).'),
+      ...[['inputs', 'Inputs → automatic defaults'], ['locks', 'Also clear locked values'], ['results', 'Clear computed results'], ['experiments', 'Remove imported experimental datasets for this suite']].map(([k, l]) => h('label', { class: 'row gap', style: 'margin:6px 0' }, o[k], l))),
+      [{ label: 'Cancel' }, { label: 'Reset', onClick: () => doReset(Object.fromEntries(Object.entries(o).map(([k, e]) => [k, e.checked]))) }, { label: 'Reset & run', primary: true, onClick: () => { doReset(Object.fromEntries(Object.entries(o).map(([k, e]) => [k, e.checked]))); run(); } }]);
+  } }, '⟲ Reset');
+  left.append(h('h3', { class: 'card-title' }, 'Inputs'), modeBar, h('div', { class: 'row gap wrap' }, runBtn, resetBtn, regenBtn), h('label', { class: 'small muted autorun' }, autoChk, ' Re-run automatically when an input changes'), h('label', { class: 'small muted autorun' }, resetChk, ' Reset inputs to defaults before each run'), prog, paramsBox);
 
   let resolved = null; resolveAndStore(false);
   function resolveAndStore(regen) {
@@ -104,8 +120,11 @@ export async function renderSuite(root, id) {
 
   const out = h('div', { class: 'results-body' }); right.append(out);
   let lastRes = null, running = false;
-  async function run() {
-    if (running) return; running = true; runBtn.disabled = true; prog.set(0.02, 'starting');
+  async function run(explicit = false) {
+    if (running) return;
+    // only an explicit Run press resets — automatic re-runs after an edit must keep the edited value
+    if (explicit === true && resetChk.checked) doReset({ inputs: true, results: false });
+    running = true; runBtn.disabled = true; prog.set(0.02, 'starting');
     const ctx = makeCtx(def, (f, msg) => prog.set(f, msg)); const p = { ...store.params(id) };
     out.innerHTML = ''; out.append(h('div', { class: 'spinner-wrap' }, h('div', { class: 'spinner' }), 'Solving governing equations…'));
     await nextFrame();

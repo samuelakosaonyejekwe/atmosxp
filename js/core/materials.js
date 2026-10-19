@@ -101,7 +101,7 @@ export const COMPONENTS = {
   rib: { name: 'Flexible wing ribs', use: 'rib', def: 'gfrp-e', suite: 's06' },
   wingSkin: { name: 'Morphing aerodynamic skin', use: 'wingSkin', def: 'tpu-glass', suite: 's06' },
   leadingEdge: { name: 'Wing leading-edge shell', use: 'leadingEdge', def: 'cfrp-woven', suite: 's06' },
-  lattice: { name: 'Metamaterial cellular core (constituent)', use: 'lattice', def: 'ti-6al4v', suite: 's04' },
+  lattice: { name: 'Wing metamaterial cellular core (constituent)', use: 'lattice', def: 'pa12', suite: 's04' },
   rootInsert: { name: 'Wing-root metallic inserts', use: 'rootInsert', def: 'ti-6al4v', suite: 's09' },
   collector: { name: 'Day solar-selective collector', use: 'collector', def: 'coat-tinox', suite: 's13' },
   radiator: { name: 'Night radiative-cooling surface', use: 'radiator', def: 'coat-pdrc', suite: 's13' },

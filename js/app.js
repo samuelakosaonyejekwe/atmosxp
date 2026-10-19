@@ -96,5 +96,6 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 // persistent storage so cached datasets survive storage pressure
 navigator.storage?.persist?.().catch(() => { });
 
+if (store.project.migratedBaseline) { delete store.project.migratedBaseline; store.touch(); setTimeout(() => toast('Design baseline updated: lower twin wings (≈3.0 m overall), wider track and lighter rig for a lower centre of gravity and better rollover stability. All results are being regenerated; the original 3 m specification model remains available as a preset in Suite 01.', 'info', 12000), 800); }
 route();
 void reverseGeocode;

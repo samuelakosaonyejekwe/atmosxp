@@ -79,8 +79,10 @@ export const longwaveDown = (TaK, eps) => eps * SIGMA * TaK ** 4;
 
 // ---------------- Vehicle road load ----------------
 export const DEFAULT_VEHICLE = {
-  mass: 300, Crr: 0.006, CdA: 0.25, wheelRadius: 0.30, wingArea: 8, wingHeight: 3, nWings: 2,
-  wheelbase: 2.4, track: 1.5, cgHeight: 0.55, length: 3.6, width: 1.6, height: 1.1, nWheels: 3, layout: 'tadpole',
+  // Baseline revision 2: lower, wider, lighter rig (overall ≈ 3.0 m, CG lowered); the specification's starting model
+  // (2 × 3 m wings, 8 m², track 1.5 m) remains available as a preset in Suite 01.
+  baseline: 2, mass: 300, Crr: 0.006, CdA: 0.25, wheelRadius: 0.30, wingArea: 6.4, wingHeight: 2.0, nWings: 2,
+  wheelbase: 2.8, track: 1.8, cgHeight: 0.62, length: 4.2, width: 1.6, height: 1.0, nWheels: 3, layout: 'tadpole',
   frontalArea: 0.9, Cd: 0.28, bearingLoss_W: 3, driveWheels: 2, payload: 90,
 };
 export function roadLoad(v, veh = DEFAULT_VEHICLE, { rho = 1.225, grade = 0, headwind = 0, accel = 0 } = {}) {

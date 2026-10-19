@@ -9,7 +9,7 @@ import { h } from './ui.js';
 import { fmt, clamp, interp1 } from './num.js';
 
 // ---------------- playback controller ----------------
-export function playback(container, { duration, onFrame, fps = 60, label = 'Simulation time', unit = 's', autoplay = true, rate = 1 }) {
+export function playback(container, { duration, onFrame, onReset, fps = 60, label = 'Simulation time', unit = 's', autoplay = true, rate = 1 }) {
   let t = 0, playing = autoplay, speed = rate, loop = true, raf = 0, last = performance.now(), recorder = null, chunks = [];
   const play = h('button', { class: 'icon-btn', title: 'Play / pause' }, playing ? '⏸' : '▶');
   const slider = h('input', { type: 'range', min: 0, max: 1000, value: 0, style: 'flex:1', 'aria-label': 'Timeline' });
@@ -17,9 +17,11 @@ export function playback(container, { duration, onFrame, fps = 60, label = 'Simu
   const sp = h('select', { title: 'Playback speed' }, ...[...new Set([0.1, 0.25, 0.5, 1, 2, 4, 8, 16, 60, speed])].sort((a, b) => a - b).map(v => h('option', { value: v, selected: v === speed }, fmt(v, 3) + '×')));
   const loopB = h('button', { class: 'icon-btn on', title: 'Loop' }, '⟲');
   const rec = h('button', { class: 'icon-btn', title: 'Record the animation as a video file (WebM)' }, '⏺ Rec');
-  const bar = h('div', { class: 'sim-bar' }, play, slider, tlab, sp, loopB, rec);
+  const rst = h('button', { class: 'icon-btn', title: 'Reset the simulation to t = 0' }, '⏮');
+  const bar = h('div', { class: 'sim-bar' }, rst, play, slider, tlab, sp, loopB, rec);
   container.append(bar);
   const set = (tt) => { t = clamp(tt, 0, duration); slider.value = Math.round(t / duration * 1000); tlab.textContent = `${label} ${fmt(t, 4)} ${unit}`; onFrame(t); };
+  rst.onclick = () => { playing = false; play.textContent = '▶'; onReset?.(); set(0); };
   play.onclick = () => { playing = !playing; play.textContent = playing ? '⏸' : '▶'; last = performance.now(); };
   slider.oninput = () => { set(+slider.value / 1000 * duration); };
   sp.onchange = () => { speed = +sp.value; };
@@ -143,3 +145,23 @@ export function legend3d(container, { title, lo, hi, unit = '', cmapName = 'turb
   container.append(el); return { set: (l, hh) => { el.lastChild.firstChild.textContent = fmt(l, 3) + unit; el.lastChild.lastChild.textContent = fmt(hh, 3) + unit; } };
 }
 export { Mesh };
+
+// Displacement magnifier: slider + label "×N (true-scale peak = …)". auto = suggested factor so the solved
+// peak displacement becomes clearly visible; returns { get value } and calls onChange(N).
+export function magnifier(container, { auto = 1, truePeak = 0, unit = '', max = 500, onChange } = {}) {
+  let N = Math.max(1, Math.min(max, Math.round(auto)));
+  const lab = h('span', { class: 'small mono' }), sl = h('input', { type: 'range', min: 0, max: Math.log10(max), step: 0.01, value: Math.log10(N), style: 'width:140px', title: 'Displacement magnification' });
+  const upd = () => { lab.textContent = `×${N} (true-scale peak = ${fmt(truePeak, 3)}${unit})`; onChange?.(N); };
+  sl.oninput = () => { N = Math.max(1, Math.round(10 ** +sl.value)); upd(); };
+  container.append(h('div', { class: 'sim-bar', style: 'border-top:0' }, h('span', { class: 'small' }, 'Magnification'), sl, lab)); upd();
+  return { get value() { return N; } };
+}
+// Slow turntable rotation for scenes whose solved state is static (keeps the view alive; geometry unchanged).
+export function turntable(V, rate = 0.15) { let a = 0; V.animate = (dt) => { a += dt * rate; V.root.rotation.z = a; }; }
+// Flow tracers: small spheres travelling along a polyline at a speed ∝ solved flow magnitude.
+export function tracers(V, pts, { n = 8, color = 0xf97316, size = 0.025 } = {}) {
+  const THREE = V.THREE, P = pts.map(p => new THREE.Vector3(...p)), seg = [], tot = P.slice(1).reduce((s, p, i) => { const l = p.distanceTo(P[i]); seg.push(l); return s + l; }, 0);
+  const balls = Array.from({ length: n }, () => { const m = new THREE.Mesh(new THREE.SphereGeometry(size, 10, 8), new THREE.MeshBasicMaterial({ color })); V.root.add(m); return m; });
+  let s0 = 0;
+  return { step(dt, speed) { s0 = (s0 + dt * speed) % 1; balls.forEach((b, k) => { let d = ((s0 + k / n) % 1) * tot, i = 0; while (i < seg.length - 1 && d > seg[i]) { d -= seg[i]; i++; } b.position.copy(P[i]).lerp(P[i + 1], Math.min(1, d / (seg[i] || 1))); b.visible = speed > 1e-6; }); } };
+}
