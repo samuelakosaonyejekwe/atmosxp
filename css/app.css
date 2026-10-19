@@ -93,3 +93,11 @@ main{padding:18px clamp(12px,2.4vw,28px) 60px;min-width:0;outline:none}
 .sim-hud{position:absolute;top:40px;right:8px;background:color-mix(in srgb,var(--bg2) 82%,transparent);border:1px solid var(--line);border-radius:10px;padding:6px 10px;font-size:12px;min-width:170px;pointer-events:none;backdrop-filter:blur(4px)}.sim-hud div{display:flex;justify-content:space-between;gap:10px}.sim-hud span{color:var(--muted)}
 .sim-legend{position:absolute;bottom:60px;right:8px;width:180px;background:color-mix(in srgb,var(--bg2) 85%,transparent);border:1px solid var(--line);border-radius:8px;padding:6px 8px;pointer-events:none}
 @media (max-width:480px){.sim-hud{top:auto;bottom:62px;left:8px;right:auto;min-width:0;font-size:11px}.sim-legend{display:none}}
+/* update & what's-new pop-up */
+.update-wrap{animation:upfade .25s ease}.update-pop{width:min(560px,100%);background:var(--panel);border:1px solid var(--line);border-radius:20px;box-shadow:0 24px 60px rgba(2,6,23,.55);overflow:hidden;animation:uprise .35s cubic-bezier(.2,.9,.3,1.2)}
+.up-head{display:flex;gap:14px;align-items:center;padding:18px 20px;background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 28%,var(--panel)),color-mix(in srgb,var(--accent2) 28%,var(--panel)))}.up-head h3{margin:2px 0 0;font-size:18px}
+.up-icon{width:46px;height:46px;flex:none;border-radius:14px;display:grid;place-items:center;font-size:22px;font-weight:800;color:#04121f;background:linear-gradient(135deg,var(--accent),var(--accent2));box-shadow:0 6px 18px color-mix(in srgb,var(--accent) 40%,transparent)}.up-icon.ok{background:linear-gradient(135deg,#22c55e,#38bdf8)}
+.up-kicker{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:700}
+.up-body{padding:14px 20px;max-height:52vh;overflow:auto}.up-sub{font-weight:700;font-size:13px;margin:6px 0 4px}.up-list{margin:0 0 8px;padding-left:18px}.up-list li{margin:5px 0;font-size:13.5px}
+.up-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 20px;border-top:1px solid var(--line);background:var(--panel2)}
+@keyframes upfade{from{opacity:0}to{opacity:1}}@keyframes uprise{from{opacity:0;transform:translateY(18px) scale(.97)}to{opacity:1;transform:none}}

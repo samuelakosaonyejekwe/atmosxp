@@ -86,7 +86,9 @@ export const installPrompt = () => deferred;
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').then(async (reg) => {
     if (!reg) return;
-    reg.addEventListener('updatefound', () => { const w = reg.installing; w?.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) toast(h('span', {}, 'A new version is ready. ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); w.postMessage('skipWaiting'); } }, 'Reload now')), 'info', 15000); }); });
+    const offer = (w) => showUpdatePopup(() => w.postMessage('skipWaiting'));
+    if (reg.waiting && navigator.serviceWorker.controller) offer(reg.waiting);
+    reg.addEventListener('updatefound', () => { const w = reg.installing; w?.addEventListener('statechange', () => { if (w.state === 'installed' && navigator.serviceWorker.controller) offer(w); }); });
     try { if ('periodicSync' in reg) { const st = await navigator.permissions.query({ name: 'periodic-background-sync' }); if (st.state === 'granted') await reg.periodicSync.register('axp-refresh', { minInterval: 6 * 3600e3 }); } } catch { /* optional capability */ }
     const s = store.project.site; reg.active?.postMessage({ type: 'site', lat: s.lat, lon: s.lon });
     setInterval(() => reg.update().catch(() => { }), 3600e3);
@@ -97,5 +99,35 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 navigator.storage?.persist?.().catch(() => { });
 
 if (store.project.migratedBaseline) { delete store.project.migratedBaseline; store.touch(); setTimeout(() => toast('Design baseline updated: lower twin wings (≈3.0 m overall), wider track and lighter rig for a lower centre of gravity and better rollover stability. All results are being regenerated; the original 3 m specification model remains available as a preset in Suite 01.', 'info', 12000), 800); }
+// ---------- update & what's-new pop-ups ----------
+async function showUpdatePopup(apply) {
+  if (document.querySelector('.update-pop')) return;
+  const { CHANGELOG } = await import('./changelog.js').catch(() => ({ CHANGELOG: [] }));
+  const latest = CHANGELOG[0];
+  const close = () => wrap.remove();
+  const wrap = h('div', { class: 'modal-wrap update-wrap' }, h('div', { class: 'update-pop', role: 'dialog', 'aria-label': 'Update available' },
+    h('div', { class: 'up-head' }, h('div', { class: 'up-icon' }, '⬆'), h('div', {}, h('div', { class: 'up-kicker' }, 'Update available'), h('h3', {}, 'A new version of PHOENIX-ATMOS-XP is ready'))),
+    h('div', { class: 'up-body' }, h('p', { class: 'muted' }, 'Your projects, results and imported data are kept. The update installs in about a second and works offline afterwards.'),
+      latest ? h('div', {}, h('div', { class: 'up-sub' }, 'Highlights'), h('ul', { class: 'up-list' }, ...latest.items.slice(0, 4).map(i => h('li', {}, i)))) : null),
+    h('div', { class: 'up-foot' }, h('button', { class: 'btn', onclick: close }, 'Later'), h('button', { class: 'btn primary', onclick: () => { close(); apply(); } }, 'Update now'))));
+  document.body.append(wrap);
+}
+async function showWhatsNew() {
+  try {
+    const { CHANGELOG, LATEST } = await import('./changelog.js');
+    const seen = +(localStorage.getItem('axp.seenRelease') || 0);
+    let seen0 = seen; if (!seen0) { if (!localStorage.getItem('atmosxp.project.v1')) { localStorage.setItem('axp.seenRelease', LATEST); return; } seen0 = LATEST - 1; } // first-ever visit: no pop-up; earlier visitors see the latest release
+    if (seen0 >= LATEST) return;
+    const items = CHANGELOG.filter(c => c.id > seen0);
+    const close = () => { localStorage.setItem('axp.seenRelease', LATEST); wrap.remove(); };
+    const wrap = h('div', { class: 'modal-wrap update-wrap', onclick: (e) => { if (e.target === wrap) close(); } }, h('div', { class: 'update-pop', role: 'dialog', 'aria-label': 'What is new' },
+      h('div', { class: 'up-head' }, h('div', { class: 'up-icon ok' }, '✓'), h('div', {}, h('div', { class: 'up-kicker' }, 'Updated successfully'), h('h3', {}, 'What’s new in PHOENIX-ATMOS-XP'))),
+      h('div', { class: 'up-body' }, ...items.map(c => h('div', { class: 'up-rel' }, h('div', { class: 'up-sub' }, `${c.title} · ${c.date}`), h('ul', { class: 'up-list' }, ...c.items.map(i => h('li', {}, i)))))),
+      h('div', { class: 'up-foot' }, h('button', { class: 'btn primary', onclick: close }, 'Got it'))));
+    document.body.append(wrap);
+  } catch { /* changelog unavailable */ }
+}
+setTimeout(showWhatsNew, 1200);
+window.axpPreviewUpdate = () => showUpdatePopup(() => location.reload());
 route();
 void reverseGeocode;
