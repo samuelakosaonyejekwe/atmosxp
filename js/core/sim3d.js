@@ -57,8 +57,8 @@ export async function vehicleScene(container, { vehicle, materials = {}, wingInc
   const wingObjs = [];
   const makeMesh = (m) => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(m.positions, 3)); g.setIndex(new THREE.BufferAttribute(m.indices, 1)); g.computeVertexNormals(); const op = m.opacity ?? 1; const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(m.color), metalness: 0.3, roughness: 0.5, side: THREE.DoubleSide, transparent: op < 1, opacity: op, depthWrite: op >= 1 }); const o = new THREE.Mesh(g, mat); o.name = m.name; o.userData = { group: m.group, component: m.component }; return o; };
   for (const m of asm.parts) {
-    const wm = m.name.match(/^(Tyre|Rim|Direct-rim hub ring|Brake disc|Spoke) (\d+)/);
-    if (wm) { const w = wheels[+wm[2] - 1]; const o = makeMesh(m); o.position.set(-w.x, -w.y, -vehicle.wheelRadius); (wm[1] === 'Brake disc' ? w.steerG : w.spinG).add(o); continue; }
+    const wm = m.name.match(/^(Tyre|Rim|Direct-rim hub ring|Brake disc|Spoke|Wheel spat) (\d+)/);
+    if (wm) { const w = wheels[+wm[2] - 1]; const o = makeMesh(m); o.position.set(-w.x, -w.y, -vehicle.wheelRadius); (wm[1] === 'Brake disc' || wm[1] === 'Wheel spat' ? w.steerG : w.spinG).add(o); continue; }
     const o = makeMesh(m); car.add(o); if (/^Wing \d+ \(skin/.test(m.name)) wingObjs.push({ o, base: Float32Array.from(m.positions), comp: m });
   }
   // ground with road texture lines
