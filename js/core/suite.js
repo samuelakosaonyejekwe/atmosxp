@@ -186,7 +186,8 @@ function exportPane(el, def, res, p) {
   const btns = h('div', { class: 'row gap wrap' },
     h('button', { class: 'btn', onclick: () => download(new Blob([JSON.stringify({ suite: def.id, title: def.title, inputs: p, provenance: store.prov(def.id), results: { kpis: res.kpis, verdicts: res.verdicts, outputs: res.outputs, checks: res.checks } }, null, 2)], { type: 'application/json' }), `${def.id}-results.json`) }, 'Results (JSON)'),
     h('button', { class: 'btn', onclick: () => download(new Blob([['quantity,value,unit', ...kv.map(r => r.map(c => /[",]/.test(String(c)) ? `"${c}"` : c).join(','))].join('\n')], { type: 'text/csv' }), `${def.id}-kpis.csv`) }, 'Key results (CSV)'),
-    h('button', { class: 'btn primary', onclick: () => evidencePackage(def, res, p) }, 'Research evidence package (ZIP)'));
+    h('button', { class: 'btn primary', onclick: () => evidencePackage(def, res, p) }, 'Research evidence package (ZIP)'),
+    h('button', { class: 'btn', title: 'Opens the print dialog — choose “Save as PDF” for a PDF engineering report', onclick: () => window.print() }, 'Engineering report (print / PDF)'));
   el.append(section('Export', btns, ...(res.exports || []).map(x => h('button', { class: 'btn', onclick: x.action }, x.label))));
 }
 async function evidencePackage(def, res, p) {

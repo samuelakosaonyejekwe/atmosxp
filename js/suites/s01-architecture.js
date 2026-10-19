@@ -61,10 +61,10 @@ export default {
     for (let k = 0; k < nW; k++) {
       const wx = meta.wingX[k], zc = R + Hb * 0.7 + span * 0.45;
       const skinA = 2.05 * S1, sk = M('wingSkin'), sp = M('spar'), rb = M('rib'), lt = M('lattice');
-      add(`Wing ${k + 1} morphing skin`, 'wingSkin', skinA * 0.0015 * sk.rho, wx, 0, zc, [cMean, 0.15 * cMean, span]);
+      add(`Wing ${k + 1} morphing skin`, 'wingSkin', skinA * 0.001 * sk.rho, wx, 0, zc, [cMean, 0.15 * cMean, span]);
       add(`Wing ${k + 1} box spar`, 'spar', span * 2 * (0.12 + 0.1) * cMean * 0.003 * sp.rho * 1.15, wx, 0, R + Hb * 0.7 + span * 0.4, [0.12 * cMean, 0.1 * cMean, span]);
-      add(`Wing ${k + 1} flexible ribs (×8)`, 'rib', 8 * 0.1 * cMean * cMean * 0.005 * rb.rho, wx, 0, zc, [cMean, 0.1, span]);
-      add(`Wing ${k + 1} metamaterial core`, 'lattice', S1 * 0.09 * cMean * 0.08 * lt.rho, wx, 0, zc, [cMean * 0.6, 0.1 * cMean, span], 'relative density 8 %');
+      add(`Wing ${k + 1} flexible ribs (×8, 3 mm, 50 % lightening)`, 'rib', 8 * 0.1 * cMean * cMean * 0.003 * 0.5 * rb.rho, wx, 0, zc, [cMean, 0.1, span]);
+      add(`Wing ${k + 1} metamaterial core`, 'lattice', S1 * 0.085 * cMean * 0.3 * 0.03 * lt.rho, wx, 0, zc, [cMean * 0.6, 0.1 * cMean, span], 'morphing regions = 30 % of wing volume, relative density 3 %');
       add(`Wing ${k + 1} root fitting`, 'rootInsert', 2.2 * (M('rootInsert').rho / 4430), wx, 0, R + Hb * 0.66, [0.2, 0.2, 0.2]);
     }
     meta.wheelPos.forEach(([x, y], k) => {
@@ -89,7 +89,7 @@ export default {
     add('Cabin canopy / glazing', 'cabin', 1.2 * 0.004 * M('cabin').rho, 0.35, 0, R + Hb * 0.62, [1.1, p.width * 0.5, 0.5]);
     add('Seat, restraints & controls', null, 9, 0.15, 0, R + 0.25, [0.6, 0.5, 0.6]);
     add('Wing unloading / incidence mechanism', null, p.wingConfig === 'practical' ? 7 : 2.5, meta.wingX[0], 0, R + Hb * 0.62, [0.3, 0.3, 0.2]);
-    const struct = sum(items.map(i => i.m)); add('Fasteners, sealing, wiring-free misc. (6 %)', null, 0.06 * struct, 0, 0, R + Hb * 0.4, [p.length, p.width, Hb]);
+    const struct = sum(items.map(i => i.m)); add('Fasteners, sealing & miscellaneous (6 %)', null, 0.06 * struct, 0, 0, R + Hb * 0.4, [p.length, p.width, Hb]);
     const empty = sum(items.map(i => i.m));
     add('Occupant + payload', null, p.payload, 0.1, 0, R + 0.45, [0.5, 0.45, 0.9]);
     const total = sum(items.map(i => i.m)), mOp = p.massBasis === 'computed' ? total : p.targetMass;

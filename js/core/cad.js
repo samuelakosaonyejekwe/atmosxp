@@ -100,14 +100,12 @@ export const PART_COLORS = { Composite: '#2b2f36', Metal: '#b8c0cc', SMA: '#c58b
 export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence = 10, airfoil, twistTip = -4, morph = null, wheelAngle = 0, steer = 0, detail = 1, materials = {} } = {}) {
   const L = veh.length, W = veh.width, Hb = veh.height, wb = veh.wheelbase, tr = veh.track, R = veh.wheelRadius, parts = [];
   const color = (comp, def) => PART_COLORS[materials[comp]?.family] || def;
-  // monocoque body: x forward from rear (0) to nose (L)
+  // monocoque body: x forward from rear (0) to nose (L); bodySec(u) is the analytic section law reused for conformal parts
   const nb = 22 * detail, secs = [];
-  for (let s = 0; s <= nb; s++) {
-    const u = s / nb, x = u * L - L * 0.42;
-    const halfW = W / 2 * Math.max(0.06, Math.sin(Math.PI * Math.min(1, u * 1.05)) ** 0.55) * (u > 0.9 ? 1 - (u - 0.9) * 4 : 1);
-    const halfH = Hb * 0.36 * Math.max(0.06, Math.sin(Math.PI * u) ** 0.7);
-    secs.push(superEllipse(x, Math.max(0.02, halfW * 0.82), Math.max(0.02, halfH), R + 0.02 + halfH * 0.9, 2.6, 36));
-  }
+  const bodySec = (u) => { const x = u * L - L * 0.42; const halfW = W / 2 * Math.max(0.06, Math.sin(Math.PI * Math.min(1, u * 1.05)) ** 0.55) * (u > 0.9 ? 1 - (u - 0.9) * 4 : 1); const halfH = Hb * 0.36 * Math.max(0.06, Math.sin(Math.PI * u) ** 0.7); return { x, a: Math.max(0.02, halfW * 0.82), b: Math.max(0.02, halfH), cz: R + 0.02 + halfH * 0.9 }; };
+  const uOf = (x) => Math.min(1, Math.max(0, (x + L * 0.42) / L));
+  const topZ = (x) => { const q = bodySec(uOf(x)); return q.cz + q.b; };
+  for (let s = 0; s <= nb; s++) { const q = bodySec(s / nb); secs.push(superEllipse(q.x, q.a, q.b, q.cz, 2.6, 36)); }
   parts.push(loft('Monocoque body', secs, { color: color('chassis', '#2b2f36'), group: 'Chassis', component: 'chassis' }));
   // canopy
   const cs = []; for (let s = 0; s <= 10; s++) { const u = s / 10, x = -0.15 + u * 1.1; const a = W * 0.26 * Math.sin(Math.PI * u) ** 0.6 + 0.01, b = Hb * 0.25 * Math.sin(Math.PI * u) ** 0.8 + 0.01; cs.push(superEllipse(x, a, b, R + Hb * 0.62, 2.2, 28)); }
@@ -125,20 +123,22 @@ export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence = 10, air
     // spokes as thin boxes
     for (let sp = 0; sp < 6; sp++) { const b = box(`Spoke ${k + 1}.${sp + 1}`, R * 0.5, 0.012, 0.03, { color: color('wheel', '#c0c6cf'), group: 'Wheels', component: 'wheel' }); b.translate(R * 0.5, 0, 0); b.rotY(sp * Math.PI / 3 + wheelAngle); if (steerable && steer) b.rotZ(rad(steer)); b.translate(x, y, R); parts.push(b); }
   });
-  // twin vertical wings mounted on the body spine, with incidence about z
-  const af = airfoil || naca4('0018', 61), span = veh.wingHeight, area1 = veh.wingArea / (veh.nWings || 2), cMean = area1 / span, cr = cMean * 1.25, ct = cMean * 0.75;
-  const wingX = [L * 0.18 - L * 0.42 + 0.9, L * 0.62 - L * 0.42 - 0.4].slice(0, veh.nWings || 2);
+  // twin vertical wings in tandem on the body spine, roots embedded in the monocoque; incidence about the vertical axis
+  const af = airfoil || naca4('0018', 61), nW = veh.nWings || 2, span = veh.wingHeight, area1 = veh.wingArea / nW, cMean = area1 / span, cr = cMean * 1.2, ct = cMean * 0.8;
+  const wingX = nW === 1 ? [L * 0.08] : [-L * 0.42 + 0.22 * L + 0.25 * cr, -L * 0.42 + 0.58 * L + 0.25 * cr].slice(0, nW);
   wingX.forEach((wx, k) => {
+    const zr = topZ(wx) - 0.02;
     const w = wing(`Wing ${k + 1} (skin + lattice)`, { airfoil: af, span, rootChord: cr, tipChord: ct, twistTip, twistFn: morph?.twist, cambDelta: morph?.camber, opts: { color: color('wingSkin', '#e5e7eb'), group: 'Wings', component: 'wingSkin' } });
-    w.translate(-0.25 * cr, 0, 0); w.rotZ(rad(wingIncidence)); w.translate(wx, 0, R + Hb * 0.7); parts.push(w);
-    const spar = box(`Wing ${k + 1} box spar`, cr * 0.12, cr * 0.1, span, { color: color('spar', '#111827'), group: 'Wings', component: 'spar' }); spar.translate(0, 0, span / 2); spar.rotZ(rad(wingIncidence)); spar.translate(wx, 0, R + Hb * 0.7); parts.push(spar);
-    const root = cylinder(`Wing ${k + 1} root fitting`, 0.09, 0.18, 24, { color: color('rootInsert', '#9ca3af'), group: 'Wings', component: 'rootInsert' }); root.translate(wx, 0, R + Hb * 0.66); parts.push(root);
+    w.translate(-0.25 * cr, 0, 0); w.rotZ(rad(wingIncidence)); w.translate(wx, 0, zr); parts.push(w);
+    const zf = bodySec(uOf(wx)).cz - bodySec(uOf(wx)).b * 0.6, sl = span + (zr - zf);
+    const spar = box(`Wing ${k + 1} box spar`, cr * 0.12, cr * 0.1, sl, { color: color('spar', '#111827'), group: 'Wings', component: 'spar' }); spar.translate(0, 0, sl / 2); spar.rotZ(rad(wingIncidence)); spar.translate(wx, 0, zf); parts.push(spar);
+    const root = cylinder(`Wing ${k + 1} root fitting`, 0.09, 0.16, 24, { color: color('rootInsert', '#9ca3af'), group: 'Wings', component: 'rootInsert' }); root.translate(wx, 0, zr); parts.push(root);
   });
-  // collectors (day absorber on top deck, night radiator panels)
-  const col = box('Solar-selective collector deck', L * 0.32, W * 0.5, 0.012, { color: color('collector', '#1e3a8a'), group: 'Thermal', component: 'collector' }); col.translate(-L * 0.2, 0, R + Hb * 0.67); parts.push(col);
-  const rad1 = box('Radiative-cooling panel (port)', L * 0.28, 0.01, Hb * 0.22, { color: color('radiator', '#f8fafc'), group: 'Thermal', component: 'radiator' }); rad1.translate(-L * 0.18, W * 0.39, R + Hb * 0.35); parts.push(rad1);
-  const rad2 = box('Radiative-cooling panel (starboard)', L * 0.28, 0.01, Hb * 0.22, { color: color('radiator', '#f8fafc'), group: 'Thermal', component: 'radiator' }); rad2.translate(-L * 0.18, -W * 0.39, R + Hb * 0.35); parts.push(rad2);
-  return { parts, meta: { length: L, width: W, height: R + Hb * 0.7 + span, wheelPos, wingX, cr, ct, span } };
+  // conformal sky-facing thermal surfaces on the upper body: solar-selective absorber (rear deck) and radiative cooler (fore deck)
+  const patch = (name, u0, u1, halfAngle, comp, colorDef) => { const sec = []; const N = 14; for (let s2 = 0; s2 <= 10; s2++) { const u = u0 + (u1 - u0) * s2 / 10, q = bodySec(u); const ring = []; for (let k = 0; k <= N; k++) { const t = Math.PI / 2 - halfAngle + 2 * halfAngle * k / N, c = Math.cos(t), sn = Math.sin(t), y = q.a * Math.sign(c) * Math.abs(c) ** (2 / 2.6), z = q.cz + q.b * Math.sign(sn) * Math.abs(sn) ** (2 / 2.6); ring.push([q.x, y * 1.004, q.cz + (z - q.cz) * 1.004 + 0.006]); } for (let k = N; k >= 0; k--) { const r0 = ring[k]; ring.push([r0[0], r0[1] * 0.996, q.cz + (r0[2] - 0.006 - q.cz) / 1.004 * 0.999 + 0.001]); } sec.push(ring); } return loft(name, sec, { color: color(comp, colorDef), group: 'Thermal', component: comp }); };
+  parts.push(patch('Solar-selective collector (rear deck)', 0.06, 0.2, 0.9, 'collector', '#1e3a8a'));
+  parts.push(patch('Radiative-cooling emitter (fore deck)', 0.74, 0.9, 0.95, 'radiator', '#f8fafc'));
+  return { parts, meta: { length: L, width: W, height: topZ(wingX[0] ?? 0) + span, wheelPos, wingX, cr, ct, span, collectorArea: null } };
 }
 
 // Direct-rim hub sub-assembly in its own frame (z = axle axis)

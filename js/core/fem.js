@@ -137,7 +137,8 @@ export function homogenize(cell, Es, t, depth = 1) {
   let S; try { S = invert(C).map(r => Array.from(r)); } catch { S = [[Infinity, 0, 0], [0, Infinity, 0], [0, 0, Infinity]]; }
   const strutLen = els.reduce((a, e) => a + e.L, 0), relDensity = strutLen * t / area;
   const ev = eigSym(C).values;
-  return { C, S, Ex: 1 / S[0][0], Ey: 1 / S[1][1], Gxy: 1 / S[2][2], nuxy: -S[0][1] / S[0][0], nuyx: -S[0][1] / S[1][1], relDensity, area, els, caseX: c1, caseY: c2, caseS: c3, eigC: ev, positiveDefinite: ev.every(v => v > -1e-6 * Math.abs(ev[ev.length - 1])) };
+  const energyAt = (eps) => solveCase(eps.map(v => v * 1e-3)).U / (area * depth) / 1e-6; // J/m³ per unit strain² scale
+  return { C, S, energyAt, Ex: 1 / S[0][0], Ey: 1 / S[1][1], Gxy: 1 / S[2][2], nuxy: -S[0][1] / S[0][0], nuyx: -S[0][1] / S[1][1], relDensity, area, els, caseX: c1, caseY: c2, caseS: c3, eigC: ev, positiveDefinite: ev.every(v => v > -1e-6 * Math.abs(ev[ev.length - 1])) };
 }
 
 // ---------------- Plane-stress CST continuum ----------------
@@ -206,5 +207,39 @@ export function lowestModes(Kr, Mr, nModes = 3, iters = 25) {
     vals = eg.values;
   }
   return vals.slice(0, nModes).map((lam, k) => ({ omega: Math.sqrt(Math.max(lam, 0)), f: Math.sqrt(Math.max(lam, 0)) / (2 * Math.PI), vec: X[k] }));
+}
+// ---------------- Bistable pre-shaped (cosine) clamped–clamped curved beam ----------------
+// Rayleigh–Ritz with 3 symmetric + 1 antisymmetric clamped modes, bending + mid-plane stretching energy,
+// displacement control at mid-span (continuation in travel d). Units SI. Returns F–d, U–d and key metrics.
+export function bistableBeam({ L, h, t, b, E, allowAsym = true, nq = 240, nSteps = 160, dMaxFactor = 2.3 }) {
+  const I = b * t ** 3 / 12, A = b * t, k = 2 * Math.PI / L, xs = range(nq + 1).map(i => L * i / nq), wq = xs.map((_, i) => (i === 0 || i === nq ? 0.5 : 1) * L / nq);
+  const d1 = [(x) => k * Math.sin(k * x), (x) => 2 * k * Math.sin(2 * k * x), (x) => 3 * k * Math.sin(3 * k * x), (x) => k * (Math.cos(k * x) - Math.cos(2 * k * x))];
+  const d2 = [(x) => k * k * Math.cos(k * x), (x) => 4 * k * k * Math.cos(2 * k * x), (x) => 9 * k * k * Math.cos(3 * k * x), (x) => k * k * (-Math.sin(k * x) + 2 * Math.sin(2 * k * x))];
+  const P1 = d1.map(f => xs.map(f)), P2 = d2.map(f => xs.map(f));
+  const Bm = range(4).map(i => range(4).map(j => xs.reduce((s2, _, q) => s2 + P2[i][q] * P2[j][q] * wq[q], 0))), Cm = range(4).map(i => range(4).map(j => xs.reduce((s2, _, q) => s2 + P1[i][q] * P1[j][q] * wq[q], 0)));
+  const a0 = [h / 2, 0, 0, 0], mv = (M2, v) => M2.map(r => r.reduce((s2, x, j) => s2 + x * v[j], 0)), dt = (u, v) => u.reduce((s2, x, i) => s2 + x * v[i], 0);
+  const st0 = 0.5 * dt(a0, mv(Cm, a0));
+  const evalA = (a) => { const da = a.map((v, i) => v - a0[i]), Bda = mv(Bm, da), Ca = mv(Cm, a), st = 0.5 * dt(a, Ca) - st0; const Ub = 0.5 * E * I * dt(da, Bda), Us = 0.5 * E * A / L * st * st; const g = Bda.map((v, i) => E * I * v + E * A / L * st * Ca[i]); const H = range(4).map(i => range(4).map(j => E * I * Bm[i][j] + E * A / L * (Ca[i] * Ca[j] + st * Cm[i][j]))); return { U: Ub + Us, Ub, Us, g, H, strainAx: st / L }; };
+  const nv = allowAsym ? 3 : 2, T = [[0, -1, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]].map(r => r.slice(0, nv));
+  const toA = (y, d) => { const a = [(h - d) / 2, 0, 0, 0]; for (let i = 0; i < 4; i++) for (let j = 0; j < nv; j++) a[i] += T[i][j] * y[j]; return a; };
+  let y = new Array(nv).fill(0); if (allowAsym) y[2] = 1e-3 * h;
+  const ds = range(nSteps + 1).map(i => dMaxFactor * h * i / nSteps), Us = [], F = [], Ys = [], curv = [], Ub = [], Usx = [];
+  for (const d of ds) {
+    if (allowAsym && Math.abs(y[2]) < 1e-4 * h) y[2] = 1e-3 * h; // imperfection seed reveals the asymmetric (lower-energy) branch
+    for (let it = 0; it < 80; it++) {
+      const ev = evalA(toA(y, d)), gy = range(nv).map(j => range(4).reduce((s2, i) => s2 + T[i][j] * ev.g[i], 0));
+      const Hy = range(nv).map(p => range(nv).map(q => range(4).reduce((s2, i) => s2 + T[i][p] * range(4).reduce((s3, j) => s3 + ev.H[i][j] * T[j][q], 0), 0)));
+      const mn = Math.min(...eigSym(Hy).values), sc = Math.abs(Hy[0][0]) || 1; if (mn <= 1e-8 * sc) for (let p = 0; p < nv; p++) Hy[p][p] += -mn + 1e-6 * sc;
+      const dy = luSolve(Hy, gy); let step = 1, ok = false;
+      while (step > 1e-8) { const yt = y.map((v, i) => v - step * dy[i]); if (evalA(toA(yt, d)).U <= ev.U + 1e-15 * Math.abs(ev.U)) { y = yt; ok = true; break; } step /= 2; }
+      if (!ok || Math.sqrt(dt(dy, dy)) * step < 1e-12 * h) break;
+    }
+    const a = toA(y, d), ev = evalA(a); Us.push(ev.U); Ub.push(ev.Ub); Usx.push(ev.Us); F.push(-0.5 * ev.g[0]); Ys.push(a.slice());
+    let cm = 0; for (let q = 0; q <= nq; q++) { let c2 = 0; for (let j = 0; j < 4; j++) c2 += (a[j] - a0[j]) * P2[j][q]; cm = Math.max(cm, Math.abs(c2)); } curv.push(cm);
+  }
+  const iNeg = F.findIndex((v, i) => i > 0 && v < 0), lim = iNeg > 0 ? iNeg : F.length; let iTop = 0; for (let i = 0; i < lim; i++) if (F[i] > F[iTop]) iTop = i;
+  let i2 = -1; if (iNeg > 0) for (let i = iNeg; i < F.length - 1; i++) if (F[i] < 0 && F[i + 1] >= 0) { i2 = i + 1; break; }
+  const Fmin = iNeg > 0 ? Math.min(...F.slice(iNeg, i2 > 0 ? i2 : F.length)) : Math.min(...F.slice(1)); let iMax = 0; for (let i = 0; i < (i2 > 0 ? i2 : Us.length); i++) if (Us[i] > Us[iMax]) iMax = i;
+  return { d: ds, F, U: Us, Ub, Us: Usx, coeffs: Ys, maxCurvature: curv, Ftop: F[iTop], dTop: ds[iTop], Fmin, bistable: i2 > 0 && Fmin < 0, d2: i2 > 0 ? ds[i2] : NaN, Ustored: i2 > 0 ? Us[i2] : NaN, Ubarrier: Us[iMax], dBarrier: ds[iMax], I, A, Q: h / t, maxStrain: Math.max(...curv.slice(0, i2 > 0 ? i2 + 1 : curv.length)) * t / 2, modesUsed: allowAsym ? 4 : 3 };
 }
 export { invert, matmul, transpose };

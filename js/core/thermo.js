@@ -37,7 +37,8 @@ export const parseStack = (txt) => (txt || '').split(/[,;/]+/).map(s => s.trim()
 // Transfer-matrix method for an isotropic multilayer on a semi-infinite substrate.
 // Returns R, T, A at wavelength lam (µm), incidence angle th0 (rad), polarisation 's'|'p'.
 export function tmm(layers, substrate, lam, th0 = 0, pol = 's', n0 = C(1, 0)) {
-  const ns = [n0, ...layers.map(l => OPTICAL[l.mat].n(lam)), OPTICAL[substrate]?.n(lam) || C(1.5, 0)];
+  // characteristic-matrix (Macleod) form uses the N = n − ik convention, hence the conjugation
+  const ns = [n0, ...layers.map(l => OPTICAL[l.mat].n(lam)), OPTICAL[substrate]?.n(lam) || C(1.5, 0)].map(n => C(n.re, -Math.abs(n.im)));
   const ds = [0, ...layers.map(l => l.d), 0];
   const sin0 = mul(n0, C(Math.sin(th0)));
   const cosT = ns.map(n => { const s = div(sin0, n); return csqrt(sub(C(1), mul(s, s))); });
@@ -198,8 +199,8 @@ export function smaCycle(mat, { Th, Tc, sH, sL, nSeg = 80, cycles = 3 } = {}) {
   let w = 0; for (let i = 1; i < P.length; i++) w += -0.5 * (P[i].s + P[i - 1].s) * 1e6 * (P[i].e - P[i - 1].e); // J/m³ output (contraction under load)
   // closure error between end of last cycle and start (repeatability)
   const closure = Math.abs(P[P.length - 1].e - P[0].e);
-  const heatRange = P.slice(Math.floor(P.length / 4), Math.floor(P.length / 2)), dXiHeat = heatRange.length ? heatRange[0].xi - heatRange[heatRange.length - 1].xi : 0;
-  const coolRange = P.slice(Math.floor(3 * P.length / 4)), dXiCool = coolRange.length ? coolRange[coolRange.length - 1].xi - coolRange[0].xi : 0;
+  // reverse transformation over heating + hot unloading, forward over cooling + cold loading
+  const q = Math.floor(P.length / 4), dXiHeat = Math.max(0, P[q - 1].xi - P[3 * q - 1].xi), dXiCool = Math.max(0, P[P.length - 1].xi - P[3 * q - 1].xi);
   const wJkg = w / mat.rho, qIn = mat.cp * Math.max(0, Th - Tc) + mat.Lh * Math.max(0, dXiHeat) + Math.max(0, wJkg); // J/kg heat supplied on heating leg
   const etaC = 1 - (Tc + KELVIN) / (Th + KELVIN);
   return { path: P, w_J_m3: w, w_J_kg: wJkg, qIn_J_kg: qIn, eta: qIn > 0 ? wJkg / qIn : 0, etaCarnot: Math.max(0, etaC), dXiHeat, dXiCool, closure, temps: { H: m.temps(sH), L: m.temps(sL) }, strokeStrain: Math.max(...P.map(p => p.e)) - Math.min(...P.map(p => p.e)) };
