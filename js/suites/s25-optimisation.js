@@ -141,7 +141,7 @@ export default {
     k('Thermal cycling limit', B.fTh, 'Hz', `Actuator ${base.t} mm thick; wheel requires ${fmt(B.fWh, 3)} Hz at ${p.vTarget_kmh} km/h.`, 'calc', B.fTh >= B.fWh ? 'ok' : 'warn');
     k('Most influential input (Sobol S_T)', VARS[sob.ST.indexOf(Math.max(...sob.ST))][1], '', 'Largest total-effect index on power-gap closure (includes interactions).', 'calc');
     k('Pareto-optimal designs', front.length, '', `Feasible non-dominated designs (closure vs mass) after ${p.gens} generations; hypervolume ${fmt(hv, 4)}.`, 'generated');
-    k('Best feasible closure found', bestClose ? -bestClose.f[0] : NaN, '%', 'Highest closure on the constrained Pareto front within the variable bounds.', 'generated', bestClose && -bestClose.f[0] >= 100 ? 'ok' : 'bad');
+    k('Best feasible closure found', bestClose ? -bestClose.f[0] : 'no feasible design', bestClose ? '%' : '', 'Highest closure on the constrained Pareto front within the variable bounds.', 'generated', bestClose && -bestClose.f[0] >= 100 ? 'ok' : 'bad');
     k('Surrogate validation R²', gpM.r2, '', `GP on 60 points, tested on 40 independent points; RMSE ${fmt(gpM.rmse, 3)} %, 2σ coverage ${fmt(cover * 100, 3)} %.`, 'calc', gpM.r2 > 0.9 ? 'ok' : 'warn');
     k('Required specific work (inverse)', wReq, 'J/g', `To deliver ${Pt} W at the current cycling rate — ${fmt(ratio(wReq, base.w), 3)}× today's assumption.`, 'calc');
     k('Required collector area (inverse)', AcReq, 'm²', `Exergy bound at ΔT = ${base.dT} K and q = ${base.q} W/m² — ${fmt(ratio(AcReq, base.Ac), 3)}× the current area.`, 'calc', AcReq <= 8 ? 'warn' : 'bad');

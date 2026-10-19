@@ -66,6 +66,8 @@ export default {
     { key: 'Phub', label: 'Continuous hub power (backup)', unit: 'W', type: 'number', min: 0, max: 3000, step: 1, group: 'Backup', default: 0, auto: (c) => { const o = c.upstream('s17'); return o?.Pwheel_W !== undefined ? { value: +Math.max(0, o.Pwheel_W).toFixed(2), prov: 'coupled' } : { value: 0, prov: 'unsupported' }; }, help: 'Only power demonstrated by Suite 17 should be used. Values typed here are hypothetical.' },
     { key: 'hubProfile', label: 'Hub power availability', type: 'select', group: 'Backup', default: 'asComputed', options: [{ value: 'asComputed', label: 'As computed (all conditions)' }, { value: 'dayOnly', label: 'Daytime only (solar-driven)' }, { value: 'nightReduced', label: 'Night = 5 % of day (sky-cooling limited)' }] },
     { key: 'hubStart', label: 'Hub starting force at standstill', unit: 'N', type: 'number', min: 0, max: 500, step: 1, group: 'Backup', default: 0, auto: (c) => { const o = c.upstream('s17'); return o ? { value: o.startupOK ? +(Math.max(0, o.tauMean_Nm || 0) / c.vehicle.wheelRadius).toFixed(1) : 0, prov: 'coupled' } : undefined; } },
+    { key: 'Pcharge', label: 'Thermal recharge power into buffer (full sun)', unit: 'W', type: 'number', min: 0, max: 2000, step: 0.1, group: 'Buffer', default: 0, help: 'Solar-thermal recharging of the elastic buffer (re-scoped thermal backup). Coupled from Suites 13–18 (thermalChargePower_W); 0 W = not demonstrated.', auto: (c) => { for (const id of ['s18', 's17', 's15', 's14', 's13']) { const o = c.upstream(id); if (o && Number.isFinite(o.thermalChargePower_W)) return { value: +Math.max(0, o.thermalChargePower_W).toFixed(2), prov: 'coupled' }; } return { value: 0, prov: 'unsupported' }; } },
+    { key: 'chargeWhile', label: 'Thermal recharge allowed', type: 'select', group: 'Buffer', default: 'parkedAndWind', options: [{ value: 'parkedAndWind', label: 'While parked/stopped and while cruising on wind' }, { value: 'parked', label: 'Only while parked/stopped' }, { value: 'off', label: 'Off' }] },
     { key: 'Ebuf', label: 'Buffer usable energy at start', unit: 'kJ', type: 'number', min: 0, max: 600, step: 1, group: 'Buffer', default: 10, auto: (c) => { const o = c.upstream('s18'); return o?.Euse_J !== undefined ? { value: +(o.Euse_J / 1000).toFixed(2), prov: 'coupled' } : undefined; } },
     { key: 'PbufMax', label: 'Buffer max discharge power', unit: 'W', type: 'number', min: 0, max: 3000, step: 10, group: 'Buffer', default: 250 },
     { key: 'etaBuf', label: 'Buffer discharge efficiency', type: 'number', min: 0.3, max: 1, step: 0.01, group: 'Buffer', default: 0.85, auto: (c) => { const o = c.upstream('s18'); return o?.efficiency ? { value: +o.efficiency.toFixed(3), prov: 'coupled' } : undefined; } },
@@ -138,11 +140,13 @@ export default {
     const capWing = (Va, beta) => { const bf = bodyF(Va, beta); return bf ? Math.max(0, (FyMax * hCE - bf.Fy * bf.z) / hCE) : FyMax; };
     const wing = (Va, beta, st) => {
       const cap = capWing(Va, beta), ep = (r0) => r0.Fx > 0 && epf !== 1 ? { ...r0, Fx: r0.Fx * epf } : r0;
-      if (wingCtl !== 'feather') return ep(wingTrim(Va, beta, cap));
-      const r = wingTrim(Va, beta, Infinity), q = 0.5 * rho * Va * Va, b = rad(Math.abs(beta));
-      let fe;
-      if (st) { if (!st.f && r.Fy > cap) { st.f = true; st.n++; st.calm = 0; } else if (st.f) { st.calm = r.Fy < 0.6 * cap ? st.calm + dt : 0; if (st.calm >= 3) st.f = false; } fe = st.f; } else fe = r.Fy > cap;
-      return fe ? { Fx: -q * Sw * 0.02 * Math.cos(b), Fy: q * Sw * 0.02 * Math.sin(b), feather: -q * Sw * 0.02 * Math.cos(b), feathered: true } : ep(r);
+      // The driver trims incidence (ring track / root lock) so the wing works at the best thrust within the safe side force;
+      // the torque-limited breakaway only releases on gust spikes the trim cannot follow (untrimmed load > 1.3 × cap).
+      const trimmed = wingTrim(Va, beta, cap);
+      if (wingCtl !== 'feather' || !st) return ep(trimmed);
+      const raw = wingTrim(Va, beta, Infinity), q = 0.5 * rho * Va * Va, b = rad(Math.abs(beta));
+      if (!st.f && raw.Fy > 1.3 * cap) { st.f = true; st.n++; st.calm = 0; } else if (st.f) { st.calm = raw.Fy < 0.6 * cap ? st.calm + dt : 0; if (st.calm >= 3) st.f = false; }
+      return st.f ? { Fx: -q * Sw * 0.02 * Math.cos(b), Fy: q * Sw * 0.02 * Math.sin(b), feather: -q * Sw * 0.02 * Math.cos(b), feathered: true } : ep(trimmed);
     };
     const featherSt = { f: false, n: 0, calm: 0 }, reefSt = { on: reefMode === 'reefed', n: 0 };
     // hub availability
@@ -153,9 +157,9 @@ export default {
     const Ebuf0 = S.worst || S.hubOnly ? 0 : p.Ebuf * 1000, EbufCap = Math.max(Ebuf0, (ctx.upstream('s18')?.Etotal_J ?? p.Ebuf * 1000));
     // ---- simulation ----
     let v = S.v0 === 'target' ? vt : (S.v0 || 0), x = 0, t = 0, Ebuf = Ebuf0, mode = v > 0 ? MODE.WIND : MODE.STOP, backupOn = false;
-    const L = { wing: 0, wingNeg: 0, hub: 0, buf: 0, bufDrawn: 0, charge: 0, roll: 0, aero: 0, brake: 0, grade: 0, windFlux: 0 };
+    const etaCh = ctx.upstream('s18')?.efficiency ?? 0.8, L = { thermalIn: 0, thermalStored: 0, wing: 0, wingNeg: 0, hub: 0, buf: 0, bufDrawn: 0, charge: 0, roll: 0, aero: 0, brake: 0, grade: 0, windFlux: 0 };
     const KE0 = 0.5 * mEff * v * v; let PE = 0;
-    const rec = { t: [], v: [], x: [], U: [], Fwav: [], Fw: [], Fh: [], Fb: [], Fres: [], E: [], mode: [], Pw: [], Ph: [], Pb: [], Preq: [], side: [], awa: [], dir: [], hdg: [], drag: [], brake: [], grade: [], feath: [], reef: [] };
+    const rec = { t: [], v: [], x: [], U: [], Fwav: [], Fw: [], Fh: [], Fb: [], Fres: [], E: [], mode: [], Pw: [], Ph: [], Pb: [], Preq: [], side: [], awa: [], dir: [], hdg: [], drag: [], brake: [], grade: [], feath: [], reef: [], thermal: [] };
     const every = Math.max(1, Math.round(N / 1500)); let stalledT = 0, maxSideRatio = 0, wheelRevs = 0, thrustPeaks = 0, lastF = 0, lastSlope = 0, firstMove = null, reach5 = null;
     const Fstatic = m * G0 * Crr * 1.6;
     for (let i = 0; i < N; i++) {
@@ -191,6 +195,8 @@ export default {
       L.hub += Fh * vm * dt; L.buf += Fbuf * vm * dt; L.bufDrawn += Fbuf * vm * dt / p.etaBuf; L.roll += Froll * vm * dt; L.aero += -Fbody * vm * dt; L.brake += Fb * vm * dt; L.grade += Fg * vm * dt; PE += Fg * vm * dt;
       if (Fch > 0) { const e = Fch * vm * dt; Ebuf = Math.min(EbufCap, Ebuf + 0.85 * e); L.charge += e; L.wing += e; }
       Ebuf = Math.max(0, Ebuf - Fbuf * vm * dt / p.etaBuf);
+      // solar-thermal recharge of the buffer (daylight only; allowed while stopped/parked and, optionally, while cruising on wind)
+      { const stopped = vn < 0.05, onWind = !backupOn && Fbuf === 0 && Fh === 0 && vn >= 0.05; const ok = p.chargeWhile !== 'off' && (stopped || (p.chargeWhile === 'parkedAndWind' && onWind)); const Pth = ok && w.isDay ? p.Pcharge * (S.cloudy ? 0.3 : 1) : 0; if (Pth > 0 && Ebuf < EbufCap) { const dE = Math.min(EbufCap - Ebuf, Pth * etaCh * dt); Ebuf += dE; L.thermalStored += dE; L.thermalIn += dE / etaCh; } }
       L.windFlux += 0.5 * rho * w.U ** 3 * veh.wingArea * dt;
       // bookkeeping
       if (vm > 0 && firstMove === null) firstMove = t; if (vn >= kmh(5) && reach5 === null) reach5 = t;
@@ -199,7 +205,7 @@ export default {
       wheelRevs += vm * dt / (2 * Math.PI * R);
       const slope = Math.sign(wf.Fx - lastF); if (slope < 0 && lastSlope > 0) thrustPeaks++; if (slope) lastSlope = slope; lastF = wf.Fx;
       mode = braking ? (vn > 0 ? MODE.BRAKE : MODE.STOP) : vn < 0.05 ? MODE.STOP : Fh > 0 ? (Fw > 0.2 * FreqT ? MODE.ASSIST : MODE.BACKUP) : Fbuf > 0 ? MODE.BUFFER : (Fw + Fbody < Froll + Fg - 1 && !backupOn ? MODE.COAST : backupOn && Fh === 0 && Fbuf === 0 ? MODE.COAST : MODE.WIND);
-      if (i % every === 0) { rec.t.push(t); rec.v.push(vn * 3.6); rec.x.push(x / 1000); rec.U.push(w.U); rec.Fwav.push(wf.Fx); rec.Fw.push(Fw); rec.Fh.push(Fh); rec.Fb.push(Fbuf); rec.Fres.push(Froll + Fg - Fbody); rec.E.push(Ebuf / 1000); rec.mode.push(mode); rec.Pw.push(Math.max(0, Fw * vm)); rec.Ph.push(Fh * vm); rec.Pb.push(Fbuf * vm); rec.Preq.push(FreqT * vt); rec.side.push(wf.Fy); rec.awa.push(Math.abs(aw.beta)); rec.dir.push(w.dirFrom); rec.hdg.push(rd.hdg); rec.drag.push(-Fbody); rec.brake.push(Fb); rec.grade.push(rd.grade); rec.feath.push(!!wf.feathered); rec.reef.push(reefSt.on ? 1 : 0); }
+      if (i % every === 0) { rec.t.push(t); rec.v.push(vn * 3.6); rec.x.push(x / 1000); rec.U.push(w.U); rec.Fwav.push(wf.Fx); rec.Fw.push(Fw); rec.Fh.push(Fh); rec.Fb.push(Fbuf); rec.Fres.push(Froll + Fg - Fbody); rec.E.push(Ebuf / 1000); rec.mode.push(mode); rec.Pw.push(Math.max(0, Fw * vm)); rec.Ph.push(Fh * vm); rec.Pb.push(Fbuf * vm); rec.Preq.push(FreqT * vt); rec.side.push(wf.Fy); rec.awa.push(Math.abs(aw.beta)); rec.dir.push(w.dirFrom); rec.hdg.push(rd.hdg); rec.drag.push(-Fbody); rec.brake.push(Fb); rec.grade.push(rd.grade); rec.feath.push(!!wf.feathered); rec.reef.push(reefSt.on ? 1 : 0); rec.thermal.push(L.thermalStored / 1000); }
       v = vn; x += vm * dt; t += dt;
     }
     const KE1 = 0.5 * mEff * v * v;
@@ -225,6 +231,8 @@ export default {
     const energyDeficit = Math.max(0, Preq * T - (L.wing + L.hub + L.buf)); const shares = { wind: L.wing / Math.max(1, inputs), hub: L.hub / Math.max(1, inputs), buffer: L.buf / Math.max(1, inputs) };
     // checks
     out.checks.push({ name: 'Energy-ledger closure', value: resid / thru, target: '|residual| < 1 % of throughput', pass: Math.abs(resid / thru) < 0.01, detail: `inputs ${fmt(inputs / 1000, 4)} kJ, sinks ${fmt(sinks / 1000, 4)} kJ` });
+    const bufResid = (Ebuf0 + 0.85 * L.charge + L.thermalStored - L.bufDrawn) - Ebuf;
+    out.checks.push({ name: 'Buffer energy ledger closes (E₀ + wind charge + thermal charge − discharge = E_end)', value: bufResid, target: '|resid| < 1 J', pass: Math.abs(bufResid) < 1 });
     out.checks.push({ name: 'Buffer state never negative', value: Ebuf, target: '≥ 0', pass: Ebuf >= 0 });
     out.checks.push({ name: 'No motion from rest without propulsive force', value: S.worst ? dist : 'n/a', target: S.worst ? 'coast only' : '', pass: S.worst ? L.hub + L.buf === 0 : undefined, detail: 'Worst-case test: hub and buffer contribute zero energy' });
     const cd = (() => { let vv = vt, xx = 0; for (let k = 0; k < 4000 && vv > 0; k++) { const a = (m * G0 * Crr + 0.5 * rho * veh.CdA * vv * vv) / mEff; vv = Math.max(0, vv - a * 0.05); xx += vv * 0.05; } return xx; })();
@@ -247,7 +255,13 @@ export default {
     k('Energy from wind', L.wing / 1000, 'kJ', 'Positive mechanical work done by the wing on the vehicle.');
     k('Energy from hub', L.hub / 1000, 'kJ', 'Thermomechanical backup work delivered at the tyre.');
     k('Energy from buffer', L.buf / 1000, 'kJ', 'Elastic energy delivered (drawn from store ÷ η).');
-    k('Buffer remaining', Ebuf / 1000, 'kJ', 'Finite store at the end — never replenished without a physical charging process.');
+    k('Buffer remaining', Ebuf / 1000, 'kJ', 'Finite store at the end — replenished only by wind surplus or measured solar-thermal recharging.');
+    k('Thermal energy stored in buffer', L.thermalStored / 1000, 'kJ', `Solar-thermal recharge (${fmt(p.Pcharge, 3)} W at full sun × Suite 18 efficiency ${fmt(etaCh, 3)}), daylight only, ${p.chargeWhile === 'parkedAndWind' ? 'while stopped/parked and while cruising on wind' : p.chargeWhile === 'parked' ? 'only while stopped/parked' : 'disabled'}.`, prov('Pcharge') === 'unsupported' ? 'unsupported' : 'calc');
+    // wind-free starts per sunny day: daylight recharge ÷ energy for one start to the target speed (incl. rolling loss and discharge efficiency)
+    const aSt = 0.3, dSt = vt * vt / (2 * aSt), Estart = (0.5 * mEff * vt * vt + m * G0 * Crr * dSt + 0.5 * rho * veh.CdA * vt * vt * dSt / 3) / p.etaBuf;
+    const dayH = (() => { const se = ctx.upstream('s05')?.series; if (se?.length >= 24) return se.slice(0, 24).filter(r => r.isDay).length; return 11; })();
+    const Eday = Math.min(p.Pcharge * etaCh * dayH * 3600, Infinity), startsDay = Estart > 0 ? Math.floor(Eday / Estart) : 0, startsPerFull = Math.floor(EbufCap / Math.max(1, Estart));
+    k('Wind-free starts per sunny day', startsDay, '', `Each start to ${p.speed} km/h needs ≈ ${fmt(Estart / 1000, 3)} kJ from the buffer (0.3 m/s² acceleration incl. rolling/aero losses ÷ discharge efficiency). ${fmt(dayH, 3)} daylight hours × ${fmt(p.Pcharge * etaCh, 3)} W stored = ${fmt(Eday / 1000, 3)} kJ/day; a full buffer (${fmt(EbufCap / 1000, 3)} kJ) holds ${startsPerFull} start(s)${p.Pcharge * etaCh > 0 ? `; refill from empty ≈ ${fmt(EbufCap / (p.Pcharge * etaCh) / 3600, 3)} h of full sun` : ''}.`, p.Pcharge > 0 ? 'calc' : 'unsupported', startsDay >= 3 ? 'ok' : startsDay >= 1 ? 'warn' : 'bad');
     k('Time stalled', stalledT, 's', 'Time at standstill without braking (insufficient propulsion).', 'calc', stalledT < 0.05 * T ? 'ok' : 'bad');
     k('Wind-resource extraction', L.wing / Math.max(1, L.windFlux) * 100, '%', 'Wing work ÷ ½ρU³S kinetic-power flux through the wing area (resource bound).');
     k('Peak side force / grip', maxSideRatio, '×μmg', 'Largest wing side force relative to total tyre grip — reacted by the tyres (Suites 10–11).', 'calc', maxSideRatio < 0.5 ? 'ok' : maxSideRatio < 0.8 ? 'warn' : 'bad');
@@ -263,6 +277,7 @@ export default {
     out.charts.push({ title: 'Propulsive forces', type: 'line', x: { label: 'Time', unit: 's' }, y: { label: 'Force', unit: 'N' }, series: [{ name: 'Wing thrust available', x: rec.t, y: rec.Fwav, dash: '4 3', width: 1 }, { name: 'Wing thrust used', x: rec.t, y: rec.Fw }, { name: 'Hub', x: rec.t, y: rec.Fh }, { name: 'Buffer', x: rec.t, y: rec.Fb }, { name: 'Resistance (roll + grade − body aero)', x: rec.t, y: rec.Fres }], explain: 'Available thrust (dashed) is what the trimmed wing could produce; the driver depowers it to hold the target. Backup forces fill gaps only up to their real capacity.' });
     out.charts.push({ title: 'Power contributions vs requirement', type: 'stack', x: { label: 'Time', unit: 's' }, y: { label: 'Power', unit: 'W' }, series: [{ name: 'Wind', x: rec.t, y: rec.Pw }, { name: 'Hub', x: rec.t, y: rec.Ph }, { name: 'Buffer', x: rec.t, y: rec.Pb }], annotations: [{ type: 'hline', y: Preq, label: 'required at target', color: '#ef4444' }], explain: 'Stacked source power at the wheels. Whenever the stack is below the red line the vehicle cannot hold its target speed.' });
     out.charts.push({ title: 'Buffer state of energy & operating mode', type: 'line', x: { label: 'Time', unit: 's' }, y: { label: 'Value' }, series: [{ name: 'Buffer energy (kJ)', x: rec.t, y: rec.E }, { name: 'Mode (0 wind · 1 assist · 2 backup · 3 buffer · 4 coast · 5 brake · 6 stop)', x: rec.t, y: rec.mode }], explain: 'The buffer is finite: it falls during discharge and only rises when surplus wind is stored. Mode codes show the sequence of operating states.' });
+    out.charts.push({ title: 'Buffer energy ledger', type: 'bar', categories: ['Initial', 'Wind surplus charged', 'Solar-thermal charged', 'Discharged (drawn)', 'Final'], y: { label: 'Energy', unit: 'kJ' }, series: [{ name: 'kJ', values: [Ebuf0, 0.85 * L.charge, L.thermalStored, -L.bufDrawn, Ebuf].map(e => e / 1000) }], showValues: true, explain: 'The elastic buffer is a finite store: it only gains energy from wind surplus or measured solar-thermal recharging and loses what it delivers to the wheels. Initial + charged − drawn must equal the final state.' });
     out.charts.push({ title: 'Energy ledger', type: 'bar', categories: ['Wind work', 'Hub work', 'Buffer work', 'Rolling loss', 'Aero loss', 'Braking', 'Wing drag (−)', 'Stored to buffer', 'ΔKE', 'ΔPE', 'Residual'], y: { label: 'Energy', unit: 'kJ' }, series: [{ name: 'kJ', values: [L.wing, L.hub, L.buf, L.roll, L.aero, L.brake, L.wingNeg, L.charge, KE1 - KE0, PE, resid].map(e => e / 1000) }], showValues: true, explain: 'Every joule entering the vehicle (wind, hub, buffer) must leave as losses or change kinetic/potential/stored energy. A residual near zero verifies conservation.' });
     const vs = linspace(0, 60, 61);
     out.charts.push({ title: 'Wheel power demand vs backup targets', type: 'line', x: { label: 'Speed', unit: 'km/h' }, y: { label: 'Power', unit: 'W' }, series: [{ name: 'Required (level road)', x: vs, y: vs.map(s => roadLoad(kmh(s), { ...veh, Crr }, { rho }).P) }, { name: 'Available backup', x: vs, y: vs.map(() => hubAvail(true)), dash: '4 3' }], annotations: [{ type: 'hline', y: 200, label: '200 W', color: '#22c55e' }, { type: 'hline', y: 600, label: '600 W', color: '#f59e0b' }, { type: 'hline', y: 1500, label: '1 500 W', color: '#ef4444' }, { type: 'point', x: 20, y: roadLoad(kmh(20), veh).P, label: '124 W' }, { type: 'point', x: 40, y: roadLoad(kmh(40), veh).P, label: '406 W' }], explain: 'Specification power table (52/124/236/406/1 003 W at 10/20/30/40/60 km/h) and qualification targets. The backup line must lie above the demand curve for autonomous calm-weather travel.' });

@@ -65,7 +65,7 @@ export default {
     k('Thrust coupled / rigid', Lc.thrust / (Lr.thrust || 1), '', 'Change of useful propulsion caused by the deformation.');
     k('Gust peak root moment (total)', Math.abs(Mstatic) + Mpk, 'N·m', 'Static moment plus the peak dynamic increment from the strongly coupled transient run.');
     k('Gust peak tip twist increment', max(Gi.twistTip.map(Math.abs)), '°', 'Maximum dynamic twist during the gust (passive gust-load alleviation).');
-    k('Flutter margin V_F / V_max', fm, '', 'Ratio of flutter speed to the largest apparent wind along the span; ≥ 1.5 required.', fm >= 1.5 ? 'ok' : 'bad');
+    k('Flutter margin V_F / V_max', Number.isFinite(fm) ? fm : 'no flutter in range', '', 'Ratio of flutter speed to the largest apparent wind along the span; ≥ 1.5 required.', fm >= 1.5 ? 'ok' : 'bad');
     k('Added-mass ratio μ', mu, '', 'm/(πρb²) at 75 % span. Low μ (< ≈ 5) makes loosely coupled partitioned schemes unstable — sub-iterations needed.', mu < 5 ? 'warn' : 'ok');
     k('Time-step discretisation error (selected Δt)', dtErr * 100, '%', 'Error of the reported run against the Richardson-extrapolated peak from three time-step levels (Δt, Δt/2, Δt/4).', dtErr < 0.03 ? 'ok' : 'warn');
     // verdicts

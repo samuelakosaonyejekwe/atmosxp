@@ -279,8 +279,8 @@ export default {
     k('Tip deflection', tipW * 1000, 'mm', 'Lateral bending deflection of the tip.');
     k('Root bending moment (per wing)', rootM, 'N·m', 'Moment carried into the monocoque by each wing root (input to Suite 09).');
     k('Root strength ratio (Tsai–Wu)', rootR, '', 'Load multiplier to first-ply failure at the root cover. ≥ 2 recommended for gust-loaded structures.', rootR >= 2 ? 'ok' : rootR >= 1.5 ? 'warn' : 'bad');
-    k('Divergence speed', VD, 'm/s', 'Apparent wind at which aerodynamic twisting moment overcomes torsional stiffness (static instability).', VD > 1.5 * Vmax ? 'ok' : 'bad');
-    k('Flutter speed (V–g)', FL.Vflutter, 'm/s', 'Apparent wind at which a mode first acquires negative damping (dynamic instability).', FL.Vflutter > 1.5 * Vmax ? 'ok' : 'bad');
+    k('Divergence speed', Number.isFinite(VD) ? VD : 'none (cannot diverge)', Number.isFinite(VD) ? 'm/s' : '', 'Apparent wind at which aerodynamic twisting moment overcomes torsional stiffness (static instability).', VD > 1.5 * Vmax ? 'ok' : 'bad');
+    k('Flutter speed (V–g)', Number.isFinite(FL.Vflutter) ? FL.Vflutter : 'none in analysed range', Number.isFinite(FL.Vflutter) ? 'm/s' : '', 'Apparent wind at which a mode first acquires negative damping (dynamic instability).', FL.Vflutter > 1.5 * Vmax ? 'ok' : 'bad');
     k('1st bending / torsion frequency', `${fmt(fb.f, 3)} / ${fmt(ft.f, 3)}`, 'Hz', 'Natural frequencies of the clamped wing; keep clear of gust and vortex-shedding excitation.');
     k('Gust dynamic amplification', gustF, '', 'Peak root moment during the design gust divided by the static value.');
     k('Fatigue life (root cover)', lifeYears > 1000 ? '> 1000' : lifeYears, 'years', `Composite S–N estimate at ${p.gustRate} gust cycles/h × ${p.hoursYear} h/yr.`, lifeYears > 15 ? 'ok' : lifeYears > 5 ? 'warn' : 'bad');
