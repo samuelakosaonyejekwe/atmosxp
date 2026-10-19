@@ -88,3 +88,8 @@ main{padding:18px clamp(12px,2.4vw,28px) 60px;min-width:0;outline:none}
 .site-chip,.install{white-space:nowrap}.site-chip span{display:inline-block;max-width:220px;overflow:hidden;text-overflow:ellipsis;vertical-align:bottom;margin-left:4px}
 @media (max-width:480px){.install .lbl{display:none}.site-chip span{max-width:110px}.topbar{gap:6px;padding:8px}}
 @media (max-width:860px){.suite-titles{flex-basis:100%}.suite-badges{flex-basis:100%;flex-direction:row;flex-wrap:wrap;justify-content:flex-start}}
+/* 3D dynamic simulation chrome */
+.sim-bar{display:flex;gap:6px;align-items:center;padding:8px;background:var(--panel2);border-top:1px solid var(--line);flex-wrap:wrap}.sim-bar select{background:var(--bg2);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:4px}.sim-bar input[type=range]{accent-color:var(--accent);min-width:140px}.mono{font-family:var(--mono)}
+.sim-hud{position:absolute;top:40px;right:8px;background:color-mix(in srgb,var(--bg2) 82%,transparent);border:1px solid var(--line);border-radius:10px;padding:6px 10px;font-size:12px;min-width:170px;pointer-events:none;backdrop-filter:blur(4px)}.sim-hud div{display:flex;justify-content:space-between;gap:10px}.sim-hud span{color:var(--muted)}
+.sim-legend{position:absolute;bottom:60px;right:8px;width:180px;background:color-mix(in srgb,var(--bg2) 85%,transparent);border:1px solid var(--line);border-radius:8px;padding:6px 8px;pointer-events:none}
+@media (max-width:480px){.sim-hud{top:auto;bottom:62px;left:8px;right:auto;min-width:0;font-size:11px}.sim-legend{display:none}}

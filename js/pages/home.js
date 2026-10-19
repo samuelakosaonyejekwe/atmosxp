@@ -36,14 +36,25 @@ const stat = (l, v) => h('div', { class: 'kpi' }, h('div', { class: 'kpi-label' 
 async function loadHero(box) {
   box.append(h('div', { class: 'spinner-wrap' }, h('div', { class: 'spinner' }), 'Generating parametric 3D vehicle…'));
   try {
-    const [{ viewer }, { vehicleAssembly }, mats] = await Promise.all([import('../core/viz3d.js'), import('../core/cad.js'), import('../core/materials.js')]);
+    const [{ vehicleScene, particles, playback, hud }, mats, { apparentWind, wingForces, roadLoad }] = await Promise.all([import('../core/sim3d.js'), import('../core/materials.js'), import('../core/physics.js')]);
     box.innerHTML = '';
+    const v = store.project.vehicle, env = store.project.env, U = Math.max(env?.Uz ?? 6, 3), dirFrom = 90, rho = env?.rho ?? 1.225;
     const matMap = Object.fromEntries(Object.keys(mats.COMPONENTS).map(k => [k, mats.componentMaterial(store, k)]));
-    const V = await viewer(box, { height: 300 }); const asm = vehicleAssembly(store.project.vehicle, { materials: matMap });
-    const objs = asm.parts.map(m => ({ m, o: V.add(m) })); V.fit();
-    let t = 0; V.animate = (dt) => { t += dt; V.root.rotation.z = 0.15 * Math.sin(t * 0.25); };
-    void objs;
-    box.append(h('div', { class: 'small muted', style: 'padding:6px 4px 0' }, 'Live parametric model generated from the current project configuration · drag to orbit · open Suite 02 for full CAD, drawings and exports'));
+    const S = await vehicleScene(box, { vehicle: v, materials: matMap, height: 320 });
+    const P = particles(S.V, { count: 1500, vel: (x, y, z) => { const u = U * Math.log(Math.max(z, 0.05) / 0.1) / Math.log(10 / 0.1); return [0, -Math.max(0, u), 0]; }, bounds: [[-14, 14], [-14, 14], [0.1, 6]], colorRange: [0, U * 1.4], size: 0.05 });
+    const H = hud(box);
+    // quasi-steady wind-propulsion solve each frame: m dv/dt = thrust(apparent wind) − road load (beam reach, wing trimmed CL 0.8)
+    let vel = 0, x = 0, last = 0;
+    playback(box, { duration: 60, label: 't', onFrame: (t) => {
+      const dt = Math.min(0.1, Math.max(0, t - last)); if (t < last) { vel = 0; x = 0; S.resetTrail(); } last = t;
+      const aw = apparentWind(U, dirFrom, 0, vel), F = wingForces(aw.Va, Math.abs(aw.beta), 0.8, 0.06, v.wingArea, rho), Fr = roadLoad(vel, v, { rho }).F;
+      vel = Math.max(0, vel + (F.thrust - Fr) / v.mass * dt); x += vel * dt;
+      S.setPose({ x, y: 0, heading: 0, roll: -Math.min(4, F.side / 120), dist: x }); S.setWingTwist(-Math.min(6, F.q / 8));
+      S.setArrow('thrust', [F.thrust, 0, 0]); S.setArrow('side', [0, -F.side, 0]); S.setArrow('wind', [0, -U, 0], 0.25); S.setArrow('drag', [-Fr, 0, 0]);
+      P.setCenter(x, 0); P.step(dt || 0.016, t);
+      H.set([['Speed', (vel * 3.6).toFixed(1) + ' km/h'], ['True wind', U.toFixed(1) + ' m/s (beam)'], ['Apparent wind', aw.Va.toFixed(1) + ' m/s @ ' + Math.abs(aw.beta).toFixed(0) + '°'], ['Wing thrust', F.thrust.toFixed(0) + ' N', '#22c55e'], ['Side force', F.side.toFixed(0) + ' N', '#ef4444']]);
+    } });
+    box.append(h('div', { class: 'small muted', style: 'padding:6px 4px 0' }, `Live: wind-powered start from rest in ${U.toFixed(1)} m/s beam wind (site data if Suite 05 has run), solved with apparent-wind aerodynamics and road load each frame. Full journeys: Suite 20.`));
   } catch (e) { box.innerHTML = ''; box.append(h('div', { class: 'callout warn' }, '3D preview unavailable on this device: ' + e.message)); }
 }
 
