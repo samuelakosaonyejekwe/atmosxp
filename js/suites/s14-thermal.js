@@ -73,7 +73,7 @@ export default {
     const Qhot = (T) => { const r = surf(epsCol, T, cacheA); return Acol * (r.solAbs - (r.emit - r.atm) - h * (T - TaK)) + Acol * (p.fin - 1) * h * (TaK - T); };
     const Qcold = (T) => { const r = surf(epsRad, T, cacheR); return Arad * ((r.emit - r.atm) - r.solAbs - h * (TaK - T)) + Arad * (p.fin - 1) * h * (T - TaK); };
     const sp = get(p.spreader), ins = get(p.insulator), hpM = get(ctx.store.material('heatpipe', 'heatpipe-cuw'));
-    const kIn = sp.k, kThr = (sp.k2 ?? sp.k) / (p.anis > 1 ? 1 : 1) / (p.anis || 1) * (sp.k2 ? 1 : 1);
+    const kIn = sp.k;
     const tsp = p.tsp / 1000, Asp = p.wsp * tsp, Ac = p.Ac / 1e4, Ains = p.Ains / 1e4, tIns = p.tIns / 1000;
     const Rsp = p.Lsp / (kIn * Asp), Ahp = Math.PI * (p.dHP / 1000) ** 2 / 4, Rhp = p.nHP > 0 ? p.Lhp / ((hpM?.k || 10000) * Ahp * p.nHP) : Infinity;
     const Rcon = 1 / (p.hc * Ac), Rpath = 1 / (1 / Rsp + (Number.isFinite(Rhp) ? 1 / Rhp : 0)) + Rcon, Rins = tIns / (ins.k * Ains);
@@ -109,18 +109,18 @@ export default {
     const hEffRad = Math.abs(S.Qin) / Math.max(0.05, Math.abs(S.Tci - S.Trad)) / (p.Lsp * p.wsp);
     const field = TH.conduction2D({ nx, ny, dx, dy, kx, ky, rc }, {
       top: { type: 'mixed', fn: (i) => i < nH ? { type: 'q', q: qTopHot } : i >= nH + nI ? { type: 'h', h: hEffRad, Tinf: S.Trad } : null },
-      bottom: { type: 'mixed', fn: (i) => i < nH ? { type: 'h', h: p.Gconv / (p.Lsp * p.wsp) + 1e-9, Tinf: Tci } : null },
+      bottom: { type: 'mixed', fn: (i) => i < nH ? { type: 'h', h: p.Gconv / (p.Lsp * p.wsp) + 1e-9, Tinf: Tci } : i >= nH + nI ? { type: 'q', q: S.Qconv / (p.Lsp * p.wsp) } : null },
     }, { T0: TaK, tol: 1e-7, maxIt: 30000 });
     const Z = range(ny).map(j => range(nx).map(i => field.T[j * nx + i] - KELVIN));
     const xsF = range(nx).map(i => (i + 0.5) * dx * 1000), ysF = range(ny).map(j => (j + 0.5) * dy * 1000);
     const U = range(ny).map(j => range(nx).map(i => { const k = j * nx + i, a = field.T[k - (i > 0 ? 1 : 0)], b = field.T[k + (i < nx - 1 ? 1 : 0)]; return -kx[k] * (b - a) / (dx * ((i > 0) + (i < nx - 1))); }));
     const V = range(ny).map(j => range(nx).map(i => { const k = j * nx + i, a = field.T[k - (j > 0 ? nx : 0)], b = field.T[k + (j < ny - 1 ? nx : 0)]; return -ky[k] * (b - a) / (dy * ((j > 0) + (j < ny - 1))); }));
-    let leak2D = 0; for (let j = 0; j < ny; j++) { const k = j * nx + nH + Math.floor(nI / 2); leak2D += field.Gx[k] * (field.T[k] - field.T[k + 1]) * p.wsp; }
-    const leak1D = (field.T[Math.floor(ny / 2) * nx + nH - 1] - field.T[Math.floor(ny / 2) * nx + nH + nI]) * ins.k * tsp * p.wsp / Math.max(tIns, 0.005) * (nI / (nI + 1));
+    const faceFlux = (i) => { let q = 0; for (let j = 0; j < ny; j++) { const k = j * nx + i; q += field.Gx[k] * (field.T[k] - field.T[k + 1]) * p.wsp; } return q; };
+    const leakA = faceFlux(nH), leakB = faceFlux(nH + nI - 2);
     ctx.progress(0.7, 'transient');
     // transient 2-node network (hot block, cold block) from ambient
     const Chot = sp.rho * sp.cp * Asp * p.Lsp + 2700 * 900 * Acol * 0.001, Ccold = sp.rho * sp.cp * Asp * p.Lsp + 2700 * 900 * Arad * 0.001;
-    const tEnd = Math.min(20000, 8 * Math.max(Chot, Ccold) * (Rpath + 0.2)), tr = rk45((t, y) => { const [Th_, Tk_] = y, Tcol = Th_, Trad = Tk_, qi = p.Gconv * (Th_ - Tk_) + (Th_ - Tk_) / Rins; return [(Qhot(Tcol) - qi) / Chot, (qi - Qcold(Trad)) / Ccold]; }, 0, tEnd, [TaK, TaK], { rtol: 1e-6, hmax: tEnd / 200 });
+    const tEnd = Math.min(20000, 8 * Math.max(Chot, Ccold) * (Rpath + 0.2)), tr = rk45((t, y) => { const [Th_, Tk_] = y, Tcol = Th_, Trad = Tk_, qi = p.Gconv * (Th_ - Tk_) + (Th_ - Tk_) / Rins; return [(Qhot(Tcol) - qi) / Chot, (qi - Qcold(Trad)) / Ccold]; }, 0, [TaK, TaK], tEnd, { rtol: 1e-6, hmax: tEnd / 200 });
     const dTss = tr.y[tr.y.length - 1][0] - tr.y[tr.y.length - 1][1], i63 = tr.y.findIndex(y => (y[0] - y[1]) >= 0.632 * dTss), tau = i63 > 0 ? tr.t[i63] : NaN;
     // verification
     const slab = TH.conduction2D({ nx: 20, ny: 1, dx: 0.01, dy: 0.01, kx: new Float64Array(20).fill(10), ky: new Float64Array(20).fill(10), rc: new Float64Array(20).fill(1e6) }, { left: { type: 'T', T: 1 }, right: { type: 'T', T: 0 } }, { T0: 0.5, tol: 1e-12, maxIt: 50000 });
@@ -128,9 +128,9 @@ export default {
     out.checks.push({ name: '1-D slab: FV vs analytic linear profile', value: slabErr, target: '< 1e-6 K', pass: slabErr < 1e-6 });
     out.checks.push({ name: 'Network energy residual (Newton)', value: S.res, target: '< 1e-6 W', pass: S.res < 1e-5, detail: `${S.hist.length} iterations` });
     out.checks.push({ name: 'Node balance: Q_in = Q_conv + Q_leak', value: S.Qin - S.Qconv - S.Qleak, target: '≈ 0 W', pass: Math.abs(S.Qin - S.Qconv - S.Qleak) < 1e-4 * Math.max(1, Math.abs(S.Qin)) });
-    out.checks.push({ name: '2-D isolation leakage vs 1-D estimate (same field)', value: leak2D / (leak1D || 1e-12), target: '1 ± 0.15', pass: Math.abs(leak2D / (leak1D || 1e-12) - 1) < 0.15 || Math.abs(leak2D) < 1e-6, detail: `2-D ${fmt(leak2D, 3)} W, 1-D ${fmt(leak1D, 3)} W` });
-    out.checks.push({ name: '2-D SOR convergence', value: field.residual, target: '< 1e-7 K', pass: field.residual < 1e-6, detail: `${field.iterations} sweeps` });
-    const lc = rk45((t, y) => [-(y[0] - 0) / 10], 0, 30, [1]), lcErr = Math.abs(lc.y[lc.y.length - 1][0] - Math.exp(-3)); out.checks.push({ name: 'Lumped capacitance vs exp(−t/τ)', value: lcErr, target: '< 1e-6', pass: lcErr < 1e-6 });
+    out.checks.push({ name: '2-D flux conservation across the isolation (entry vs exit face)', value: leakA / (leakB || 1e-30), target: '1 ± 1e-6', pass: Math.abs(leakA / (leakB || 1e-30) - 1) < 1e-6, detail: `${fmt(leakA, 4)} W vs ${fmt(leakB, 4)} W` });
+    out.checks.push({ name: '2-D steady solution residual (PCG)', value: field.residual, target: '< 1e-7 K', pass: field.residual < 1e-7, detail: `${field.iterations} CG iterations` });
+    const lc = rk45((t, y) => [-(y[0] - 0) / 10], 0, [1], 30, { rtol: 1e-10, atol: 1e-12 }), lcErr = Math.abs(lc.y[lc.y.length - 1][0] - Math.exp(-3)); out.checks.push({ name: 'Lumped capacitance vs exp(−t/τ)', value: lcErr, target: '< 1e-6', pass: lcErr < 1e-6 });
     // KPIs
     const dTi = S.Thi - S.Tci, dTopen = open.Thi - open.Tci;
     const K = (label, value, unit, explain, prov, status) => out.kpis.push({ label, value, unit, explain, prov, status });

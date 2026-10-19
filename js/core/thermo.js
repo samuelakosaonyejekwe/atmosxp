@@ -1,7 +1,7 @@
 // Thermal-energy-conversion physics shared by suites 13–18: spectral optics (transfer-matrix method),
 // solar & atmospheric spectra, radiative balances, finite-volume conduction, heat-pipe limits,
 // shape-memory-alloy constitutive cycles, polymer actuators and bistable elastic cells.
-import { logspace, trapz, clamp, brent, range, linspace, mean, SIGMA, KELVIN } from './num.js';
+import { logspace, trapz, clamp, brent, range, linspace, mean, SIGMA, KELVIN, SparseBuilder, pcg } from './num.js';
 import { psat } from './physics.js';
 
 // ---------------- complex arithmetic ----------------
@@ -142,7 +142,16 @@ export function conduction2D(grid, bc, { T0 = 293, tEnd = 0, steady = true, tol 
     for (let s = 0; s < nSteps; s++) { for (let k = 0; k < N; k++) { const i = k % nx, j = (k / nx) | 0; const [a, b] = neighSum(k, i, j, T); Tn[k] = T[k] + h_ * (b - a * T[k]) / (rc[k] * dx * dy); } T.set(Tn); if (s % every === 0) hist.push({ t: (s + 1) * h_, Tmean: mean(T), Tmax: Math.max(...T), Tmin: Math.min(...T) }); if (record && s % Math.max(1, Math.floor(nSteps / record)) === 0) snaps.push(Float64Array.from(T)); }
     return { T, hist, dt: h_, steps: nSteps, snaps, Gx, Gy };
   }
-  // steady: SOR Gauss–Seidel
+  // steady: assemble the symmetric positive-definite FV system and solve with preconditioned CG
+  if (!grid.sor) {
+    const A = new SparseBuilder(N), b = new Float64Array(N);
+    for (let k = 0; k < N; k++) { const i = k % nx, j = (k / nx) | 0; let d = BG[k]; b[k] = BS[k]; const nb = []; if (i > 0) nb.push([k - 1, Gx[k - 1]]); if (i < nx - 1) nb.push([k + 1, Gx[k]]); if (j > 0) nb.push([k - nx, Gy[k - nx]]); if (j < ny - 1) nb.push([k + nx, Gy[k]]); for (const [m, g] of nb) { d += g; A.add(k, m, -g); } A.add(k, k, d || 1e-12); }
+    const sol = pcg(A.toCSR(), b, { tol: 1e-13, maxIt: 20000, x0: new Float64Array(N).fill(T0) });
+    T.set(sol.x);
+    let res = 0; for (let k = 0; k < N; k++) { const i = k % nx, j = (k / nx) | 0; const [a, bb] = neighSum(k, i, j, T); if (a) res = Math.max(res, Math.abs(bb / a - T[k])); }
+    return { T, hist: sol.hist, iterations: sol.it, residual: res, Gx, Gy, BG, BS, solver: 'PCG' };
+  }
+  // SOR Gauss–Seidel (option)
   const w = 1.85; let res = 1, it = 0;
   for (; it < maxIt && res > tol; it++) { res = 0; for (let k = 0; k < N; k++) { const i = k % nx, j = (k / nx) | 0; const [a, b] = neighSum(k, i, j, T); if (!a) continue; const Tn = b / a, d = Tn - T[k]; T[k] += w * d; res = Math.max(res, Math.abs(d)); } if (it % 20 === 0) hist.push(res); }
   return { T, hist, iterations: it, residual: res, Gx, Gy, BG, BS };
@@ -150,7 +159,7 @@ export function conduction2D(grid, bc, { T0 = 293, tEnd = 0, steady = true, tol 
 
 // ---------------- heat pipes (water working fluid) ----------------
 export function waterProps(TC) { const T = TC + KELVIN; return { sigma: 0.0757 - 0.000167 * TC, muL: 2.414e-5 * 10 ** (247.8 / (T - 140)), rhoL: 1000 - 0.0178 * Math.abs(TC - 4) ** 1.7, hfg: 2.501e6 - 2370 * TC, Pv: psat(TC), rhoV: psat(TC) / (461.5 * T), muV: 8.0e-6 + 4e-8 * TC, T }; }
-export function heatPipeLimits({ TC = 30, dOuter = 0.008, wall = 0.0005, wick = 0.0007, L = 0.3, Le = 0.08, Lc = 0.08, tilt = 0, rPore = 50e-6, perm = 1e-11, kWick = 40, rNuc = 2e-6 } = {}) {
+export function heatPipeLimits({ TC = 30, dOuter = 0.008, wall = 0.0005, wick = 0.0007, L = 0.3, Le = 0.08, Lc = 0.08, tilt = 0, rPore = 50e-6, perm = 8e-11, kWick = 40, rNuc = 2e-6 } = {}) {
   const w = waterProps(TC), ri = dOuter / 2 - wall, rv = ri - wick, Av = Math.PI * rv * rv, Aw = Math.PI * (ri * ri - rv * rv), Leff = L - (Le + Lc) / 2;
   const dPcap = 2 * w.sigma / rPore, dPg = w.rhoL * 9.81 * L * Math.sin(tilt * Math.PI / 180);
   const cap = Math.max(0, (dPcap - dPg) * w.rhoL * perm * Aw * w.hfg / (w.muL * Leff));
@@ -220,9 +229,10 @@ export const smaFatigue = (epsTr, sH) => clamp(1e5 * (0.03 / Math.max(1e-4, epsT
 
 // ---------------- thermoresponsive polymer actuators ----------------
 export function polymerCycle(mat, { Th, Tc, sLoad, fractionReached = 1 }) {
-  const strain = (mat.strainPerK || 0.001) * Math.max(0, Th - Tc) * fractionReached; // actuation strain
-  const s = Math.min(sLoad, mat.stressMax || 10); const w = s * 1e6 * strain; // J/m³
-  const wJkg = w / mat.rho, qIn = mat.cp * Math.max(0, Th - Tc) * fractionReached;
+  // free actuation strain from (dε/dT)ΔT, reduced linearly towards the blocked stress (load line of a thermal muscle)
+  const free = (mat.strainPerK || 0.001) * Math.max(0, Th - Tc) * fractionReached, sB = mat.stressMax || 10;
+  const s = Math.min(sLoad, sB), strain = free * Math.max(0, 1 - s / sB), w = s * 1e6 * strain; // J/m³
+  const wJkg = w / mat.rho, qIn = mat.cp * Math.max(0, Th - Tc) * fractionReached + wJkg;
   return { w_J_m3: w, w_J_kg: wJkg, qIn_J_kg: qIn, eta: qIn ? wJkg / qIn : 0, strokeStrain: strain, sUsed: s };
 }
 
