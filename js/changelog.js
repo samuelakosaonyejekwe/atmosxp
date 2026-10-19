@@ -1,7 +1,8 @@
 // Release notes shown in the update / "What's new" pop-up. Newest first; `id` must increase.
 export const CHANGELOG = [
   { id: 6, date: '2026-10-19', title: 'Design Revision 2, reset controls & update notices', items: [
-    'Lower, more stable automobile: twin 2.0 m wings (≈3.0 m overall instead of 4.07 m), wider 1.8 m track, longer wheelbase and a lighter polymer-lattice wing core lower the centre of gravity.',
+    'Redesigned automobile (Revision 2.2): cockpit moved forward for a clear view, wings aft with forward-facing leading edges, mast-step bulkheads and a keel beam, wider 1.8 m track and a lighter wing core for a lower centre of gravity.',
+    'Two-stage reefable wings keep every advantage of the original: the same light-wind starting thrust, a higher safe speed at every wind speed and better stability — 4.0 m deployed, ≈3.0 m reefed, ≈1.2 m parked.',
     'Free-feathering wing root with gust breakaway and tilt-down stowage, so gusts can no longer overturn the car (dossier §2.11–2.12).',
     'Every suite now has ⟲ Reset (inputs, locks, results, experiments) and an optional “reset before each run”; 3D timelines have a ⏮ reset.',
     'Wing thrust is capped at the safe tyre-grip and rollover side-force limit in journey simulations.',

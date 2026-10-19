@@ -97,7 +97,7 @@ export function wing(name, { airfoil = naca4('0018', 61), span = 3, rootChord = 
 
 // ---------------- Whole-vehicle assembly ----------------
 export const PART_COLORS = { Composite: '#2b2f36', Metal: '#b8c0cc', SMA: '#c58b4b', Polymer: '#5a7fa8', Elastomer: '#1b1b1b', Coating: '#1e293b', Ceramic: '#d6d3d1', Thermal: '#a3a3a3', Core: '#e2c275', Friction: '#7c5c3c', 'Polymer actuator': '#a16207' };
-export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence = 10, airfoil, twistTip = -4, morph = null, wheelAngle = 0, steer = 0, detail = 1, materials = {} } = {}) {
+export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence = 10, airfoil, twistTip = -4, morph = null, wheelAngle = 0, steer = 0, detail = 1, materials = {}, reefed = false } = {}) {
   const L = veh.length, W = veh.width, Hb = veh.height, wb = veh.wheelbase, tr = veh.track, R = veh.wheelRadius, parts = [];
   const color = (comp, def) => PART_COLORS[materials[comp]?.family] || def;
   // monocoque body: x forward from rear (0) to nose (L); bodySec(u) is the analytic section law reused for conformal parts
@@ -108,7 +108,8 @@ export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence = 10, air
   for (let s = 0; s <= nb; s++) { const q = bodySec(s / nb); secs.push(superEllipse(q.x, q.a, q.b, q.cz, 2.6, 36)); }
   parts.push(loft('Monocoque body', secs, { color: color('chassis', '#2b2f36'), group: 'Chassis', component: 'chassis' }));
   // canopy
-  const cs = []; for (let s = 0; s <= 10; s++) { const u = s / 10, x = -0.15 + u * 1.1; const a = W * 0.26 * Math.sin(Math.PI * u) ** 0.6 + 0.01, b = Hb * 0.25 * Math.sin(Math.PI * u) ** 0.8 + 0.01; cs.push(superEllipse(x, a, b, R + Hb * 0.62, 2.2, 28)); }
+  // cockpit forward between/behind the twin front wheels so the wings sit aft of the driver (clear forward view)
+  const cockX = [L * 0.58 - 2.0, L * 0.58 - 0.8]; const cs = []; for (let s = 0; s <= 10; s++) { const u = s / 10, x = cockX[0] + u * (cockX[1] - cockX[0]); const a = W * 0.26 * Math.sin(Math.PI * u) ** 0.6 + 0.01, b = Hb * 0.25 * Math.sin(Math.PI * u) ** 0.8 + 0.01; cs.push(superEllipse(x, a, b, R + Hb * 0.62, 2.2, 28)); }
   parts.push(loft('Cabin canopy', cs, { color: '#7dd3fc', opacity: 0.35, group: 'Cabin', component: 'cabin' }));
   // wheels: tadpole (2 front, 1 rear) or delta (1 front, 2 rear)
   const front = wb * 0.58, rear = -wb * 0.42; const tadpole = (veh.layout || 'tadpole') === 'tadpole';
@@ -123,24 +124,33 @@ export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence = 10, air
     // spokes as thin boxes
     for (let sp = 0; sp < 6; sp++) { const b = box(`Spoke ${k + 1}.${sp + 1}`, R * 0.5, 0.012, 0.03, { color: color('wheel', '#c0c6cf'), group: 'Wheels', component: 'wheel' }); b.translate(R * 0.5, 0, 0); b.rotY(sp * Math.PI / 3 + wheelAngle); if (steerable && steer) b.rotZ(rad(steer)); b.translate(x, y, R); parts.push(b); }
   });
-  // twin vertical wings in tandem on the body spine, roots embedded in the monocoque; incidence about the vertical axis
-  const af = airfoil || naca4('0018', 61), nW = veh.nWings || 2, span = veh.wingHeight, area1 = veh.wingArea / nW, cMean = area1 / span, cr = cMean * 1.1, ct = cMean * 0.9;
-  const x1 = -L * 0.42 + 0.10 * L + 0.25 * cr, gap = Math.max(0.36 * L, 1.12 * cr);
-  const gapN = nW > 2 ? Math.max((0.78 * L - 0.25 * cr - 0.1 * L) / (nW - 1), 1.05 * cr) : gap;
-  const wingX = nW === 1 ? [L * 0.08] : Array.from({ length: nW }, (_, k) => x1 + k * gapN);
+  // Revision 2.1: tandem wings aft of the cockpit, leading edges forward, pivot at 22 % chord (free-feathering root),
+  // chord limited so that wings + 0.3-chord gaps fit between cockpit and tail; mast-step bulkheads + keel beam carry root loads.
+  const af = airfoil || naca4('0018', 61), nW = veh.nWings || 2, spanDep = veh.wingHeight, reefSpan = Math.min(spanDep, veh.wingReefSpan || spanDep), span = reefed ? reefSpan : spanDep, cMean = veh.wingArea / nW / spanDep;
+  const xStart = cockX[0] - 0.05, xEnd = -L * 0.42 + 0.04 * L, avail = xStart - xEnd, pivot = 0.22;
+  const cr = Math.min(cMean * 1.1, avail / (nW + 0.3 * (nW - 1))), ct = cr * 0.82, areaFitted = nW * span * (cr + ct) / 2;
+  const LE = Array.from({ length: nW }, (_, k) => xStart - k * 1.3 * cr), wingX = LE.map(x => x - pivot * cr);
+  const frame = (name, x) => { const q = bodySec(uOf(x)), m = new Mesh(name, { color: color('chassis', '#3b4250'), group: 'Chassis', component: 'chassis' }); const N = 36; const ring = (sc, xx) => range(N).map(k => { const t = 2 * Math.PI * k / N, c = Math.cos(t), sn = Math.sin(t); return m.v(xx, q.a * sc * Math.sign(c) * Math.abs(c) ** (2 / 2.6), q.cz + q.b * sc * Math.sign(sn) * Math.abs(sn) ** (2 / 2.6)); }); const o0 = ring(0.97, x - 0.02), o1 = ring(0.97, x + 0.02), i0 = ring(0.8, x - 0.02), i1 = ring(0.8, x + 0.02); for (let k = 0; k < N; k++) { const k1 = (k + 1) % N; m.q(o0[k], o0[k1], o1[k1], o1[k]); m.q(i0[k1], i0[k], i1[k], i1[k1]); m.q(o1[k], o1[k1], i1[k1], i1[k]); m.q(i0[k], i0[k1], o0[k1], o0[k]); } return fixOrientation(m); };
   wingX.forEach((wx, k) => {
     const zr = topZ(wx) - 0.02;
     const w = wing(`Wing ${k + 1} (skin + lattice)`, { airfoil: af, span, rootChord: cr, tipChord: ct, twistTip, twistFn: morph?.twist, cambDelta: morph?.camber, opts: { color: color('wingSkin', '#e5e7eb'), group: 'Wings', component: 'wingSkin' } });
-    w.translate(-0.25 * cr, 0, 0); w.rotZ(rad(wingIncidence)); w.translate(wx, 0, zr); parts.push(w);
-    const zf = bodySec(uOf(wx)).cz - bodySec(uOf(wx)).b * 0.6, sl = span + (zr - zf);
-    const spar = box(`Wing ${k + 1} box spar`, cr * 0.12, cr * 0.1, sl, { color: color('spar', '#111827'), group: 'Wings', component: 'spar' }); spar.translate(0, 0, sl / 2); spar.rotZ(rad(wingIncidence)); spar.translate(wx, 0, zf); parts.push(spar);
-    const root = cylinder(`Wing ${k + 1} root fitting`, 0.09, 0.16, 24, { color: color('rootInsert', '#9ca3af'), group: 'Wings', component: 'rootInsert' }); root.translate(wx, 0, zr); parts.push(root);
+    // wing() builds LE at x = 0 pointing −x; mirror so the leading edge faces forward (+x) and put the pivot at 22 % chord
+    w.translate(-pivot * cr, 0, 0); w.transform((px, py, pz) => [-px, py, pz]); fixOrientation(w); w.rotZ(rad(wingIncidence)); w.translate(wx, 0, zr); parts.push(w);
+    const zf = bodySec(uOf(wx)).cz - bodySec(uOf(wx)).b * 0.85, sl = span + (zr - zf);
+    const spar = box(`Wing ${k + 1} box spar / mast`, cr * 0.14, cr * 0.1, sl, { color: color('spar', '#111827'), group: 'Wings', component: 'spar' }); spar.translate(0, 0, sl / 2); spar.rotZ(rad(wingIncidence)); spar.translate(wx, 0, zf); parts.push(spar);
+    const root = cylinder(`Wing ${k + 1} feathering pivot & breakaway lock`, 0.08, 0.16, 24, { color: color('rootInsert', '#9ca3af'), group: 'Wings', component: 'rootInsert' }); root.translate(wx, 0, zr); parts.push(root);
+    parts.push(frame(`Wing ${k + 1} mast-step bulkhead`, wx));
+    if (reefSpan < spanDep) { const cj = cr + (ct - cr) * (reefSpan / spanDep); const collar = box(`Wing ${k + 1} telescoping reef joint`, cj * 0.95, cj * 0.2, 0.05, { color: color('rootInsert', '#9ca3af'), group: 'Wings', component: 'rootInsert' }); collar.translate(-(0.5 - pivot) * cj, 0, 0); collar.rotZ(rad(wingIncidence)); collar.translate(wx, 0, zr + reefSpan); parts.push(collar); }
   });
-  // conformal sky-facing thermal surfaces on the upper body: solar-selective absorber (rear deck) and radiative cooler (fore deck)
+  // keel beam along the floor tying both mast steps to the front-axle and rear-wheel hard points
+  const xk0 = Math.min(...wingX) - 0.25, xk1 = wheelPos[0][0] - 0.1, zk = bodySec(uOf(0)).cz - bodySec(uOf(0)).b + 0.08;
+  const keel = box('Keel beam (root-load path to wheel hard points)', xk1 - xk0, 0.12, 0.08, { color: color('chassis', '#3b4250'), group: 'Chassis', component: 'chassis' }); keel.translate((xk0 + xk1) / 2, 0, zk); parts.push(keel);
+  // conformal sky-facing thermal surfaces: solar collector on the unshaded nose deck, radiative cooler on the rear deck
   const patch = (name, u0, u1, halfAngle, comp, colorDef) => { const sec = []; const N = 14; for (let s2 = 0; s2 <= 10; s2++) { const u = u0 + (u1 - u0) * s2 / 10, q = bodySec(u); const ring = []; for (let k = 0; k <= N; k++) { const t = Math.PI / 2 - halfAngle + 2 * halfAngle * k / N, c = Math.cos(t), sn = Math.sin(t), y = q.a * Math.sign(c) * Math.abs(c) ** (2 / 2.6), z = q.cz + q.b * Math.sign(sn) * Math.abs(sn) ** (2 / 2.6); ring.push([q.x, y * 1.004, q.cz + (z - q.cz) * 1.004 + 0.006]); } for (let k = N; k >= 0; k--) { const r0 = ring[k]; ring.push([r0[0], r0[1] * 0.996, q.cz + (r0[2] - 0.006 - q.cz) / 1.004 * 0.999 + 0.001]); } sec.push(ring); } return loft(name, sec, { color: color(comp, colorDef), group: 'Thermal', component: comp }); };
-  parts.push(patch('Solar-selective collector (rear deck)', 0.06, 0.2, 0.9, 'collector', '#1e3a8a'));
-  parts.push(patch('Radiative-cooling emitter (fore deck)', 0.74, 0.9, 0.95, 'radiator', '#f8fafc'));
-  return { parts, meta: { length: L, width: W, height: topZ(wingX[0] ?? 0) + span, wheelPos, wingX, cr, ct, span, collectorArea: null } };
+  const uC1 = uOf(cockX[1]) + 0.01;
+  parts.push(patch('Solar-selective collector (nose deck, unshaded)', Math.min(uC1, 0.9), 0.96, 0.95, 'collector', '#1e3a8a'));
+  parts.push(patch('Radiative-cooling emitter (rear deck)', 0.03, Math.max(0.06, uOf(cockX[0]) - 0.03), 0.95, 'radiator', '#f8fafc'));
+  return { parts, meta: { length: L, width: W, height: Math.max(...wingX.map(x => topZ(x))) + span, wheelPos, wingX, LE, cr, ct, span, areaFitted, pivotFrac: pivot, cockpitX: cockX, reefSpan, deployedSpan: spanDep, reefed, collectorArea: null } };
 }
 
 // Direct-rim hub sub-assembly in its own frame (z = axle axis)

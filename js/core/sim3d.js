@@ -86,7 +86,7 @@ export async function vehicleScene(container, { vehicle, materials = {}, wingInc
   };
   const resetTrail = () => { trailN = 0; trailGeo.setDrawRange(0, 0); lastX = null; };
   const frame = (dx = 0.9, dy = -1.25, dz = 0.55) => { const box = new THREE.Box3().setFromObject(car), c = box.getCenter(new THREE.Vector3()), sz = box.getSize(new THREE.Vector3()).length() * 1.15; V.controls.target.copy(c); V.camera.position.set(c.x + dx * sz, c.y + dy * sz, c.z + dz * sz); V.camera.far = 2000; V.camera.updateProjectionMatrix(); V.controls.update(); };
-  frame(); V.fit = frame; V.viewDir = (x, y, z) => frame(x, y, z);
+  V.setFrameObject(car); frame(); V.fit = frame; V.viewDir = (x, y, z) => frame(x, y, z);
   return { V, THREE, car, wheels, asm, setPose, setWingTwist, setArrow, resetTrail, wingObjs, colorWings: (vals, name = 'turbo') => { for (const w of wingObjs) { const g = w.o.geometry, n = g.attributes.position.count, col = new Float32Array(n * 3); for (let k = 0; k < n; k++) { const c = cmap(vals(g.attributes.position.array[k * 3 + 2], k), name); col[k * 3] = c[0] / 255; col[k * 3 + 1] = c[1] / 255; col[k * 3 + 2] = c[2] / 255; } g.setAttribute('color', new THREE.BufferAttribute(col, 3)); w.o.material.vertexColors = true; w.o.material.color.set(0xffffff); w.o.material.needsUpdate = true; } } };
 }
 
@@ -165,3 +165,71 @@ export function tracers(V, pts, { n = 8, color = 0xf97316, size = 0.025 } = {}) 
   let s0 = 0;
   return { step(dt, speed) { s0 = (s0 + dt * speed) % 1; balls.forEach((b, k) => { let d = ((s0 + k / n) % 1) * tot, i = 0; while (i < seg.length - 1 && d > seg[i]) { d -= seg[i]; i++; } b.position.copy(P[i]).lerp(P[i + 1], Math.min(1, d / (seg[i] || 1))); b.visible = speed > 1e-6; }); } };
 }
+
+// ---------------- 2D animated canvas driven by the playback timeline ----------------
+// onFrame(t, g): g.clear(); const P = g.panel(x, y, w, h, { xr, yr, xlabel, ylabel, title }); P.line(xs, ys, color) …
+function anim2dPanel(container, { height = 380, duration, rate = 1, label = 'Time', unit = 's', onFrame }) {
+  const css = (n, f) => { try { return getComputedStyle(document.documentElement).getPropertyValue(n).trim() || f; } catch { return f; } };
+  const box = h('div', { class: 'viewer', style: 'position:relative' }); container.append(box);
+  const cv = h('canvas', { style: `width:100%;height:${height}px;display:block;background:${css('--panel', '#111a2e')}` }); box.append(cv);
+  const ctx = cv.getContext('2d'); let W = 0, H = height;
+  const size = () => { const dpr = Math.min(2, window.devicePixelRatio || 1); W = cv.clientWidth || 600; cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); };
+  size(); const ro = new ResizeObserver(size); ro.observe(cv);
+  const fg = css('--fg', '#e5e7eb'), mute = css('--muted', '#94a3b8'), grid = css('--grid', 'rgba(148,163,184,.2)');
+  const g = {
+    ctx, get W() { return W; }, get H() { return H; }, fg, mute,
+    clear() { ctx.fillStyle = css('--panel', '#111a2e'); ctx.fillRect(0, 0, W, H); },
+    text(s, x, y, { color = fg, size = 12, align = 'left', bold = false } = {}) { ctx.fillStyle = color; ctx.font = `${bold ? 700 : 400} ${size}px Inter, system-ui, sans-serif`; ctx.textAlign = align; ctx.fillText(s, x, y); },
+    panel(x, y, w, hh, { xr, yr, xlabel = '', ylabel = '', title = '' }) {
+      const m = { l: 46, r: 8, t: title ? 20 : 8, b: 30 }, px = x + m.l, py = y + m.t, pw = w - m.l - m.r, ph = hh - m.t - m.b;
+      const sx = (v) => px + (v - xr[0]) / ((xr[1] - xr[0]) || 1) * pw, sy = (v) => py + ph - (v - yr[0]) / ((yr[1] - yr[0]) || 1) * ph;
+      ctx.strokeStyle = grid; ctx.lineWidth = 1; for (let k = 0; k <= 4; k++) { const yy = py + ph * k / 4; ctx.beginPath(); ctx.moveTo(px, yy); ctx.lineTo(px + pw, yy); ctx.stroke(); g.text(fmt(yr[1] - (yr[1] - yr[0]) * k / 4, 3), px - 4, yy + 4, { color: mute, size: 10, align: 'right' }); }
+      for (let k = 0; k <= 4; k++) g.text(fmt(xr[0] + (xr[1] - xr[0]) * k / 4, 3), px + pw * k / 4, py + ph + 13, { color: mute, size: 10, align: 'center' });
+      ctx.strokeStyle = mute; ctx.strokeRect(px, py, pw, ph);
+      if (title) g.text(title, x + 4, y + 13, { bold: true, size: 12 });
+      g.text(xlabel, px + pw / 2, py + ph + 26, { color: fg, size: 11, align: 'center' });
+      ctx.save(); ctx.translate(x + 11, py + ph / 2); ctx.rotate(-Math.PI / 2); g.text(ylabel, 0, 0, { color: fg, size: 11, align: 'center' }); ctx.restore();
+      const P = {
+        sx, sy, px, py, pw, ph,
+        line(xs, ys, color = '#38bdf8', width = 2, dash) { ctx.save(); ctx.beginPath(); ctx.rect(px, py, pw, ph); ctx.clip(); ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash || []); ctx.beginPath(); let first = true; for (let i = 0; i < xs.length; i++) { if (!Number.isFinite(xs[i]) || !Number.isFinite(ys[i])) { first = true; continue; } const X = sx(xs[i]), Y = sy(ys[i]); if (first) { ctx.moveTo(X, Y); first = false; } else ctx.lineTo(X, Y); } ctx.stroke(); ctx.restore(); },
+        point(x0, y0, color = '#facc15', r = 5) { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(sx(x0), sy(y0), r, 0, 2 * Math.PI); ctx.fill(); ctx.strokeStyle = '#000'; ctx.lineWidth = 0.6; ctx.stroke(); },
+        vline(x0, color = '#a855f7') { ctx.strokeStyle = color; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(sx(x0), py); ctx.lineTo(sx(x0), py + ph); ctx.stroke(); ctx.setLineDash([]); },
+        hline(y0, color = '#ef4444') { ctx.strokeStyle = color; ctx.setLineDash([5, 4]); ctx.beginPath(); ctx.moveTo(px, sy(y0)); ctx.lineTo(px + pw, sy(y0)); ctx.stroke(); ctx.setLineDash([]); },
+        bar(x0, w0, y0, y1, color) { ctx.fillStyle = color; const a = sx(x0 - w0 / 2), b = sx(x0 + w0 / 2); ctx.fillRect(a, Math.min(sy(y0), sy(y1)), b - a, Math.abs(sy(y1) - sy(y0))); },
+        area(xs, ys, color) { ctx.save(); ctx.beginPath(); ctx.rect(px, py, pw, ph); ctx.clip(); ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(sx(xs[0]), sy(Math.max(yr[0], 0))); xs.forEach((x1, i) => ctx.lineTo(sx(x1), sy(ys[i]))); ctx.lineTo(sx(xs[xs.length - 1]), sy(Math.max(yr[0], 0))); ctx.closePath(); ctx.fill(); ctx.restore(); },
+      };
+      return P;
+    },
+    gauge(x, y, w, frac, labelTxt, color = '#22c55e') { ctx.fillStyle = grid; ctx.fillRect(x, y, w, 12); ctx.fillStyle = color; ctx.fillRect(x, y, w * Math.max(0, Math.min(1, frac)), 12); ctx.strokeStyle = mute; ctx.strokeRect(x, y, w, 12); g.text(labelTxt, x, y - 4, { size: 11 }); },
+  };
+  const pb = playback(box, { duration, rate, label, unit, onFrame: (t) => { if (!W) size(); onFrame(t, g); } });
+  return { box, g, pb, dispose: () => { ro.disconnect(); pb.dispose(); } };
+}
+
+// ---------------- 2-D animation canvas synced to the playback timeline ----------------
+// draw(g, t, W, H) is called every frame with a cleared, DPR-scaled 2-D context; returns the playback controller.
+function anim2dDraw(container, { duration, draw, height = 420, label = 'Animation time', unit = 's', rate = 1, autoplay = true }) {
+  const wrap = h('div', { class: 'viewer anim2d' }), cv = h('canvas', { style: `width:100%;height:${height}px;display:block;background:var(--panel2)` });
+  wrap.append(cv); container.append(wrap);
+  const g = cv.getContext('2d'); let W = 0, H = 0;
+  const size = () => { const r = cv.getBoundingClientRect(), d = Math.min(2, window.devicePixelRatio || 1); W = r.width || 600; H = r.height || height; cv.width = Math.round(W * d); cv.height = Math.round(H * d); g.setTransform(d, 0, 0, d, 0, 0); };
+  size(); const ro = new ResizeObserver(() => size()); ro.observe(cv);
+  const fg = getComputedStyle(document.documentElement).getPropertyValue('--fg').trim() || '#e5e7eb', mute = getComputedStyle(document.documentElement).getPropertyValue('--muted').trim() || '#94a3b8';
+  const pb = playback(wrap, { duration, label, unit, rate, autoplay, onFrame: (t) => { g.clearRect(0, 0, W, H); g.save(); g.fillStyle = fg; g.strokeStyle = fg; g.font = '12px system-ui, sans-serif'; try { draw(g, t, W, H, { fg, mute }); } catch (e) { g.fillStyle = '#ef4444'; g.fillText('Animation error: ' + e.message, 10, 20); } g.restore(); } });
+  return { ...pb, canvas: cv, dispose: () => { pb.dispose(); ro.disconnect(); } };
+}
+// simple axes helper for 2-D animated plots: returns mapping functions
+export function axes2d(g, { x0, y0, w, h: hh, xr, yr, xl = '', yl = '', fg = '#e5e7eb', mute = '#94a3b8', grid = true }) {
+  const X = (v) => x0 + (v - xr[0]) / ((xr[1] - xr[0]) || 1) * w, Y = (v) => y0 + hh - (v - yr[0]) / ((yr[1] - yr[0]) || 1) * hh;
+  g.save(); g.strokeStyle = mute; g.globalAlpha = 0.5; g.strokeRect(x0, y0, w, hh); g.globalAlpha = 1; g.fillStyle = mute; g.font = '11px system-ui, sans-serif';
+  const tick = (a, b) => { const span = b - a, st = 10 ** Math.floor(Math.log10(span / 4)); const m = span / st > 10 ? 5 : span / st > 4 ? 2 : 1; const s = st * m, o = []; for (let v = Math.ceil(a / s) * s; v <= b + 1e-9; v += s) o.push(+v.toPrecision(6)); return o; };
+  for (const v of tick(...xr)) { const x = X(v); if (grid) { g.globalAlpha = 0.15; g.beginPath(); g.moveTo(x, y0); g.lineTo(x, y0 + hh); g.stroke(); g.globalAlpha = 1; } g.fillText(fmt(v, 3), x - 10, y0 + hh + 13); }
+  for (const v of tick(...yr)) { const y = Y(v); if (grid) { g.globalAlpha = 0.15; g.beginPath(); g.moveTo(x0, y); g.lineTo(x0 + w, y); g.stroke(); g.globalAlpha = 1; } g.fillText(fmt(v, 3), x0 - 34, y + 4); }
+  g.fillStyle = fg; g.fillText(xl, x0 + w / 2 - g.measureText(xl).width / 2, y0 + hh + 27); g.save(); g.translate(x0 - 44, y0 + hh / 2); g.rotate(-Math.PI / 2); g.fillText(yl, -g.measureText(yl).width / 2, 0); g.restore();
+  g.restore(); return { X, Y };
+}
+export function polyline(g, pts, color, width = 2, dash) { if (pts.length < 2) return; g.save(); g.strokeStyle = color; g.lineWidth = width; if (dash) g.setLineDash(dash); g.beginPath(); pts.forEach(([x, y], i) => i ? g.lineTo(x, y) : g.moveTo(x, y)); g.stroke(); g.restore(); }
+export const rgb = (c) => `rgb(${c.map(Math.round).join(',')})`;
+
+// Single public entry point for 2-D animations: `onFrame(t, g)` uses the panel helper API; `draw(ctx, t, W, H)` gets a raw context.
+export function anim2d(container, opts) { return opts.draw ? anim2dDraw(container, opts) : anim2dPanel(container, opts); }

@@ -46,7 +46,7 @@ export async function viewer(container, { background, up = 'z', grid = true, hei
     ray.setFromCamera(mouse, camera); const hit = ray.intersectObjects(state.objects, false)[0];
     if (hit) { const o = hit.object, f = o.userData.field; let txt = `<b>${o.name}</b>${o.userData.group ? ' · ' + o.userData.group : ''}${o.userData.material ? '<br>' + o.userData.material : ''}`; if (f && hit.face) { const v = (f.values[hit.face.a] + f.values[hit.face.b] + f.values[hit.face.c]) / 3; txt += `<br>${f.name}: <b>${v.toPrecision(4)}</b> ${f.unit || ''}`; } label.innerHTML = txt; label.style.display = 'block'; } else label.style.display = 'none';
   });
-  function viewDir(x, y, z) { const box = new THREE.Box3().setFromObject(root), c = box.getCenter(new THREE.Vector3()), s = (box.getSize(new THREE.Vector3()).length() || 5) * 1.25; controls.target.copy(c); camera.position.set(c.x + x * s, c.y + y * s, c.z + z * s); controls.update(); }
+  function viewDir(x, y, z) { const box = new THREE.Box3().setFromObject(state.frameObj || root), c = box.getCenter(new THREE.Vector3()), s = (box.getSize(new THREE.Vector3()).length() || 5) * 1.25; controls.target.copy(c); camera.position.set(c.x + x * s, c.y + y * s, c.z + z * s); controls.update(); }
   function fit() { viewDir(0.75, -1.05, 0.62); }
   function applyExplode() {
     const box = new THREE.Box3().setFromObject(root), c = box.getCenter(new THREE.Vector3());
@@ -75,6 +75,7 @@ export async function viewer(container, { background, up = 'z', grid = true, hei
   const io = new IntersectionObserver((e) => { if (e[0].isIntersecting) { if (!state.raf) { last = performance.now(); state.raf = requestAnimationFrame(loop); } } else { cancelAnimationFrame(state.raf); state.raf = 0; } }); io.observe(container);
   state.raf = requestAnimationFrame(loop);
   return {
+    setFrameObject(o) { state.frameObj = o; camera.far = 5000; camera.updateProjectionMatrix(); },
     THREE, scene, camera, controls, renderer, root, add, clear, fit, viewDir, updateField, updatePositions, addLine, addArrow, snapshot, exportGLB,
     set animate(fn) { state.animate = fn; }, get objects() { return state.objects; },
     dispose() { state.disposed = true; cancelAnimationFrame(state.raf); ro.disconnect(); io.disconnect(); clear(); renderer.dispose(); },
