@@ -38,7 +38,10 @@ export function resolveParams(def, ctx, regenerate = false) {
   for (const p of def.params || []) {
     let v = stored[p.key], pv = prov[p.key];
     if (locks[p.key] && v !== undefined) { out[p.key] = v; provOut[p.key] = pv || 'user'; continue; }
-    if ((regenerate || v === undefined) && p.auto) { try { const a = p.auto(ctx); if (a !== undefined && a !== null) { if (typeof a === 'object' && 'value' in a) { v = a.value; pv = a.prov || 'calc'; } else { v = a; pv = 'coupled'; } } } catch { /* fall back */ } }
+    // values that came from an automatic/coupled generator are recomputed on every run so they follow upstream changes;
+    // values the user typed (no auto flag) are kept until regeneration or reset
+    const autoFlag = store.autoKeys(def.id)[p.key] || ['coupled', 'calc', 'live'].includes(pv);
+    if ((regenerate || v === undefined || autoFlag) && p.auto) { try { const a = p.auto(ctx); if (a !== undefined && a !== null) { if (typeof a === 'object' && 'value' in a) { v = a.value; pv = a.prov || 'calc'; } else { v = a; pv = 'coupled'; } store.autoKeys(def.id)[p.key] = true; } } catch { /* fall back */ } }
     if (v === undefined || (regenerate && !p.auto && !locks[p.key])) { v = p.default; pv = p.prov || 'estimated'; }
     out[p.key] = v; provOut[p.key] = pv;
   }

@@ -51,7 +51,8 @@ export const store = {
   locks(id) { return (this.project.locks[id] ||= {}); },
   mode(id) { return this.project.modes[id] || 'auto'; },
   setMode(id, m) { this.project.modes[id] = m; this.touch({ type: 'mode', id }); },
-  setParam(id, key, value, prov = 'user') { this.params(id)[key] = value; this.prov(id)[key] = prov; this.invalidate(id, `${key} changed`); this.touch({ type: 'param', id, key }); },
+  autoKeys(id) { return ((this.project.autoKeys ||= {})[id] ||= {}); },
+  setParam(id, key, value, prov = 'user') { this.params(id)[key] = value; this.prov(id)[key] = prov; if (prov === 'user') delete this.autoKeys(id)[key]; this.invalidate(id, `${key} changed`); this.touch({ type: 'param', id, key }); },
   setMaterial(component, matId) { this.project.materials[component] = matId; this.invalidateAll(`material of ${component}`); this.touch({ type: 'material', component }); },
   material(component, fallback) { return this.project.materials[component] || fallback; },
   publish(id, data, { credibility = 'Analytical screening', hash = '' } = {}) {
