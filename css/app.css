@@ -101,3 +101,6 @@ main{padding:18px clamp(12px,2.4vw,28px) 60px;min-width:0;outline:none}
 .up-body{padding:14px 20px;max-height:52vh;overflow:auto}.up-sub{font-weight:700;font-size:13px;margin:6px 0 4px}.up-list{margin:0 0 8px;padding-left:18px}.up-list li{margin:5px 0;font-size:13.5px}
 .up-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 20px;border-top:1px solid var(--line);background:var(--panel2)}
 @keyframes upfade{from{opacity:0}to{opacity:1}}@keyframes uprise{from{opacity:0;transform:translateY(18px) scale(.97)}to{opacity:1;transform:none}}
+/* phone-width fixes: long suite names in the prev/next arrows; drawings scale to the card */
+.suite-nav>*{min-width:0}.nav-arrow>span:not(.arr){min-width:0}.nav-arrow b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card svg:not(.chart):not(.flow){max-width:100%;height:auto}
