@@ -82,10 +82,10 @@ export const DEFAULT_VEHICLE = {
   // Baseline revision 2.1: lower, wider, lighter rig (overall ≈ 3.0 m, CG lowered); wings aft of the forward cockpit with
   // aspect ratio ≈ 2.4, forward-facing leading edges and mast-step bulkheads; the specification's starting model
   // (2 × 3 m wings, 8 m², track 1.5 m) remains available as a preset in Suite 01.
-  // Revision 3 (owner's choice): three fixed tandem 2.0 m wings on a 5.4 m lifting body — 3.0 m overall at all times, no
-  // telescoping mechanism; wingReefSpan = wingHeight disables reefing (kept as an optional configuration in Suite 01).
-  baseline: 5, mass: 300, Crr: 0.006, CdA: 0.25, wheelRadius: 0.30, wingArea: 4.34, wingHeight: 2.0, wingReefSpan: 2.0, wingReef: 'none', nWings: 3,
-  wheelbase: 3.3, track: 1.9, cgHeight: 0.65, length: 5.4, width: 1.6, height: 1.0, nWheels: 3, layout: 'tadpole',
+    // Revision 4 — AeroArch: one closed box wing (two swept, tapered 1.75 m airfoil legs leaning into an A, joined by a curved top bridge) on a ring
+  // track around the forward cockpit; 3.0 m overall, ≈1.3 m folded. wingArea = both legs; the bridge adds closure.
+  baseline: 6, wingConfig: 'arch', archCant: 12, archSweep: 20, mass: 300, Crr: 0.006, CdA: 0.25, wheelRadius: 0.30, wingArea: 4.0, wingHeight: 1.75, wingReefSpan: 1.75, wingReef: 'none', nWings: 2,
+  wheelbase: 2.9, track: 1.9, cgHeight: 0.62, length: 4.6, width: 1.6, height: 1.0, nWheels: 3, layout: 'tadpole',
   frontalArea: 0.9, Cd: 0.28, bearingLoss_W: 3, driveWheels: 2, payload: 90,
 };
 export function roadLoad(v, veh = DEFAULT_VEHICLE, { rho = 1.225, grade = 0, headwind = 0, accel = 0 } = {}) {

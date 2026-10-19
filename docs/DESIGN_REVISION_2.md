@@ -33,3 +33,20 @@ mechanical work. Night-time propulsion therefore relies on wind or finite stored
 Rev 2.2 equals the original in light-wind starting thrust, is faster at every wind speed, more stable, never taller,
 and lower when reefed or parked. The only added item is a manually cranked telescoping wing section (≈ 3.5 kg, disclosed
 as a moving part).
+
+## Revision 4 — AeroArch (owner's choice, replaces separate wings)
+
+One closed **box wing** shaped as a swept arch over the forward cockpit: two swept (20°), tapered (tip 0.67 × root),
+inward-canted (12°) airfoil legs 1.75 m tall rising from the body shoulders and joined by a gently cambered top bridge.
+Leg area 4.0 m² plus the bridge. Overall height ≈ 3.0 m; the arch folds back over the body for parking (≈ 1.3 m).
+
+* **Aerodynamics** — the closed ring has no free wing tips; with the body acting as a ground plane under the leg roots, the
+  system behaves like a Prandtl box wing (induced-drag factor k ≈ (1 + 0.45 g/b)/(1.04 + 2.81 g/b) referred to the mirrored span),
+  raising the effective aspect ratio and lift slope well above separate wings of the same area. The two legs act as a
+  laterally separated biplane in crosswind (mutual interference included). Camber morphing on both legs; lifting body.
+* **Incidence, feathering, gust breakaway** — the whole arch rotates on a ring track around the cockpit (one mechanism):
+  incidence for any wind direction, torque-limited breakaway to the feathered position in gusts.
+* **Structure** — the closed frame is far stiffer and lighter than cantilever wings for the same load and doubles as a
+  roll-over protection hoop; fore/aft ring-track bulkheads and the keel beam carry its loads.
+* **Thermal** — the bridge top is a sky-facing solar-selective collector (≈ 1 m² instead of 0.65 m² on the nose); the rear deck
+  carries the radiative cooler; the bridge also shades the cockpit.
