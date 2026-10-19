@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PHOENIX-ATMOS-XP</title>
+<meta name="description" content="PHOENIX-ATMOS-XP — integrated 26-suite engineering platform for a wind-primary, metamaterial-assisted atmospheric automobile: CAD, meshing, CFD, FEA, thermal, NiTi thermomechanics, vehicle dynamics, V&V, optimisation, economics and sustainability. Installable and works offline.">
+<meta name="theme-color" content="#0b1020">
+<meta name="color-scheme" content="dark light">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ATMOS-XP">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/ext-a.css"><link rel="stylesheet" href="css/ext-b.css"><link rel="stylesheet" href="css/ext-c.css"><link rel="stylesheet" href="css/ext-d.css"><link rel="stylesheet" href="css/ext-e.css">
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
+<link rel="modulepreload" href="js/app.js">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <div class="nav-arrows">
+    <button id="navBack" class="arrow-btn" aria-label="Back" title="Back (Alt+←)"><svg viewBox="0 0 24 24"><path d="M15.5 4.5 8 12l7.5 7.5" /></svg></button>
+    <button id="navFwd" class="arrow-btn" aria-label="Forward" title="Forward (Alt+→)"><svg viewBox="0 0 24 24"><path d="M8.5 4.5 16 12l-7.5 7.5" /></svg></button>
+  </div>
+  <a class="brand" href="#/"><img src="icons/icon.svg" alt="" width="28" height="28"><span><b>PHOENIX</b>-ATMOS-XP</span></a>
+  <button id="menuBtn" class="icon-btn menu-btn" aria-label="Open navigation">☰</button>
+  <nav class="topnav" id="topnav">
+    <a href="#/">Console</a><a href="#/feasibility">Feasibility</a><a href="#/scenarios">Scenarios</a><a href="#/suite/s03">Materials</a><a href="#/portal">Data portal</a><a href="#/datahub">Live data</a><a href="#/dossier">Dossier</a><a href="#/project">Project</a><a href="#/help">Help</a>
+  </nav>
+  <div class="top-right">
+    <button id="siteBtn" class="chip site-chip" title="Project site (drives live data)">📍 <span id="siteName">Site</span></button>
+    <span id="netState" class="net" title="Connectivity">●</span>
+    <button id="installBtn" class="btn sm install" hidden>⤓ Install app</button>
+    <button id="themeBtn" class="icon-btn" aria-label="Toggle theme" title="Light / dark">◐</button>
+  </div>
+</header>
+<div class="layout">
+  <aside class="sidebar" id="sidebar" aria-label="Suites"></aside>
+  <main id="main" tabindex="-1"><div class="boot"><div class="spinner"></div><p>Loading engineering console…</p></div></main>
+</div>
+<footer class="foot"><span>PHOENIX-ATMOS-XP · <span id="ver"></span></span><span class="muted">Simulated predictions are not physical validation · Data are fetched live from public global services by your device</span><a href="#/install">Install / offline copy</a></footer>
+<noscript><p style="padding:16px">PHOENIX-ATMOS-XP requires JavaScript.</p></noscript>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
