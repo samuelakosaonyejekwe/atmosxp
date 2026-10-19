@@ -44,7 +44,15 @@ export function bom(store, { grid = 450, labourRate = 35 } = {}) {
     const co2Mat = mass * (m?.co2 || 5), co2Proc = procKWh * grid / 1000, energyMat = mass * (m?.energy || 80);
     const recyc = m?.recyclable ?? 0.3, eolCredit = recyc * co2Mat * 0.6;
     return { key, name: c.name, material: m?.name || '—', matId: m?.id, family: m?.family, mass, matCost, fabCost, laborH: ref.laborH, procKWh, co2Mat, co2Proc, co2: co2Mat + co2Proc, energyMat, energy: energyMat + procKWh * 3.6, recyc, eolCredit, life: ref.life, process: ref.process, unc: m?.unc ?? 20 };
-  });
+  }).concat(reefMechanismRow(store, { grid, labourRate }), aeroFairingRows(store, { grid, labourRate }));
+}
+// Revision 2.2: telescoping reef joints + torque-limited breakaway locks for both wings (≈ 3.5 kg per vehicle):
+// machined Ti-6Al-4V sleeves and latch, PTFE-lined bushings, stainless detent springs.
+function reefMechanismRow(store, { grid, labourRate }) {
+  const m = componentMaterial(store, 'rootInsert') || { name: 'Ti-6Al-4V', rho: 4430, cost: 30, co2: 40, energy: 650, recyclable: 0.6, unc: 15 };
+  const mass = 3.5, matCost = mass * (m.cost || 30), procKWh = mass * 35, fabCost = matCost * 4 + 8 * labourRate;
+  const co2Mat = mass * (m.co2 || 40), co2Proc = procKWh * grid / 1000, energyMat = mass * (m.energy || 650), recyc = m.recyclable ?? 0.6;
+  return [{ key: 'reefJoint', name: 'Wing telescoping reef joints & breakaway locks (2 wings)', material: `${m.name} sleeves, PTFE bushings`, matId: m.id, family: m.family, mass, matCost, fabCost, laborH: 8, procKWh, co2Mat, co2Proc, co2: co2Mat + co2Proc, energyMat, energy: energyMat + procKWh * 3.6, recyc, eolCredit: recyc * co2Mat * 0.6, life: 8, process: 'CNC machining, hard anodise / PTFE liner bonding, assembly & proof test', unc: 25 }];
 }
 
 // Discounted cash flow
@@ -68,4 +76,13 @@ export function mci({ mass, recycledIn = 0.1, collectedOut = 0.5, efficiency = 0
   const V = mass * (1 - recycledIn), W = mass * (1 - collectedOut * efficiency);
   const LFI = (V + W) / (2 * mass), F = 0.9 / Math.max(0.1, lifeRatio);
   return Math.max(0, Math.min(1, 1 - LFI * F));
+}
+
+// Lifting-body revision: aerodynamic wheel spats (3) and wing-root fairings (2) in the chassis skin material.
+function aeroFairingRows(store, { grid, labourRate }) {
+  const m = componentMaterial(store, 'chassis') || { name: 'CFRP woven', rho: 1550, cost: 45, co2: 24, energy: 290, recyclable: 0.25, unc: 15 };
+  return [['spats', 'Aerodynamic wheel spats (3)', 4.2, 10], ['fairings', 'Wing-root fairings (2)', 1.6, 5]].map(([key, name, mass, laborH]) => {
+    const matCost = mass * (m.cost || 40), procKWh = mass * 12, fabCost = matCost * 2.5 + laborH * labourRate, co2Mat = mass * (m.co2 || 20), co2Proc = procKWh * grid / 1000, energyMat = mass * (m.energy || 250), recyc = m.recyclable ?? 0.25;
+    return { key, name, material: m.name, matId: m.id, family: m.family, mass, matCost, fabCost, laborH, procKWh, co2Mat, co2Proc, co2: co2Mat + co2Proc, energyMat, energy: energyMat + procKWh * 3.6, recyc, eolCredit: recyc * co2Mat * 0.6, life: 12, process: 'Vacuum infusion / prepreg moulding on the body tooling', unc: 20 };
+  });
 }

@@ -140,8 +140,57 @@ export default {
     if (nominal > 0.15) out.recs.push({ level: 'econ', text: `High local cost of capital (${fmt(nominal * 100, 3)} %) favours low-capex flexible manufacturing (out-of-autoclave, modular tooling) and staged investment.`, basis: 'Live lending rate' });
     out.recs.push({ level: 'good', text: 'Commission an ISO 14040/14044 LCA with primary supplier data and a critical review before publishing environmental claims; keep the functional unit (vehicle-km) and system boundary explicit.', basis: 'Specification Module 26' });
     out.explain.push({ title: 'What the comparison means', text: 'ATMOS-XP purchases no propulsion energy, so its footprint is production plus replacements minus end-of-life credits. The reference EV adds charging emissions that depend on the live grid intensity of the site. The comparison is only meaningful if the atmospheric propulsion is feasible for the intended duty — check Suites 17 and 20.' });
+    out.views.push({ label: '2D animation: cash flow & carbon over life', icon: '🎞', render: (el) => anim2dLife(el, { flows, nominal, B, life: p.life, evProd, evUseYr, evBattLife: p.evBattLife, evBattCO2: p.evBattery * p.evBattCO2, cur, X }) });
+    out.views.push({ label: '3D life-cycle footprint', icon: '♻', render: (el) => view3dLCA(el, { B, life: p.life, cur, X, ctx }) });
     out.outputs = { prototypeCost: proto, unitCost: unitAtVol, lifecycleCost: L1.pv, embodiedCO2_kg: co2Cradle, lifecycleCO2_kg: atmosLC, gPerKm: atmosLC / kmLife * 1000, npv: NPV, irr: IRR, mci: MCI, grid };
     out.headline = `Prototype ${fmt(X(proto), 4)} ${cur}; NPV ${fmt(X(NPV), 4)} ${cur}; ${fmt(atmosLC / kmLife * 1000, 3)} g CO₂e/km vs ${fmt(evLC / kmLife * 1000, 3)} g for the reference EV (grid ${fmt(grid, 3)} g/kWh).`;
     return out;
   },
 };
+
+// 3D vehicle coloured by each component's solved cradle-to-gate CO₂e (or fabricated cost) from the live BOM, with a
+// service-life playback: parts flash when their solved replacement interval falls due and the running totals
+// accumulate. Components not drawn in the 3D assembly are listed in the HUD.
+async function view3dLCA(el, { B, life, cur, X, ctx }) {
+  const [{ viewer }, { playback, hud, legend3d }, { vehicleAssembly }, { cmap }, { h }, mats] = await Promise.all([import('../core/viz3d.js'), import('../core/sim3d.js'), import('../core/cad.js'), import('../core/chart.js'), import('../core/ui.js'), import('../core/materials.js')]);
+  const row = Object.fromEntries(B.map(r => [r.key, r]));
+  let metric = 'co2';
+  const sel = h('select', { onchange: (e) => { metric = e.target.value; } }, h('option', { value: 'co2' }, 'Colour: embodied CO₂e per component'), h('option', { value: 'cost' }, 'Colour: fabricated cost per component'));
+  el.append(h('p', { class: 'small muted' }, `Solved from the BOM: mass × material emission factor + processing energy × grid intensity, and fabricated cost. Playback runs over the ${life}-year service life; a part flashes when its replacement interval is reached and its footprint is added again. Use Explode / X-ray in the toolbar; hover a part for its values.`), sel);
+  const wrap = h('div'); el.append(wrap);
+  const V = await viewer(wrap, { height: 460, grid: true });
+  const matMap = Object.fromEntries(Object.keys(mats.COMPONENTS).map(k => [k, ctx.material(k)]));
+  const asm = vehicleAssembly(ctx.vehicle, { materials: matMap });
+  const drawn = new Set(); const objs = asm.parts.map(m => { const r = row[/reef joint/i.test(m.name) ? 'reefJoint' : /spat/i.test(m.name) ? 'spats' : /fairing/i.test(m.name) ? 'fairings' : m.component]; if (r) { drawn.add(r.key); m.materialName = `${r.material} · ${fmt(r.mass, 3)} kg · ${fmt(r.co2, 3)} kg CO₂e · ${fmt(X(r.fabCost), 4)} ${cur} · replaced every ${r.life} y`; } return { r, o: V.add(m) }; });
+  V.viewDir(0.9, -1.2, 0.6);
+  const vmax = { co2: Math.max(...B.map(r => r.co2)), cost: Math.max(...B.map(r => r.fabCost)) };
+  const leg = legend3d(wrap, { title: 'Embodied CO₂e (kg)', lo: 0, hi: vmax.co2, cmapName: 'inferno' }); const H = hud(wrap);
+  const notDrawn = B.filter(r => !drawn.has(r.key));
+  let spin = 0; V.animate = (dt) => { spin += dt * 0.2; V.root.rotation.z = spin; };
+  playback(wrap, { duration: life, rate: life / 20, label: 'Service year', unit: 'y', onFrame: (t) => {
+    let co2 = 0, cost = 0; const flashing = new Set();
+    for (const r of B) { const n = Math.floor(t / r.life); co2 += r.co2 * (1 + n); cost += r.fabCost * (1 + n); if (n > 0 && t - n * r.life < life * 0.03) flashing.add(r.key); }
+    leg.set(0, vmax[metric]);
+    for (const { r, o } of objs) { if (!r) { o.material.color.setRGB(0.4, 0.42, 0.46); continue; } const c = flashing.has(r.key) ? [80, 255, 120] : cmap((metric === 'co2' ? r.co2 : r.fabCost) / (vmax[metric] || 1), 'inferno'); o.material.color.setRGB(c[0] / 255, c[1] / 255, c[2] / 255); }
+    const topR = B.slice().sort((a, b) => (metric === 'co2' ? b.co2 - a.co2 : b.fabCost - a.fabCost))[0];
+    H.set([['Year', fmt(t, 3)], ['Cumulative CO₂e (parts)', fmt(co2, 4) + ' kg'], ['Cumulative parts cost', fmt(X(cost), 4) + ' ' + cur], ['Replacing now', flashing.size ? [...flashing].map(k => row[k].name).join(', ').slice(0, 40) : '—', flashing.size ? '#22c55e' : undefined], ['Largest contributor', topR.name.slice(0, 30)], ['Not drawn in 3D', notDrawn.length + ' parts (e.g. ' + (notDrawn[0]?.name || '—').slice(0, 22) + ')']]);
+  } });
+}
+
+// 2D animation: cumulative (discounted) programme cash flow year by year, and cumulative life-cycle carbon of
+// ATMOS-XP (parts + scheduled replacements) versus the reference battery EV (production + grid electricity + battery replacement).
+async function anim2dLife(el, { flows, nominal, B, life, evProd, evUseYr, evBattLife, evBattCO2, cur, X }) {
+  const [{ anim2d }, { h }] = await Promise.all([import('../core/sim3d.js'), import('../core/ui.js')]);
+  const yrsF = flows.map((_, i) => i), cumF = [], cumD = []; flows.reduce((s, f, i) => { cumF.push(s + f); return s + f; }, 0); flows.reduce((s, f, i) => { const v = s + f / (1 + nominal) ** i; cumD.push(v); return v; }, 0);
+  const ys = linspace(0, life, 121), atm = ys.map(y => B.reduce((s, r) => s + r.co2 * (1 + Math.floor(y / r.life)), 0)), ev = ys.map(y => evProd + evUseYr * y + Math.floor(y / evBattLife) * evBattCO2);
+  el.append(h('p', { class: 'small muted' }, 'Solved economics and inventory of this suite, revealed year by year. Left: cumulative nominal and discounted cash flow of the production programme. Right: cumulative CO₂e of one vehicle.'));
+  const T = Math.max(life, flows.length - 1);
+  anim2d(el, { height: 420, duration: T, rate: T / 20, label: 'Year', unit: 'y', onFrame: (t, g) => {
+    g.clear(); const k = Math.min(flows.length - 1, Math.floor(t)), lo = Math.min(...cumF, ...cumD), hi = Math.max(...cumF, ...cumD, 0);
+    const A = g.panel(0, 0, g.W / 2, g.H, { xr: [0, flows.length - 1], yr: [X(lo) * 1.1, X(hi) * 1.1 + 1], xlabel: 'Programme year', ylabel: `Cumulative cash [${cur}]`, title: `Cash: ${fmt(X(cumF[k]), 4)} (disc. ${fmt(X(cumD[k]), 4)}) ${cur}` });
+    A.hline(0, '#94a3b8'); A.line(yrsF.slice(0, k + 1), cumF.slice(0, k + 1).map(X), '#38bdf8', 2.5); A.line(yrsF.slice(0, k + 1), cumD.slice(0, k + 1).map(X), '#a855f7', 2.5, [5, 3]); A.point(k, X(cumF[k]));
+    const j = Math.min(ys.length - 1, Math.round(Math.min(t, life) / life * (ys.length - 1)));
+    const Bp = g.panel(g.W / 2, 0, g.W / 2, g.H, { xr: [0, life], yr: [0, Math.max(...atm, ...ev) * 1.1], xlabel: 'Vehicle age [years]', ylabel: 'Cumulative CO₂e [kg]', title: `Carbon: ATMOS-XP ${fmt(atm[j], 4)} vs reference EV ${fmt(ev[j], 4)} kg` });
+    Bp.line(ys.slice(0, j + 1), atm.slice(0, j + 1), '#22c55e', 2.5); Bp.line(ys.slice(0, j + 1), ev.slice(0, j + 1), '#ef4444', 2.5); Bp.point(ys[j], atm[j], '#22c55e'); Bp.point(ys[j], ev[j], '#ef4444');
+  } });
+}

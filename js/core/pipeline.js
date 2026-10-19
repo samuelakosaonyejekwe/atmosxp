@@ -27,4 +27,4 @@ export async function runChain(ids, overridesById = {}, { onStep } = {}) {
   }
   return out;
 }
-export const FEASIBILITY_CHAIN = ['s05', 's01', 's10', 's07', 's06', 's11', 's13', 's14', 's15', 's17', 's18', 's19', 's20'];
+export const FEASIBILITY_CHAIN = ['s05', 's01', 's10', 's07', 's06', 's11', 's13', 's14', 's15', 's18', 's17', 's19', 's20'];

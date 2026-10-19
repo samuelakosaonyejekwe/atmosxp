@@ -2,6 +2,7 @@
 import * as TH from '../core/thermo.js';
 import { linspace, fmt, trapz, range, logspace } from '../core/num.js';
 import { forUse, get } from '../core/materials.js';
+import { diffEvolution } from '../core/analysis.js';
 
 export default {
   description: 'Designs the bistable elastic metamaterial buffer: single-cell potential-energy landscape (snap-through truss with tuned parallel stiffness), stable states, energy barriers, recoverable energy after snap-through dissipation, strain and buckling limits, array sizing (cells, mass, volume) for a target energy, charge/discharge curves, backup endurance at a given wheel power, fatigue, and unintended-release risk. The buffer is always modelled as a finite store with an explicitly recorded initial charge.',
@@ -35,9 +36,10 @@ export default {
     { key: 'ks', label: 'Parallel stiffness ratio k_s/k*', type: 'range', min: 0, max: 0.3, step: 0.005, group: 'Cell', default: 0.15, help: 'Raises the energy of the charged state; bistability is lost above 0.25.' },
     { key: 'loss', label: 'Snap-through dissipation', unit: '%', type: 'range', min: 0, max: 60, step: 1, group: 'Losses', default: 12 },
     { key: 'eta', label: 'Transmission efficiency to wheel', type: 'range', min: 0.3, max: 1, step: 0.01, group: 'Losses', default: 0.85 },
-    { key: 'frame', label: 'Frame / housing mass factor', type: 'range', min: 1, max: 4, step: 0.1, group: 'Cell', default: 1.8, expert: true },
+    { key: 'frame', label: 'Frame / housing mass factor', type: 'range', min: 1, max: 4, step: 0.1, group: 'Cell', default: 1.35, expert: true, help: 'Cells share supports in a nested array (D8), so the frame adds ≈ 35 % to the bar mass.' },
     { key: 'SF', label: 'Strain safety factor', type: 'number', min: 1, max: 4, step: 0.1, group: 'Cell', default: 1.5 },
-    { key: 'Etarget', label: 'Target usable energy', unit: 'kJ', type: 'number', min: 0.1, max: 2000, step: 0.1, group: 'Sizing', default: 30 },
+    { key: 'Etarget', label: 'Target usable energy', unit: 'kJ', type: 'number', min: 0.1, max: 2000, step: 0.1, group: 'Sizing', default: 10, help: 'Revision 2 (D8): 10 kJ for start-up and short gaps.' },
+    { key: 'optimise', label: 'Optimise cell geometry for energy density', type: 'bool', group: 'Cell', default: true, help: 'D8: differential evolution over half-span, rise, bar diameter and parallel stiffness subject to bistability, strain and buckling limits.' },
     { key: 'P', label: 'Discharge power at wheel', unit: 'W', type: 'number', min: 1, max: 2000, step: 1, group: 'Sizing', default: 150, auto: (c) => { const o = c.upstream('s17'); return o?.deficit_W > 0 ? { value: Math.round(o.deficit_W), prov: 'coupled' } : undefined; } },
     { key: 'charge', label: 'Initial state of charge (explicit initial condition)', unit: '%', type: 'range', min: 0, max: 100, step: 1, group: 'Sizing', default: 100, help: 'Must be justified by a physical charging process or declared as a new initial condition.' },
     { key: 'cyclesDay', label: 'Charge–discharge cycles per day', type: 'number', min: 0.1, max: 200, step: 0.1, group: 'Durability', default: 4 },
@@ -47,7 +49,16 @@ export default {
 
   async run(p, ctx) {
     const out = { kpis: [], charts: [], tables: [], verdicts: [], recs: [], checks: [], explain: [], views: [] };
-    const m = get(p.mat), E = m.E * 1e9, d = p.d / 1000, A = Math.PI * d * d / 4, I = Math.PI * d ** 4 / 64, b = p.b / 1000, hr = p.hr / 1000;
+    const m = get(p.mat), resilLimit = (m.sy ** 2 / (2 * m.E)) * 1e3 / m.rho;
+    let optNote = 'Manual geometry.';
+    if (p.optimise !== false) {
+      const Em = m.E * 1e9, allowS = m.sy / m.E / 1000 / p.SF;
+      const dens = ([bb, rr, dd, kk]) => { const A_ = Math.PI * (dd / 1000) ** 2 / 4, I_ = Math.PI * (dd / 1000) ** 4 / 64, Cc = TH.bistableCell({ E: Em, A: A_, b: bb / 1000, hRise: rr * bb / 1000, ksRatio: kk, sy: m.sy, I: I_ }); if (!Cc.bistable) return -1; const pen = Math.max(0, Cc.maxStrain / (0.97 * allowS) - 1) * 50 + Math.max(0, Cc.Ncomp / (Cc.Pcr / 1.5) - 1) * 50 + Math.max(0, 0.08 - Cc.barrierRelease / Math.max(1e-9, Cc.Estore)) * 20 + Math.max(0, 6 - Cc.L0 / (dd / 1000)) * 5; return Cc.Estore * (1 - p.loss / 100) / (2 * m.rho * A_ * Cc.L0 * p.frame) - pen * resilLimit; };
+      const R = diffEvolution((x) => -dens(x), [[10, 200], [0.02, 0.35], [1, 20], [0, 0.2]], { pop: 18, gens: 35, seed: 18 });
+      p = { ...p, b: +R.x[0].toFixed(1), hr: +(R.x[1] * R.x[0]).toFixed(2), d: +R.x[2].toFixed(2), ks: +R.x[3].toFixed(3) };
+      optNote = `Optimised (differential evolution, ${18 * 36} evaluations): b ${p.b} mm, rise ${p.hr} mm, bar Ø ${p.d} mm, k_s/k* ${p.ks}.`;
+    }
+    const E = m.E * 1e9, d = p.d / 1000, A = Math.PI * d * d / 4, I = Math.PI * d ** 4 / 64, b = p.b / 1000, hr = p.hr / 1000;
     const C = TH.bistableCell({ E, A, b, hRise: hr, ksRatio: p.ks, sy: m.sy, I });
     const Euse = C.bistable ? Math.max(0, C.Estore * (1 - p.loss / 100)) : 0, mCell = 2 * m.rho * A * C.L0 * p.frame, eDens = Euse / mCell;
     const nCells = Euse > 0 ? Math.ceil(p.Etarget * 1000 / Euse) : Infinity, mass = nCells * mCell, vol = nCells * (2 * b) * (3 * hr) * (3 * d);
@@ -62,12 +73,14 @@ export default {
     const shallow = hr * hr / (2 * C.L0 * C.L0), exact = Math.abs((b - C.L0) / C.L0); out.checks.push({ name: 'Peak bar strain: shallow-arch formula vs exact', value: exact, target: `${fmt(shallow, 4)} (±5 %)`, pass: Math.abs(exact - shallow) <= 0.05 * shallow });
     // KPIs
     const K = (label, value, unit, explain, prov, status) => out.kpis.push({ label, value, unit, explain, prov, status });
+    K('Cell geometry', optNote, '', 'D8 design step: geometry chosen to maximise usable energy per kg while staying bistable, elastic (strain safety factor) and buckling-safe.', p.optimise !== false ? 'generated' : 'user');
     K('Bistable', C.bistable ? 'yes' : 'NO', '', C.bistable ? `Second stable state at u₂ = ${fmt(C.u2 * 1000, 3)} mm.` : 'The charged state is not stable — the cell would release immediately (monostable).', 'calc', C.bistable ? 'ok' : 'bad');
     K('Stored energy per cell', C.Estore, 'J', 'U(u₂) − U(0): elastic energy held in the charged stable state.', 'calc');
     K('Usable energy per cell', Euse, 'J', `After ${p.loss} % snap-through dissipation.`, 'calc');
     K('Release barrier (trigger energy)', C.barrierRelease, 'J', 'Energy needed to push a charged cell back over the barrier — protects against accidental release.', 'calc', C.barrierRelease > 0.05 * C.Estore ? 'ok' : 'warn');
     K('Energy density', eDens, 'J/kg', 'Usable energy per kg of cell including frame. Limited by σ_y²/2E of the material.', 'calc');
     const resil = (m.sy ** 2 / (2 * m.E)) * 1e3 / m.rho; K('Fraction of material resilience limit', eDens / resil * 100, '%', `Theoretical ceiling σ_y²/(2Eρ) = ${fmt(resil, 4)} J/kg for ${m.name}; geometry, frame mass and strain safety factor reduce it.`, 'calc');
+    out.verdicts.push({ test: 'Energy density ≥ 25 % of material resilience limit (D8)', status: eDens / resil >= 0.25 ? 'pass' : eDens / resil >= 0.15 ? 'warn' : 'fail', detail: `${fmt(eDens, 4)} J/kg = ${fmt(eDens / resil * 100, 3)} % of σ_y²/(2Eρ) = ${fmt(resil, 4)} J/kg (bars + frame, after ${p.loss} % snap loss, strain SF ${p.SF}).`, fix: 'Higher-resilience alloy, lower strain safety factor with fatigue evidence, or lighter shared frames.' });
     K('Cells for target energy', nCells, '', `${p.Etarget} kJ usable.`, 'calc');
     K('Buffer mass', mass, 'kg', `Vehicle mass is ${ctx.vehicle.mass} kg.`, 'calc', mass < 0.1 * ctx.vehicle.mass ? 'ok' : mass < 0.3 * ctx.vehicle.mass ? 'warn' : 'bad');
     K('Buffer volume', vol * 1000, 'L', 'Envelope volume of the cell array (approximate).', 'calc');
@@ -102,6 +115,8 @@ export default {
     if (trigMargin < 3) out.recs.push({ level: 'warn', text: 'Add a positive mechanical latch: inertial loads could release cells unintentionally.', basis: 'Unintended-release margin' });
     out.recs.push({ level: 'sustain', text: 'Mechanical storage avoids batteries and their critical minerals; metallic cells are fully recyclable and, if kept elastic, have very long lives.', basis: 'Circularity' });
     out.explain.push({ title: 'What the buffer is for', text: 'The bistable buffer stores previously harvested mechanical work in elastic deformation and releases it on demand. It smooths torque pulses, can help the wheel past dead positions at start-up, and bridges short gaps. It cannot create energy, and its endurance is fixed by the declared initial charge.' });
+    out.views.push({ label: '3D buffer discharge', icon: '🔋', render: (el) => view3dBuffer(el, { C, nCells, Euse, Einit, duration, p, m, b, hr }) });
+    out.views.push({ label: '2D animation: snap-through & energy', icon: '🎞', render: (el) => anim2dBuffer(el, { C, nCells, Einit, duration, p }) });
     out.outputs = { Euse_J: nCells * Euse, Etotal_J: nCells * C.Estore, efficiency: (1 - p.loss / 100) * p.eta, backupDuration_s: duration, bufferMass_kg: mass, Einit_J: Einit, chargeState: p.charge / 100, cellEnergy_J: Euse, nCells, energyDensity_J_kg: eDens, dischargePower_W: p.P, bistable: C.bistable };
     out.headline = C.bistable ? `${nCells} cells (${fmt(mass, 3)} kg) store ${fmt(nCells * Euse / 1000, 3)} kJ usable → ${fmt(duration, 3)} s at ${p.P} W. One hour would need ${fmt(mass1h, 3)} kg.` : 'Cell is not bistable — no energy can be held in a charged state.';
     out.headlineKind = C.bistable ? 'info' : 'fail';
@@ -109,3 +124,70 @@ export default {
     return out;
   },
 };
+
+// 3D array of bistable (von Mises truss) cells discharging in sequence at the solved power: the release schedule
+// follows E(t) = E_init − (P/η)·t from the solved stored energy; each snap follows the solved force–displacement
+// path u → 0 and the bars are coloured by their solved axial strain. Arch rise exaggerated for visibility.
+async function view3dBuffer(el, { C, nCells, Euse, Einit, duration, p, m, b, hr }) {
+  const [{ viewer }, { playback, hud, legend3d, magnifier }, { cmap }, { h }] = await Promise.all([import('../core/viz3d.js'), import('../core/sim3d.js'), import('../core/chart.js'), import('../core/ui.js')]);
+  const finite = Number.isFinite(nCells) && nCells > 0, nVis = finite ? Math.min(48, nCells) : 24, per = finite ? nCells / nVis : 0, nCharged = Math.round(nVis * p.charge / 100);
+  el.append(h('p', { class: 'small muted' }, `Solved: cell energy landscape U(u) and force F(u) of the ${m.name} bistable cell, stored energy ${fmt(C.Estore, 4)} J/cell, ${finite ? nCells.toLocaleString() : '—'} cells, initial charge ${p.charge} % (${fmt(Einit / 1000, 4)} kJ), discharge at ${p.P} W → ${fmt(duration, 4)} s. Each visual cell represents ${fmt(per, 3)} real cells; snap-through motion follows the solved u-path; arch rise × magnification (slider).`));
+  if (!C.bistable) el.append(h('div', { class: 'callout fail' }, 'Cell is not bistable — it cannot hold a charged state, so nothing can be stored or released.'));
+  const mag = magnifier(el, { auto: Math.max(1, Math.min(500, 0.35 * b / hr)), truePeak: hr * 1000, unit: ' mm arch rise' });
+  const wrap = h('div'); el.append(wrap);
+  const V = await viewer(wrap, { height: 440, grid: true }); const THREE = V.THREE;
+  const bv = 0.12, cols = 8, gap = 0.34; let rise = 0.12 * hr / b;
+  const geo = new THREE.CylinderGeometry(0.008, 0.008, 1, 8); geo.rotateX(Math.PI / 2); // unit bar along z
+  const cells = [];
+  for (let k = 0; k < nVis; k++) {
+    const cx = (k % cols - (cols - 1) / 2) * gap, cy = Math.floor(k / cols) * gap - 0.6;
+    const bars = [0, 1].map(() => { const mm = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0x999999 })); V.root.add(mm); return mm; });
+    const base = new THREE.Mesh(new THREE.BoxGeometry(2 * bv + 0.04, 0.05, 0.015), new THREE.MeshStandardMaterial({ color: 0x475569 })); base.position.set(cx, cy, 0); V.root.add(base);
+    const apex = new THREE.Mesh(new THREE.SphereGeometry(0.016, 12, 8), new THREE.MeshStandardMaterial({ color: 0xfacc15 })); V.root.add(apex);
+    cells.push({ cx, cy, bars, apex, charged: k < nCharged, k });
+  }
+  const strainAt = (u) => (Math.hypot(b, hr - u) - C.L0) / C.L0, sMax = Math.max(1e-9, C.maxStrain);
+  const place = (cell, u) => { // u = 0 rest (arch up), u = u2 charged (inverted)
+    rise = Math.min(0.12, mag.value * 0.12 * hr / b);
+    const z = 0.0075 + rise * (1 - u / hr) + rise * 0.0, A = new THREE.Vector3(cell.cx, cell.cy, z + rise * 0);
+    const apexZ = 0.02 + rise * (1 - u / hr) + rise; A.set(cell.cx, cell.cy, apexZ);
+    [-1, 1].forEach((sgn, i) => { const S0 = new THREE.Vector3(cell.cx + sgn * bv, cell.cy, 0.02 + rise); const d = A.clone().sub(S0), L = d.length(); const mm = cell.bars[i]; mm.position.copy(S0.clone().add(A).multiplyScalar(0.5)); mm.scale.set(1, 1, L); mm.lookAt(A); const c = cmap(Math.abs(strainAt(u)) / sMax, 'inferno'); mm.material.color.setRGB(c[0] / 255, c[1] / 255, c[2] / 255); });
+    cell.apex.position.copy(A); void z;
+  };
+  V.viewDir(0.05, -0.7, 0.5);
+  const H = hud(wrap); legend3d(wrap, { title: 'Bar axial strain |ε| / ε_max', lo: 0, hi: 1, cmapName: 'inferno' });
+  const gauge = h('div', { class: 'sim-legend', style: 'left:8px;right:auto;width:200px' }, h('div', { class: 'small' }, 'Stored energy'), h('div', { style: 'height:12px;border-radius:6px;background:var(--line);overflow:hidden' }, h('div', { style: 'height:100%;width:0;background:linear-gradient(90deg,#ef4444,#22c55e)' })), h('div', { class: 'small' }, '')); wrap.append(gauge);
+  const bar = gauge.children[1].firstChild, lab = gauge.children[2];
+  const D = Math.max(duration, 1e-6), snapT = Math.min(0.05 * D, 2), dur = Math.max(D * 1.1, 5);
+  const usPath = C.us.filter(u => u <= C.u2), tRel = cells.map(c => c.charged ? D * (nCharged - c.k) / Math.max(1, nCharged) - snapT : Infinity);
+  playback(wrap, { duration: dur, rate: dur / 15, label: 'Discharge time', unit: 's', onFrame: (t) => {
+    let left = 0;
+    for (const c of cells) {
+      let u = 0;
+      if (c.charged && C.bistable) { const t0 = tRel[c.k]; if (t < t0) { u = C.u2; left++; } else if (t < t0 + snapT) { const f = (t - t0) / snapT; u = usPath[Math.max(0, Math.round((1 - f) * (usPath.length - 1)))]; } }
+      place(c, u);
+    }
+    const E = Math.max(0, Einit - p.P / p.eta * t), frac = Einit > 0 ? E / Einit : 0;
+    bar.style.width = (100 * frac).toFixed(1) + '%'; lab.textContent = `${fmt(E / 1000, 4)} kJ of ${fmt(Einit / 1000, 4)} kJ`;
+    H.set([['Time', fmt(t, 4) + ' s'], ['Discharge power', `${p.P} W at wheel`], ['Cells still charged', `${Math.round(left * per).toLocaleString()} / ${finite ? nCells.toLocaleString() : '—'}`], ['Energy remaining', fmt(E / 1000, 4) + ' kJ', frac > 0.2 ? '#22c55e' : '#ef4444'], ['Backup ends at', fmt(duration, 4) + ' s'], ['State', t >= D ? 'DEPLETED — vehicle must stop without other energy' : 'discharging', t >= D ? '#ef4444' : undefined]]);
+  } });
+}
+
+// 2D animation: solved force–displacement and energy landscape of one cell with the state marker travelling the
+// snap-through path for each released cell, plus the stored-energy bar of the whole buffer at the discharge power.
+async function anim2dBuffer(el, { C, nCells, Einit, duration, p }) {
+  const [{ anim2d }, { h }] = await Promise.all([import('../core/sim3d.js'), import('../core/ui.js')]);
+  const D = Math.max(duration, 1e-6), nShow = Number.isFinite(nCells) ? Math.min(40, nCells) : 1, uMM = C.us.map(u => u * 1000), i2 = C.us.indexOf(C.u2);
+  el.append(h('p', { class: 'small muted' }, `Solved cell model: F(u) and U(u) (${C.bistable ? 'bistable' : 'NOT bistable'}). During discharge (${fmt(D, 4)} s at ${p.P} W) cells release in sequence; the marker follows the solved u-path u₂ → 0 of the cell currently releasing (${nShow} representative releases shown).`));
+  const Fl = Math.min(...C.Fs.slice(0, i2 + 1)), Fh = Math.max(...C.Fs.slice(0, i2 + 1)), Ul = Math.min(...C.Us.slice(0, i2 + 1)), Uh = Math.max(...C.Us.slice(0, i2 + 1));
+  anim2d(el, { height: 400, duration: D * 1.05, rate: D / 15, label: 'Discharge time', unit: 's', onFrame: (t, g) => {
+    g.clear(); const k = Math.min(nShow - 1, Math.floor(t / D * nShow)), f = Math.min(1, (t / D * nShow) - k), j = Math.round((1 - f) * i2), done = t >= D;
+    const A = g.panel(0, 0, g.W / 2, g.H - 60, { xr: [0, uMM[i2] * 1.05], yr: [Fl * 1.15, Fh * 1.15], xlabel: 'Apex displacement u [mm]', ylabel: 'Force F [N]', title: 'Force–displacement (snap-through)' });
+    A.line(uMM.slice(0, i2 + 1), C.Fs.slice(0, i2 + 1), '#38bdf8', 2); A.hline(0, '#94a3b8'); if (!done && C.bistable) A.point(uMM[j], C.Fs[j]);
+    const B = g.panel(g.W / 2, 0, g.W / 2, g.H - 60, { xr: [0, uMM[i2] * 1.05], yr: [Ul, Uh * 1.1], xlabel: 'Apex displacement u [mm]', ylabel: 'Energy U [J]', title: 'Energy landscape (charged state at u₂)' });
+    B.line(uMM.slice(0, i2 + 1), C.Us.slice(0, i2 + 1), '#a855f7', 2); if (!done && C.bistable) B.point(uMM[j], C.Us[j], '#f97316');
+    { const cxs = g.W * 0.82, cys = g.H - 30, bw = 70, hr0 = C.us[i2] / 2, u = (!done && C.bistable) ? C.us[j] : 0, z = (hr0 - u) / (hr0 || 1) * 28; g.ctx.strokeStyle = '#f97316'; g.ctx.lineWidth = 4; g.ctx.beginPath(); g.ctx.moveTo(cxs - bw, cys); g.ctx.lineTo(cxs, cys - z); g.ctx.lineTo(cxs + bw, cys); g.ctx.stroke(); g.ctx.lineWidth = 1; g.ctx.fillStyle = '#facc15'; g.ctx.beginPath(); g.ctx.arc(cxs, cys - z, 5, 0, 2 * Math.PI); g.ctx.fill(); g.text('releasing cell (rise magnified)', cxs - bw, cys - 40, { size: 10, color: g.mute }); }
+    const E = Math.max(0, Einit - p.P / p.eta * t); g.gauge(60, g.H - 34, g.W * 0.5, Einit > 0 ? E / Einit : 0, `Buffer energy ${fmt(E / 1000, 4)} / ${fmt(Einit / 1000, 4)} kJ${done ? ' — DEPLETED' : ''}`, done ? '#ef4444' : '#22c55e');
+    g.text(`releasing cell ${Math.min(nShow, k + 1)} of ${nShow} shown (${Number.isFinite(nCells) ? nCells.toLocaleString() : '—'} real)`, g.W * 0.62, g.H - 22, { size: 11 });
+  } });
+}

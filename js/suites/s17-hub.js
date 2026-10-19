@@ -4,6 +4,7 @@ import { linspace, fmt, range, trapz, mean, max, min, G0, KELVIN } from '../core
 import { roadLoad, kmh } from '../core/physics.js';
 import { MATERIALS, get } from '../core/materials.js';
 import { h } from '../core/ui.js';
+import { matchAlloy, capStrain } from './s15-niti.js';
 
 const SMAS = MATERIALS.filter(m => m.cls === 'sma');
 const wrap = (a) => ((a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
@@ -78,11 +79,14 @@ export default {
   formats: { import: ['CSV torque–angle / dynamometer logs', 'XLSX', 'JSON'], export: ['CSV torque–angle and cartridge histories', 'STEP AP242 / STL / glTF hub assembly (Suite 02)', 'PNG/SVG'] },
   params: [
     { key: 'mode', label: 'Experiment mode', type: 'select', group: 'Experiment', default: 'atmospheric', options: [{ value: 'actuator', label: 'Actuator-only (single cartridge cycle)' }, { value: 'hub', label: 'Hub-only, imposed laboratory ΔT' }, { value: 'atmospheric', label: 'Full atmospheric (coupled supply)' }] },
-    { key: 'grade', label: 'Actuator alloy', type: 'select', group: 'Actuator', default: 'niti-lowT', options: SMAS.map(m => ({ value: m.id, label: m.name })), auto: (c) => { const o = c.upstream('s15'); return o?.grade ? { value: o.grade, prov: 'coupled' } : { value: c.store.material('actuator', 'niti-lowT'), prov: 'library' }; } },
+    { key: 'grade', label: 'Actuator alloy', type: 'select', group: 'Actuator', default: 'nitcu', options: SMAS.map(m => ({ value: m.id, label: m.name })), auto: (c) => { const o = c.upstream('s15'); return o?.grade ? { value: o.grade, prov: 'coupled' } : { value: c.store.project.materials?.actuator || 'nitcu', prov: 'library' }; } },
     { key: 'Th', label: 'Hot-sector temperature', unit: '°C', type: 'number', min: -20, max: 200, step: 0.5, group: 'Thermal sectors', default: 25, auto: (c) => { const o = c.upstream('s14'); return o ? { value: +o.ThotIface_C.toFixed(2), prov: 'coupled' } : { value: +((c.env?.T ?? 20) + 5).toFixed(1), prov: 'hypothetical' }; } },
     { key: 'Tc', label: 'Cold-sector temperature', unit: '°C', type: 'number', min: -40, max: 150, step: 0.5, group: 'Thermal sectors', default: 20, auto: (c) => { const o = c.upstream('s14'); return o ? { value: +o.TcoldIface_C.toFixed(2), prov: 'coupled' } : { value: +(c.env?.T ?? 20).toFixed(1), prov: 'hypothetical' }; } },
     { key: 'hotSector', label: 'Hot-sector angle', unit: '°', type: 'range', min: 30, max: 300, step: 5, group: 'Thermal sectors', default: 180 },
     { key: 'sectorCenter', label: 'Hot-sector centre (cam phase)', unit: '°', type: 'range', min: 0, max: 359, step: 1, group: 'Thermal sectors', default: 80, help: '90° aligns the hot sector with the falling side of the cam; thermal lag shifts the optimum earlier (see phasing sweep).' },
+    { key: 'autoKf', label: 'Optimise flexure stiffness automatically', type: 'bool', group: 'Cam', default: true, help: 'Maximises net work after friction while keeping peak alloy stress ≤ 0.8 σ_y.' },
+    { key: 'autoSector', label: 'Optimise hot-sector angle automatically', type: 'bool', group: 'Thermal sectors', default: true, help: 'Revision 2 (D7): sector angle and cam phase chosen jointly for maximum net work per revolution.' },
+    { key: 'matchAlloy', label: 'Use transformation temperatures matched to the sectors', type: 'bool', group: 'Actuator', default: true, help: 'Same composition tuning as Suite 15 (D5).' },
     { key: 'autoPhase', label: 'Optimise hot-sector phasing automatically', type: 'bool', group: 'Thermal sectors', default: true, help: 'Generated design: selects the sector centre that maximises net work for the current speed and ΔT.' },
     { key: 'hc', label: 'Sector interface conductance', unit: 'W/m²K', type: 'number', min: 200, max: 100000, step: 100, group: 'Thermal sectors', default: 8000 },
     { key: 'vKmh', label: 'Vehicle speed', unit: 'km/h', type: 'range', min: 0, max: 60, step: 1, group: 'Operating point', default: 20 },
@@ -107,14 +111,25 @@ export default {
 
   async run(p, ctx) {
     const out = { kpis: [], charts: [], tables: [], verdicts: [], recs: [], checks: [], explain: [], views: [] };
-    const mat = get(p.grade); if (!mat) throw new Error('Unknown alloy');
+    const mat0 = get(p.grade); if (!mat0) throw new Error('Unknown alloy');
+    const s15u = ctx.upstream('s15');
+    let alloyShift = 0;
+    if (p.matchAlloy !== false) alloyShift = s15u?.grade === p.grade && Number.isFinite(s15u?.tShift_K) ? s15u.tShift_K : matchAlloy(mat0, { Th: p.Th, Tc: p.Tc, sH: 150, sL: 20 }).shift;
+    const mat = capStrain({ ...mat0, Ms: mat0.Ms + alloyShift, Mf: mat0.Mf + alloyShift, As: mat0.As + alloyShift, Af: mat0.Af + alloyShift }, (s15u?.epsAmp ?? 1) / 100);
     if (p.Th <= p.Tc) throw new Error('Hot sector must be warmer than the cold sector.');
     const veh = ctx.vehicle, s10 = ctx.upstream('s10'), s14 = ctx.upstream('s14');
     const v = kmh(Math.max(p.vKmh, 0.5)), omega = v / p.R, rpm = omega * 60 / (2 * Math.PI), fRev = omega / (2 * Math.PI);
     const A = p.t * p.w * 1e-6, L = p.L / 1000;
     const q = { Th: p.Th, Tc: p.Tc, omega, a: p.camAmp / 1000, lobes: p.lobes, c2: p.c2, hotSector: p.hotSector * Math.PI / 180, sectorCenter: p.sectorCenter * Math.PI / 180, dpre: p.dpre / 1000, A, L, t: p.t / 1000, kf: p.kf * 1000, hc: p.hc, wFace: p.w / 1000 };
     ctx.progress(0.05, 'phasing');
-    const centers = linspace(0, 345, 24), phaseW = centers.map(cdeg => simulateCartridge(mat, { ...q, sectorCenter: cdeg * Math.PI / 180 }, { revs: 3, nTheta: 360 }).Wtau * p.nCart);
+    // D7: flexure stiffness chosen for maximum net cartridge work after contact friction, with peak alloy stress ≤ 0.8 σ_y
+    let kfUsed = p.kf;
+    if (p.autoKf !== false) { let best = null; for (const kf of [40, 60, 90, 130, 180, 250, 350, 500, 750, 1000, 1500, 2500]) { const Sx = simulateCartridge(mat, { ...q, kf: kf * 1000 }, { revs: 2, nTheta: 180 }); const net = Sx.Wtau - mean(Sx.rec.F.map(F => p.mu * F * p.rc)) * 2 * Math.PI; if (Sx.Fmax / A / 1e6 <= 0.8 * (mat.sy || 450) && (!best || net > best.net)) best = { kf, net }; } if (best) { kfUsed = best.kf; q.kf = best.kf * 1000; } await ctx.yield(); }
+    // D7: joint optimisation of hot-sector angle and cam phase (coarse scan, then the chosen sector at full resolution)
+    const centers = linspace(0, 345, 24);
+    let usedSector = p.hotSector; const sectorScan = [];
+    if (p.autoSector !== false) { let best = -Infinity; for (const sa of [90, 120, 150, 180, 210, 240, 270]) { const qq = { ...q, hotSector: sa * Math.PI / 180 }; const Wb = Math.max(...centers.filter((_, i) => i % 2 === 0).map(cd => simulateCartridge(mat, { ...qq, sectorCenter: cd * Math.PI / 180 }, { revs: 2, nTheta: 180 }).Wtau)); sectorScan.push({ sa, W: Wb * p.nCart }); if (Wb > best) { best = Wb; usedSector = sa; } await ctx.yield(); } q.hotSector = usedSector * Math.PI / 180; }
+    const phaseW = centers.map(cdeg => simulateCartridge(mat, { ...q, sectorCenter: cdeg * Math.PI / 180 }, { revs: 3, nTheta: 360 }).Wtau * p.nCart);
     let usedCenter = p.sectorCenter;
     if (p.autoPhase) { usedCenter = centers[phaseW.indexOf(Math.max(...phaseW))]; q.sectorCenter = usedCenter * Math.PI / 180; }
     ctx.progress(0.12, 'cartridge cycle');
@@ -144,7 +159,11 @@ export default {
     const thetas = linspace(0, 2 * Math.PI, 145), stat = thetas.map(th => staticTorque(mat, q, th, N));
     const Crr = s10?.Crr ?? veh.Crr, tauRoll = Crr * veh.mass * G0 * p.R / p.nWheels;
     const tauStatic = stat.map(s => s.tau - 1.5 * p.mu * s.Fsum * p.rc), tauResist = tauRoll + bearingW / 5 / p.nWheels;
-    const dead = tauStatic.filter(t => t < tauResist).length / tauStatic.length, startupOK = dead === 0;
+    const dead = tauStatic.filter(t => t < tauResist).length / tauStatic.length, selfStart = dead === 0;
+    // D7: start-up from the elastic buffer — energy to turn every driven wheel through one cartridge pitch against the
+    // starting resistance plus accelerate the vehicle to 2 km/h, with a factor 3 margin, must be available in Suite 18.
+    const s18u = ctx.upstream('s18'), Estart = 3 * (tauResist * p.nWheels * 2 * Math.PI / N + 0.5 * veh.mass * kmh(2) ** 2), bufE = s18u?.Euse_J ?? 10000; // Revision 2 buffer design (D8: 10 kJ usable) until Suite 18 is run
+    const bufferStart = !selfStart && bufE >= Estart, startupOK = selfStart || bufferStart;
     // structural checks
     const mc = p.cartMass / 1000, Fcent = mc * omega ** 2 * p.rc, ring = get(ctx.store.material('cartridgeHousing', 'ti-6al4v')), Aring = p.ringT * 1e-6;
     const hoop = (ring.rho * omega ** 2 * p.rc ** 2 + N * mc * omega ** 2 * p.rc / (2 * Math.PI * Aring)) / 1e6, SFring = ring.sy / Math.max(hoop, 1e-9);
@@ -163,7 +182,7 @@ export default {
     const K = (label, value, unit, explain, prov, status) => out.kpis.push({ label, value, unit, explain, prov, status });
     const isAct = p.mode === 'actuator';
     K('Wheel speed', rpm, 'rpm', `${p.vKmh} km/h on a ${p.R} m wheel (spec: 20 km/h ≈ 177 rpm, 40 km/h ≈ 212 rpm at… see table).`, 'calc');
-    K('Thermal cycle frequency', fRev * p.lobes, 'Hz', `Residence time per sector ≈ ${fmt(p.hotSector / 360 / fRev, 3)} s hot, ${fmt((360 - p.hotSector) / 360 / fRev, 3)} s cold.`, 'calc');
+    K('Thermal cycle frequency', fRev * p.lobes, 'Hz', `Residence time per sector ≈ ${fmt(usedSector / 360 / fRev, 3)} s hot, ${fmt((360 - usedSector) / 360 / fRev, 3)} s cold.`, 'calc');
     K('Cartridge temperature swing', `${fmt(S.Tmin, 4)} → ${fmt(S.Tmax, 4)}`, '°C', `Sectors at ${p.Tc} / ${p.Th} °C. A small swing means the residence time is too short for heat transfer.`, 'calc');
     K('Phase-fraction swing Δξ', S.dxi, '', 'How much of each cartridge actually transforms per revolution.', 'calc', S.dxi > 0.3 ? 'ok' : S.dxi > 0.05 ? 'warn' : 'bad');
     K('Net work per cartridge per rev', S.Wtau, 'J', 'After reset work (cold-side compression) — friction excluded. Spec development target ≈ 3.54 J.', 'calc', S.Wtau >= 3.54 ? 'ok' : S.Wtau > 0 ? 'warn' : 'bad');
@@ -181,6 +200,10 @@ export default {
       K('Dead start-up positions', dead * 100, '% of angles', `Static torque below the starting resistance ${fmt(tauResist, 3)} N·m per wheel.`, 'calc', startupOK ? 'ok' : 'bad');
     }
     K('Peak actuator stress', sPeak, 'MPa', `Allowable ≈ ${sAllow} MPa for ${mat.name}; the compliant shoe (k_f) limits it.`, 'calc', sPeak < sAllow ? 'ok' : 'bad');
+    K('Flexure stiffness used', kfUsed, 'N/mm', p.autoKf !== false ? 'Generated: maximum net work after friction with peak stress ≤ 0.8 σ_y.' : 'User-specified.', p.autoKf !== false ? 'generated' : 'user');
+    K('Hot-sector angle used', usedSector, '°', p.autoSector !== false ? 'Generated: joint optimisation of sector angle and phase for maximum net work per revolution (D7).' : 'User-specified.', p.autoSector !== false ? 'generated' : 'user');
+    K('Alloy transformation shift', alloyShift, 'K', s15u?.grade === p.grade ? 'Matched alloy from Suite 15.' : 'Matched with the Suite 15 rule (σ_H 150, σ_L 20 MPa).', 'generated');
+    K('Start-up', selfStart ? 'self-starting' : bufferStart ? 'via buffer release' : 'NOT possible', '', `Static torque scan: ${fmt(dead * 100, 3)} % dead angles. Buffer start needs ${fmt(Estart, 3)} J; ${s18u ? 'Suite 18 provides' : 'Revision 2 buffer design (D8, Suite 18 not yet run) provides'} ${fmt(bufE, 4)} J.`, s18u ? 'coupled' : 'estimated', startupOK ? 'ok' : 'bad');
     K('Hot-sector centre used', usedCenter, '°', p.autoPhase ? 'Generated by the phasing optimiser.' : 'User-specified.', p.autoPhase ? 'generated' : 'user');
     K('Containment-ring hoop stress / SF', `${fmt(hoop, 3)} MPa / ${fmt(SFring, 3)}`, '', `${ring.name}; centrifugal load per cartridge ${fmt(Fcent, 3)} N.`, 'calc', SFring > 3 ? 'ok' : 'bad');
     K('Cam Hertz contact pressure', pHertz, 'MPa', `Roller Ø12 mm × 10 mm on ${cam.name}; allowable ≈ ${fmt(pAllow, 4)} MPa.`, 'calc', pHertz < pAllow ? 'ok' : 'bad');
@@ -188,7 +211,7 @@ export default {
     // verdicts
     out.verdicts.push({ test: 'Positive net work per revolution (after reset work and losses)', status: (isAct ? S.Wtau : Wrev) > 0 ? 'pass' : 'fail', detail: isAct ? `${fmt(S.Wtau, 4)} J per cartridge cycle.` : `${fmt(Wrev, 4)} J per wheel revolution; gross cartridge work ${fmt(mean(tauGross) * 2 * Math.PI, 4)} J, friction ${fmt(mean(fricC) * N * 2 * Math.PI, 4)} J, bearing ${fmt(tauBear * 2 * Math.PI, 4)} J.`, fix: 'Increase ΔT and residence time, phase the hot sector to the falling cam flank, use lower-hysteresis alloy, reduce friction.' });
     if (!isAct) {
-      out.verdicts.push({ test: 'Self-starting from every initial angle', status: startupOK ? 'pass' : 'fail', detail: startupOK ? `Minimum static torque ${fmt(min(tauStatic), 3)} N·m > resistance ${fmt(tauResist, 3)} N·m.` : `${fmt(dead * 100, 3)} % of initial angles are dead positions (min ${fmt(min(tauStatic), 3)} N·m vs ${fmt(tauResist, 3)} N·m needed).`, fix: 'More cartridges / lobes to fill dead zones, larger hot sector, or a buffer-assisted first stroke (Suite 18).' });
+      out.verdicts.push({ test: 'Start-up from every initial angle (self or buffer-assisted)', status: selfStart ? 'pass' : bufferStart ? 'pass' : 'fail', detail: bufferStart ? `Dead positions at ${fmt(dead * 100, 3)} % of angles are bridged by releasing ${fmt(Estart, 3)} J from the elastic buffer (${fmt(bufE, 4)} J available, Suite 18) — D7 start-up strategy.` : selfStart ? `Minimum static torque ${fmt(min(tauStatic), 3)} N·m > resistance ${fmt(tauResist, 3)} N·m.` : `${fmt(dead * 100, 3)} % of initial angles are dead positions (min ${fmt(min(tauStatic), 3)} N·m vs ${fmt(tauResist, 3)} N·m needed).`, fix: 'More cartridges / lobes to fill dead zones, larger hot sector, or a buffer-assisted first stroke (Suite 18).' });
       out.verdicts.push({ test: 'Thermal supply sustains the cycle frequency', status: p.mode !== 'atmospheric' ? 'warn' : supplyFrac >= 1 ? 'pass' : 'fail', detail: p.mode !== 'atmospheric' ? 'Imposed heat supply — does not demonstrate atmospheric-only operation.' : `Demand ${fmt(Qdemand, 3)} W vs available ${fmt(Qavail, 3)} W → ${fmt(supplyFrac * 100, 3)} % of required heat.` });
       out.verdicts.push({ test: `Meets road demand at ${p.vKmh} km/h`, status: Psustain >= demand ? 'pass' : 'fail', detail: Psustain >= demand ? `${fmt(Psustain, 3)} W ≥ ${fmt(demand, 3)} W.` : `Sustainable ${fmt(Psustain, 3)} W vs required ${fmt(demand, 3)} W — explicit power deficit ${fmt(deficit, 3)} W. The vehicle must slow, use wind or stored energy, or stop.` });
       out.verdicts.push({ test: 'Energy audit (no energy creation)', status: S.Qin <= 0 || S.Wel / S.Qin <= etaC + 1e-6 ? 'pass' : 'fail', detail: `Cycle efficiency ${fmt(S.Qin > 0 ? S.Wel / S.Qin * 100 : 0, 3)} % ≤ Carnot ${fmt(etaC * 100, 3)} %.` });
@@ -203,6 +226,7 @@ export default {
     out.charts.push({ title: 'Cartridge force–extension loop (work per revolution = enclosed area)', type: 'line', x: { label: 'Imposed extension δ', unit: 'mm' }, y: { label: 'Cartridge force', unit: 'N' }, series: [{ name: 'Cycle', x: S.rec.d.map(d => d * 1000), y: S.rec.F }], explain: 'Clockwise loop = net positive work delivered to the wheel: high force while the cam lets the cartridge contract (hot), low force while it is stretched (cold).' });
     if (!isAct) out.charts.push({ title: 'Hub power vs road demand across speed', type: 'line', x: { label: 'Vehicle speed', unit: 'km/h' }, y: { label: 'Power', unit: 'W' }, series: [{ name: p.mode === 'atmospheric' ? 'Sustainable hub power (supply-limited)' : 'Hub power (imposed supply)', x: speeds, y: sweep.map(r => r.P) }, { name: 'Road-load demand', x: speeds, y: sweep.map(r => r.D), color: '#ef4444' }, { name: 'Backup design targets', x: [10, 20, 30, 40, 60], y: [100, 200, 350, 600, 1500], mode: 'markers', color: '#a78bfa', r: 5 }], annotations: vmax ? [{ type: 'vline', x: vmax, label: `max ${vmax.toFixed(0)} km/h`, color: '#22c55e' }] : [], explain: 'Where the hub curve lies below the red demand curve the vehicle cannot hold that speed on hub power alone. Purple points are the specification’s 100–1500 W backup targets.' });
     if (!isAct) out.charts.push({ title: 'Self-starting: static torque vs initial wheel angle', type: 'line', x: { label: 'Initial wheel angle', unit: '°' }, y: { label: 'Static torque per wheel', unit: 'N·m' }, series: [{ name: 'Static torque (after static friction)', x: thetas.map(t => t * 180 / Math.PI), y: tauStatic }], annotations: [{ type: 'hline', y: tauResist, label: 'starting resistance', color: '#ef4444' }], explain: 'With the car stationary, cartridges sitting in the hot sector push on the cam. Any angle where the curve is below the red line is a dead position from which the wheel cannot start.' });
+    if (sectorScan.length) out.charts.push({ title: 'Hot-sector angle optimisation (best phase at each angle)', type: 'line', x: { label: 'Hot-sector angle', unit: '°' }, y: { label: 'Gross work per wheel rev', unit: 'J' }, series: [{ name: 'max over phase', x: sectorScan.map(r => r.sa), y: sectorScan.map(r => r.W), mode: 'lines+markers' }], annotations: [{ type: 'vline', x: usedSector, label: 'selected' }], explain: 'A larger hot sector gives more heating time but less cooling time; the optimum balances both residence times against the cam geometry.' });
     out.charts.push({ title: 'Hot-sector phasing optimisation', type: 'line', x: { label: 'Hot-sector centre', unit: '°' }, y: { label: 'Gross work per wheel rev', unit: 'J' }, series: [{ name: 'W(N cartridges)', x: centers, y: phaseW }], annotations: [{ type: 'vline', x: usedCenter, label: p.autoPhase ? 'auto-selected' : 'current' }], explain: 'Placing the hot sector where the cam lets cartridges contract maximises work; thermal lag shifts the best phase.' });
     out.charts.push({ title: 'Heat demand vs available supply', type: 'bar', categories: ['Hub heat demand', 'Available heat', 'Wheel power (gross)', 'Road demand'], series: [{ name: 'W', values: [Qdemand, Number.isFinite(Qavail) ? Qavail : 0, PwheelGross, demand], colors: ['#f97316', '#22c55e', '#38bdf8', '#ef4444'] }], y: { label: 'Power', unit: 'W' }, showValues: true, explain: 'The hub cannot run faster than its heat supply allows; in atmospheric mode the available heat comes from Suites 13–14.' });
     // tables
@@ -210,19 +234,11 @@ export default {
     out.tables.push({ title: 'Specification duty points recomputed for this geometry', cols: ['Quantity', 'This design', 'Specification reference'], rows: [['Wheel speed at 20 km/h', kmh(20) / p.R * 60 / (2 * Math.PI), '177 rpm'], ['Wheel speed at 40 km/h', om40 * 60 / (2 * Math.PI), '212 rpm'], ['Torque for 600 W at 40 km/h (total)', P600 / om40, '17.2 N·m'], ['Work per revolution for 600 W', P600 / (om40 / (2 * Math.PI)), '170 J'], [`Work per cartridge per rev (${N * p.nWheels} cartridges)`, P600 / (om40 / (2 * Math.PI)) / (N * p.nWheels), '3.54 J'], ['Average force over 5 mm stroke', P600 / (om40 / (2 * Math.PI)) / (N * p.nWheels) / 0.005, '708 N'], ['Cycle frequency at 40 km/h', om40 / (2 * Math.PI), '3.54 Hz'], ['Time per half-revolution sector', Math.PI / om40, '0.141 s'], ['Road demand 20 / 40 km/h', `${fmt(demand20, 3)} / ${fmt(demand40, 3)} W`, '124 / 406 W'], ['Carnot heat for 600 W at 293/288 K', 600 / (1 - 288 / 293), '35.2 kW']] });
     out.tables.push({ title: 'Energy accounting per wheel revolution', cols: ['Term', 'Value (J)'], rows: [['Gross cartridge work (N × ∮τdφ)', S.Wtau * N], ['Rolling-contact friction', -mean(fricC) * N * 2 * Math.PI], ['Bearing loss', -tauBear * 2 * Math.PI], ['Net work per wheel', Wrev], ['Heat absorbed (N cartridges)', S.Qin * N], ['Heat rejected (N cartridges)', S.Qout * N]] });
     out.tables.push({ title: 'Structural & durability checks', cols: ['Check', 'Value', 'Limit'], rows: [['Centrifugal load per cartridge', `${fmt(Fcent, 3)} N`, '—'], ['Containment ring hoop stress', `${fmt(hoop, 3)} MPa`, `σ_y ${ring.sy} MPa`], ['Peak cartridge force', `${fmt(S.Fmax, 4)} N`, '—'], ['Hertz contact pressure', `${fmt(pHertz, 4)} MPa`, `${fmt(pAllow, 4)} MPa`], ['Thermal radial growth', `${fmt(thermalGrowth, 3)} mm`, `clearance ${p.clear} mm`], ['Actuator fatigue', `${fmt(fat, 3)} cycles`, '≥ 10⁸ for vehicle life']] });
-    // 3D animated hub
-    out.views.push({ label: '3D hub animation', icon: '⚙', render: async (el) => {
-      const [{ viewer }, { hubAssembly }, { cmap }] = await Promise.all([import('../core/viz3d.js'), import('../core/cad.js'), import('../core/chart.js')]);
-      el.append(h('p', { class: 'small muted' }, 'Rotating wheel, cartridges coloured by solved temperature (blue = cold sector temperature, red = hot). Stationary cam and hot (red) / cold (blue) sectors stay fixed. Cam amplitude exaggerated ×4 for visibility; playback slowed.'));
-      const box = h('div'); el.append(box); const V = await viewer(box, { height: 420, grid: false });
-      const asm = hubAssembly({ R: p.R, nCart: N, hotSector: p.hotSector, camAmp: q.a * 4 });
-      const objs = asm.parts.map(m => V.add(m)); V.viewDir(0.25, -0.5, 0.55);
-      const rot = objs.filter(o => !/cam|sector/i.test(o.name)); const carts = objs.filter(o => o.userData.cartridge !== undefined);
-      let th = 0; const rate = Math.min(1.2, omega) ;
-      V.animate = (dt) => { th += rate * dt * 0.5; for (const o of rot) o.rotation.z = th; for (const o of carts) { const phi = wrap(th + 2 * Math.PI * o.userData.cartridge / N - q.sectorCenter + Math.PI / 2); const k = Math.min(nT - 1, Math.floor(phi / (2 * Math.PI) * nT)); const c = cmap((S.rec.T[k] - p.Tc) / ((p.Th - p.Tc) || 1), 'coolwarm'); o.material.color.setRGB(c[0] / 255, c[1] / 255, c[2] / 255); } };
-    } });
+    // 3D animated hub (solved cartridge states vs wheel angle)
+    out.views.push({ label: '3D hub drive (solved cycle)', icon: '⚙', render: (el) => view3dHub(el, { S, tauTot, N, nT, p: { ...p, hotSector: usedSector }, q, omega, Wrev, Psustain, isAct, mat }) });
+    out.views.push({ label: '2D animation: hub cross-section', icon: '🎞', render: (el) => anim2dHub(el, { S, tauTot, N, nT, p: { ...p, hotSector: usedSector }, Wrev, omega }) });
     // recs
-    if (S.dxi < 0.3) out.recs.push({ level: 'critical', text: `Cartridges transform only Δξ = ${fmt(S.dxi, 3)} per revolution: residence times of ${fmt(p.hotSector / 360 / fRev, 3)} s are too short or ΔT too small. Thinner lamellae, higher sector conductance, more lobes at lower speed, or lower speed.`, basis: 'Angle-resolved thermal response' });
+    if (S.dxi < 0.3) out.recs.push({ level: 'critical', text: `Cartridges transform only Δξ = ${fmt(S.dxi, 3)} per revolution: residence times of ${fmt(usedSector / 360 / fRev, 3)} s are too short or ΔT too small. Thinner lamellae, higher sector conductance, more lobes at lower speed, or lower speed.`, basis: 'Angle-resolved thermal response' });
     if (!isAct && !startupOK) out.recs.push({ level: 'warn', text: 'Dead start-up positions exist; add cartridges, use a 2-lobe cam with matched sectors, or release a bistable buffer cell for the first stroke.', basis: 'Static torque scan' });
     if (p.mu > 0.01) out.recs.push({ level: 'warn', text: `Friction coefficient ${p.mu} consumes ${fmt(mean(fricC) * N * 2 * Math.PI, 3)} J/rev — use rolling-element followers (μ ≈ 0.002).`, basis: 'Energy accounting' });
     if (!isAct && deficit > 0) out.recs.push({ level: 'critical', text: `Power deficit ${fmt(deficit, 3)} W at ${p.vKmh} km/h. The hub cannot replace wind propulsion under these conditions; it can at best extend range at lower speed${vmax ? ` (≤ ${vmax.toFixed(0)} km/h)` : ''}.`, basis: 'Hub power vs road demand' });
@@ -231,9 +247,79 @@ export default {
     out.recs.push({ level: 'sustain', text: 'Design cartridges as replaceable modules with alloy recovery; the wheel-integrated hub avoids gearbox/motor materials but concentrates high-embodied-energy NiTi — life (cycles) dominates its footprint.', basis: 'Life-cycle perspective' });
     out.explain.push({ title: 'How torque is produced', text: 'Each cartridge is stretched by the cam on one side of the wheel (cold, soft martensite, low force) and allowed to contract on the other (hot, austenite, high force). The axle-fixed cam converts this force asymmetry into tangential torque τ = −F dδ/dφ. Net work is the difference between work released on the contracting flank and work absorbed on the stretching flank, minus friction and bearing losses.' });
     out.explain.push({ title: 'Why heat supply limits speed', text: 'Faster rotation shortens the time each cartridge spends in each sector, so it transforms less per revolution; at the same time it needs heat at a higher rate. The atmospheric mode caps the hub at the heat the environment actually supplies (Suites 13–14).' });
-    out.outputs = { Wrev_J: isAct ? S.Wtau : Wrev, Pwheel_W: isAct ? 0 : Psustain, PwheelGross_W: PwheelGross, tauMean_Nm: tauMean, torqueRipple: ripple, startupOK, heatDemand_W: Qdemand, deficit_W: deficit, feasible: !isAct && Psustain >= demand && startupOK && Wrev > 0 && p.mode === 'atmospheric', vmax_kmh: vmax, mode: p.mode, WcartRev_J: S.Wtau, dxi: S.dxi, Qavail_W: Number.isFinite(Qavail) ? Qavail : null };
+    out.outputs = { selfStart, bufferStart, hotSector_deg: usedSector, alloyShift_K: alloyShift, Wrev_J: isAct ? S.Wtau : Wrev, Pwheel_W: isAct ? 0 : Psustain, PwheelGross_W: PwheelGross, tauMean_Nm: tauMean, torqueRipple: ripple, startupOK, heatDemand_W: Qdemand, deficit_W: deficit, feasible: !isAct && Psustain >= demand && startupOK && Wrev > 0 && p.mode === 'atmospheric', vmax_kmh: vmax, mode: p.mode, WcartRev_J: S.Wtau, dxi: S.dxi, Qavail_W: Number.isFinite(Qavail) ? Qavail : null };
     out.headline = isAct ? `Actuator-only: ${fmt(S.Wtau, 4)} J per cartridge cycle at ${fmt(fRev, 3)} Hz (Δξ ${fmt(S.dxi, 3)}).` : `${p.mode === 'atmospheric' ? 'Atmospheric' : 'Imposed-ΔT'} hub at ${p.vKmh} km/h: ${fmt(Wrev, 4)} J/rev per wheel, sustainable ${fmt(Psustain, 4)} W vs demand ${fmt(demand, 4)} W${deficit > 0 ? ` → deficit ${fmt(deficit, 4)} W` : ' — demand met'}; start-up ${startupOK ? 'OK' : 'fails at ' + fmt(dead * 100, 3) + ' % of angles'}.`;
     out.headlineKind = !isAct && deficit === 0 && startupOK ? 'ok' : 'warn';
     return out;
   },
 };
+
+// Animated 3D direct-rim hub: every cartridge's temperature, martensite fraction and cam force are the solved
+// angle-resolved states (cartridge i is phase-shifted by i/N of a revolution, exactly as in the torque summation);
+// the torque arrow and running work counter integrate the solved net torque τ(θ). Cam amplitude drawn ×4.
+async function view3dHub(el, { S, tauTot, N, nT, p, q, omega, Wrev, Psustain, isAct, mat }) {
+  const [{ viewer }, { playback, hud, legend3d }, { hubAssembly }, { cmap }, { h }] = await Promise.all([import('../core/viz3d.js'), import('../core/sim3d.js'), import('../core/cad.js'), import('../core/chart.js'), import('../core/ui.js')]);
+  let colorBy = 'T';
+  const sel = h('select', { onchange: (e) => { colorBy = e.target.value; } }, h('option', { value: 'T' }, 'Cartridge colour: temperature'), h('option', { value: 'xi' }, 'Cartridge colour: martensite fraction'), h('option', { value: 'F' }, 'Cartridge colour: cam force'));
+  el.append(h('p', { class: 'small muted' }, `Solved per cartridge and wheel angle: temperature in the hot/cold sectors (residence-time heat transfer), ${mat.name} phase fraction, cartridge force on the stationary cam, and the summed net wheel torque after friction and bearing loss. Yellow arrows = cam contact force (∝ N); green/red tangential arrow = net wheel torque (positive/negative). Playback is slowed; the HUD shows real time at ${p.vKmh} km/h.`), sel);
+  const wrap = h('div'); el.append(wrap);
+  const V = await viewer(wrap, { height: 460, grid: false }); const THREE = V.THREE;
+  const asm = hubAssembly({ R: p.R, nCart: N, hotSector: p.hotSector, camAmp: q.a * 4 });
+  const objs = asm.parts.map(m => ({ m, o: V.add(m) }));
+  const phi = S.rec.phi, deg = phi.map(f => ((f % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI));
+  // hot-sector centre in the solved angle frame (circular mean of hot samples) → rotate the stationary sector meshes to match
+  let cx = 0, cy = 0; S.rec.hot.forEach((hh, i) => { if (hh) { cx += Math.cos(deg[i]); cy += Math.sin(deg[i]); } }); const hotC = Math.atan2(cy, cx);
+  for (const { o } of objs) if (/sector/i.test(o.name)) o.rotation.z = hotC - Math.PI / 2;
+  const carts = objs.filter(x => x.m.cartridge !== undefined).map(x => x.o), shoes = objs.filter(x => /Flexure shoe/.test(x.o.name)).map(x => x.o);
+  const rotating = objs.filter(x => /Rim|Tyre|Containment/.test(x.o.name)).map(x => x.o);
+  const rc = p.R * 0.42, Fmax = Math.max(...S.rec.F.map(Math.abs), 1e-9), tmax = Math.max(...tauTot.map(Math.abs), 1e-9);
+  const fArrows = carts.map(() => { const a = new THREE.ArrowHelper(new THREE.Vector3(-1, 0, 0), new THREE.Vector3(), 0.05, 0xfacc15, 0.015, 0.01); V.root.add(a); return a; });
+  const tArrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, p.R + 0.04, 0.05), 0.1, 0x22c55e, 0.03, 0.02); V.root.add(tArrow);
+  V.viewDir(0.15, -0.45, 0.8);
+  const H = hud(wrap); const leg = legend3d(wrap, { title: 'Cartridge temperature', lo: p.Tc, hi: p.Th, unit: ' °C', cmapName: 'coolwarm' });
+  const cum = [0]; for (let k = 1; k < nT; k++) cum.push(cum[k - 1] + 0.5 * (tauTot[k] + tauTot[k - 1]) * (phi[k] - phi[k - 1]));
+  const T0 = Math.min(...S.rec.T), T1 = Math.max(...S.rec.T);
+  playback(wrap, { duration: 720, rate: 36, label: 'Wheel rotation', unit: '°', onFrame: (t) => {
+    const rev = Math.floor(t / 360), k = Math.min(nT - 1, Math.floor((t % 360) / 360 * nT));
+    const thW = deg[k];
+    for (const o of rotating) o.rotation.z = thW;
+    carts.forEach((o, i) => {
+      const j = (k + Math.round(i * nT / N)) % nT, ang = deg[j], base = 2 * Math.PI * i / N;
+      o.rotation.z = ang - base; if (shoes[i]) shoes[i].rotation.z = ang - base;
+      const v = colorBy === 'T' ? (S.rec.T[j] - p.Tc) / ((p.Th - p.Tc) || 1) : colorBy === 'xi' ? S.rec.xi[j] : S.rec.F[j] / Fmax, c = cmap(v, colorBy === 'T' ? 'coolwarm' : colorBy === 'xi' ? 'viridis' : 'inferno');
+      o.material.color.setRGB(c[0] / 255, c[1] / 255, c[2] / 255);
+      const a = fArrows[i], L = 0.012 + 0.07 * Math.abs(S.rec.F[j]) / Fmax, r0 = rc * 0.62 + L + 0.01;
+      a.position.set(r0 * Math.cos(ang), r0 * Math.sin(ang), 0.04); a.setDirection(new THREE.Vector3(-Math.cos(ang), -Math.sin(ang), 0)); a.setLength(L, 0.012, 0.008);
+    });
+    leg.set(colorBy === 'T' ? Math.min(p.Tc, T0) : 0, colorBy === 'T' ? Math.max(p.Th, T1) : colorBy === 'xi' ? 1 : Fmax);
+    const tau = tauTot[k], L = 0.03 + 0.18 * Math.abs(tau) / tmax; tArrow.setColor(tau >= 0 ? 0x22c55e : 0xef4444); tArrow.setDirection(new THREE.Vector3(tau >= 0 ? 1 : -1, 0, 0)); tArrow.setLength(L, 0.03, 0.02);
+    const W = rev * Wrev + cum[k];
+    H.set([['Wheel motion', Wrev > 0 ? 'driven by solved net torque' : 'IMPOSED at test speed for visualisation', Wrev > 0 ? '#22c55e' : '#f59e0b'], ['Wheel angle', fmt(t % 360, 4) + '°'], ['Real time', fmt(t * Math.PI / 180 / Math.max(omega, 1e-9), 3) + ' s'], ['Net wheel torque', fmt(tau, 4) + ' N·m', tau >= 0 ? '#22c55e' : '#ef4444'], ['Net work this run', fmt(W, 4) + ' J', W >= 0 ? '#22c55e' : '#ef4444'], ['Net work / rev (solved)', fmt(Wrev, 4) + ' J'], ['Cartridge 1 T', fmt(S.rec.T[k], 4) + ' °C'], ['Cartridge 1 ξ', fmt(S.rec.xi[k], 3)], ['Cartridge 1 force', fmt(S.rec.F[k], 4) + ' N'], ...(isAct ? [] : [['Sustainable wheel power', fmt(Psustain, 4) + ' W']])]);
+  } });
+}
+
+// 2D animated hub cross-section: stationary cam (amplitude ×4), hot/cold sectors from the solved residence pattern,
+// cartridges coloured by solved ξ at their angles, net torque τ(θ) with a cursor and the running ∮τ dθ.
+async function anim2dHub(el, { S, tauTot, N, nT, p, Wrev, omega }) {
+  const [{ anim2d }, { h }, { cmap }] = await Promise.all([import('../core/sim3d.js'), import('../core/ui.js'), import('../core/chart.js')]);
+  el.append(h('p', { class: 'small muted' }, `Solved angle-resolved states. Wheel rotation is ${Wrev > 0 ? 'driven by the solved net torque' : 'IMPOSED at the test speed for visualisation (solved net work is negative)'}; HUD shows the running integral of the solved net torque.`));
+  const deg = S.rec.phi.map(f => ((f % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI) * 180 / Math.PI), cum = [0];
+  for (let k = 1; k < nT; k++) cum.push(cum[k - 1] + 0.5 * (tauTot[k] + tauTot[k - 1]) * (S.rec.phi[k] - S.rec.phi[k - 1]));
+  const tlo = Math.min(...tauTot), thi = Math.max(...tauTot), pad = (thi - tlo) * 0.1 || 1;
+  anim2d(el, { height: 420, duration: 720, rate: 36, label: 'Wheel rotation', unit: '°', onFrame: (t, g) => {
+    g.clear(); const ctx = g.ctx, R0 = Math.min(g.H, g.W * 0.45) * 0.42, cx = R0 + 30, cy = g.H / 2, k = Math.min(nT - 1, Math.floor((t % 360) / 360 * nT));
+    // sectors
+    S.rec.hot.forEach((hh, i) => { const a = -deg[i] * Math.PI / 180; ctx.strokeStyle = hh ? 'rgba(239,68,68,.55)' : 'rgba(59,130,246,.45)'; ctx.lineWidth = 10; ctx.beginPath(); ctx.arc(cx, cy, R0 * 0.62, a - 0.02, a + 0.02); ctx.stroke(); });
+    // cam
+    ctx.strokeStyle = g.mute; ctx.lineWidth = 2; ctx.beginPath(); for (let j = 0; j <= 120; j++) { const ph = 2 * Math.PI * j / 120, r = R0 * 0.45 * (1 + 4 * (p.camAmp / 1000) / (p.rc || 0.126) * Math.cos(ph)); const x = cx + r * Math.cos(-ph), y = cy + r * Math.sin(-ph); j ? ctx.lineTo(x, y) : ctx.moveTo(x, y); } ctx.stroke();
+    // rim
+    ctx.strokeStyle = g.fg; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(cx, cy, R0, 0, 2 * Math.PI); ctx.stroke();
+    const spoke = -deg[k] * Math.PI / 180; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + R0 * Math.cos(spoke), cy + R0 * Math.sin(spoke)); ctx.stroke();
+    for (let i = 0; i < N; i++) { const j = (k + Math.round(i * nT / N)) % nT, a = -deg[j] * Math.PI / 180, c = cmap(S.rec.xi[j], 'viridis'), r = R0 * 0.78; ctx.fillStyle = `rgb(${c.map(Math.round).join(',')})`; ctx.beginPath(); ctx.arc(cx + r * Math.cos(a), cy + r * Math.sin(a), Math.max(5, R0 * 0.1), 0, 2 * Math.PI); ctx.fill(); }
+    ctx.strokeStyle = g.fg; ctx.lineWidth = 4; for (let q = 0; q < 16; q++) { const a = spoke + 2 * Math.PI * q / 16; ctx.beginPath(); ctx.moveTo(cx + R0 * 0.93 * Math.cos(a), cy + R0 * 0.93 * Math.sin(a)); ctx.lineTo(cx + R0 * 1.07 * Math.cos(a), cy + R0 * 1.07 * Math.sin(a)); ctx.stroke(); } ctx.lineWidth = 1;
+    g.text('cartridge colour = ξ (purple 0 → yellow 1); red/blue ring = hot/cold sector', 10, g.H - 8, { size: 10, color: g.mute });
+    const P = g.panel(cx + R0 + 30, 0, g.W - (cx + R0 + 30), g.H, { xr: [0, 360], yr: [tlo - pad, thi + pad], xlabel: 'Wheel angle [°]', ylabel: 'Net torque [N·m]', title: 'τ(θ) per wheel' });
+    P.line(deg.map((d, i) => (i && d < deg[i - 1]) ? NaN : d), tauTot, '#38bdf8', 2); P.hline(0, '#94a3b8'); P.vline(deg[k]); P.point(deg[k], tauTot[k], tauTot[k] >= 0 ? '#22c55e' : '#ef4444');
+    const W = Math.floor(t / 360) * Wrev + cum[k]; g.text(`τ = ${fmt(tauTot[k], 4)} N·m   ∮τdθ so far = ${fmt(W, 4)} J   (per rev ${fmt(Wrev, 4)} J)   real time ${fmt(t * Math.PI / 180 / Math.max(omega, 1e-9), 3)} s`, P.px + 4, P.py + 16, { size: 11, color: W >= 0 ? '#22c55e' : '#ef4444' });
+  } });
+}

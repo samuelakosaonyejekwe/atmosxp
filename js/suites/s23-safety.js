@@ -7,6 +7,10 @@ const FMEA = [
   ['Wing / aeroelastic', 'Flutter or divergence of morphing wing', 'Structural failure, loss of control', 10, 3, 5, 'Flutter margin ≥ 1.15 × max gust (Suite 06/08); ground vibration test; mass balancing'],
   ['Wing / aeroelastic', 'Gust overload at wing root', 'Root fracture, wing loss', 10, 4, 4, 'FORM reliability ≥ β 3.8; proof test 1.5 × limit; gust-load-alleviating twist'],
   ['Wing / aeroelastic', 'Wing cannot be unloaded (mechanism jam)', 'Uncontrolled thrust while braking / parking', 9, 4, 5, 'Redundant unloading path; weekly function check; fail-safe feathering spring'],
+  ['Wing / aeroelastic', 'Telescoping reef joint jams (cannot reef in rising wind)', 'Full span exposed above the reefing wind', 9, 3, 4, 'Dry-film / PTFE sliding bushings; reef before trips above forecast threshold; pre-trip function check'],
+  ['Wing / aeroelastic', 'Reef latch fails — unintended collapse under load', 'Sudden thrust loss, pinch hazard', 8, 2, 4, 'Positive-locking latch with visual indicator; proof load 1.5× limit at assembly'],
+  ['Wing / aeroelastic', 'Breakaway lock fails to release (no feathering)', 'Overturning in gusts', 10, 2, 5, 'Torque-limited detent calibrated at assembly; annual release-torque test (Suite 22 tolerances)'],
+  ['Wing / aeroelastic', 'Breakaway releases prematurely', 'Loss of propulsion in moderate wind', 5, 4, 3, 'Release-torque window ±10 %; re-latch from cockpit'],
   ['Wing / aeroelastic', 'Skin delamination / tearing', 'Loss of aerodynamic shape, debris', 6, 4, 4, 'UV-stabilised skin; peel-ply inspection every 6 months'],
   ['Vehicle dynamics', 'Rollover under crosswind', 'Occupant injury', 10, 5, 3, 'Envelope limit on apparent wind; automatic wing unloading threshold; wider track / lower CP'],
   ['Vehicle dynamics', 'Loss of tyre adhesion during gust', 'Lateral departure', 8, 4, 4, 'Grip margin check (Suite 11); speed restriction in wet conditions'],
@@ -59,7 +63,8 @@ export default {
     { key: 'wall', label: 'Spar wall thickness', unit: 'mm', type: 'number', min: 1, max: 20, step: 0.5, group: 'Wing-root reliability', default: 4 },
     { key: 'knock', label: 'Laminate allowable / UD strength', type: 'range', min: 0.2, max: 1, step: 0.05, group: 'Wing-root reliability', default: 0.45, help: 'Accounts for ±45/90 plies, environmental knock-down and damage tolerance (B-basis-type reduction).' },
     { key: 'betaTarget', label: 'Target reliability index β', type: 'number', min: 2, max: 5.5, step: 0.1, group: 'Wing-root reliability', default: 3.8 },
-    { key: 'epsA', label: 'NiTi strain amplitude', unit: '%', type: 'number', min: 0.2, max: 4, step: 0.1, group: 'Cartridge fatigue', default: 1.5 },
+    { key: 'epsA', label: 'NiTi strain amplitude', unit: '%', type: 'number', min: 0.2, max: 4, step: 0.1, group: 'Cartridge fatigue', default: 1.0, auto: (c) => { const o = c.upstream('s15'); return o?.epsAmp ? { value: o.epsAmp, prov: 'coupled' } : { value: 1.0, prov: 'estimated' }; }, help: 'Revision 2 (D6): 1 % amplitude.' },
+    { key: 'feather', label: 'Free-feathering wing root with breakaway (D3)', type: 'bool', group: 'Rollover envelope', default: true },
     { key: 'Nref', label: 'NiTi cycles at 3 % reference', type: 'number', min: 1e3, max: 1e6, step: 1e3, group: 'Cartridge fatigue', default: 1e4, help: 'Literature range 10³–10⁵ depending on alloy, processing and test mode.' },
     { key: 'kexp', label: 'NiTi strain–life exponent k', type: 'number', min: 2, max: 8, step: 0.1, group: 'Cartridge fatigue', default: 4.5 },
     { key: 'kmYear', label: 'Distance per year', unit: 'km', type: 'number', min: 100, max: 50000, step: 100, group: 'Usage', default: 5000 },
@@ -103,7 +108,18 @@ export default {
     const L = v.wheelbase, tr = v.track, s01 = ctx.upstream('s01'), aFront = 0.58 * L;
     const tipArm = (v.layout || 'tadpole') === 'tadpole' ? (tr / 2) * (L - aFront) / Math.hypot(L, tr / 2) : (tr / 2) * aFront / Math.hypot(L, tr / 2);
     const cosPsi = L / Math.hypot(L, tr / 2), hcp = v.wheelRadius + v.height * 0.7 + span / 2, mass = s01?.mass || v.mass;
-    const Mrest = mass * G0 * tipArm, Uroll = Math.sqrt(Mrest / (0.5 * rho * v.wingArea * p.Cs * hcp * cosPsi));
+    const Mrest = mass * G0 * tipArm, UrollLoaded = Math.sqrt(Mrest / (0.5 * rho * v.wingArea * p.Cs * hcp * cosPsi));
+    // D3: wings carry load only up to the breakaway side force, then weathervane (C_s ≈ 0.03 incl. residual drag);
+    // body side force (side area ≈ 0.75·L·H, C_s 0.8 at mid-height) always acts. Rollover is checked with these loads.
+    const mu = ctx.upstream('s10')?.muPeak ?? 0.9, ssf = ctx.upstream('s11')?.ssf ?? s01?.ssf ?? tipArm / v.cgHeight;
+    const FyBreak = Math.min(0.7 * mu * mass * G0, 0.8 * ssf * mass * G0 * v.cgHeight / hcp), Ubreak = Math.sqrt(FyBreak / (0.5 * rho * v.wingArea * p.Cs));
+    const Abody = 0.75 * v.length * (v.height + v.wheelRadius), hBody = (v.height + v.wheelRadius) / 2;
+    // Revision 2.2: deployed and reefed wing states (reefed span telescopes into the lower section)
+    const spanR = Math.min(span, v.wingReefSpan || span), areaR = v.wingArea * spanR / span, hcpR = v.wheelRadius + v.height * 0.7 + spanR / 2;
+    const rollAt = (area, hc) => { // breakaway calibrated so wing + body overturning moment stays ≤ 0.8 × restoring moment (and within 70 % of grip)
+      const UBm = Math.sqrt(0.8 * Mrest / (0.5 * rho * (area * p.Cs * hc + Abody * 0.8 * hBody) * cosPsi)), UBg = Math.sqrt(0.7 * mu * mass * G0 / (0.5 * rho * area * p.Cs)), UB = Math.min(UBm, UBg), FyB = 0.5 * rho * UB * UB * area * p.Cs; const Mo = (U) => { const q = 0.5 * rho * U * U, Fw = p.feather ? (U <= UB ? q * area * p.Cs : q * area * 0.03) : q * area * p.Cs; return (Fw * hc + q * Abody * 0.8 * hBody) * cosPsi; }; let Ur = 0; for (let U = 0.5; U <= 80; U += 0.1) { if (Mo(U) > Mrest) { Ur = U; break; } } return { Ur: Ur || 80, UB, FyB, Mo }; };
+    const RD = rollAt(v.wingArea, hcp), RR = rollAt(areaR, hcpR), Mover = RD.Mo; const UbreakD = RD.UB, FyBreakD = RD.FyB;
+    const Uroll = Math.min(RD.Ur, RR.Ur), UrollReefed = RR.Ur, UrollDeployed = RD.Ur;
     // ----- fault tree (interval bounds, per trip) -----
     const be = { brakeA: [1e-5, 1e-4], brakeB: [1e-5, 1e-4], beta: [0.05, 0.1], jam: [1e-4, 1e-3], windHigh: [1e-2, 1e-1], adhesion: [1e-4, 1e-3], highSpeed: [0.05, 0.2] };
     const envSeries = ctx.upstream('s05')?.series; if (envSeries?.length) { const fr = envSeries.filter(d => d.gust > Uroll).length / envSeries.length; be.windHigh = [Math.max(1e-4, fr * 0.5), Math.min(1, Math.max(2e-4, fr * 1.5))]; }
@@ -137,12 +153,14 @@ export default {
     k('Critical crack length (insert)', ac * 1000, 'mm', acK > ligament ? `Ligament-limited (insert half-width 15 mm); fracture-mechanics a_c would be ${fmt(acK * 1000, 3)} mm.` : `a_c from K_Ic = ${KIc} MPa√m at σ_max ${fmt(smax, 3)} MPa.`, 'calc');
     k('Crack-growth life (insert)', Ntot, 'cycles', `Paris law from a₀ = ${p.a0} mm (≈ ${fmt(Ntot / cycYrGust, 3)} years at ${cycYrGust.toLocaleString()} gust cycles/year).`, 'calc');
     k('Inspection interval (insert)', Ninsp / cycYrGust, 'years', `Growth from detectable ${p.aDet} mm to critical ÷ scatter factor 3.`, 'calc');
-    k('Rollover apparent-wind limit', Uroll, 'm/s', `Wings loaded at C_s = ${p.Cs}; tipping arm ${fmt(tipArm, 3)} m, centre of pressure ${fmt(hcp, 3)} m.`, 'calc', Uroll >= p.gust ? 'ok' : Uroll >= 0.6 * p.gust ? 'warn' : 'bad');
+    k('Rollover wind — deployed / reefed', `${fmt(UrollDeployed, 3)} / ${fmt(UrollReefed, 3)}`, 'm/s', `Deployed span ${fmt(span, 3)} m (${fmt(v.wingArea, 3)} m²) vs reefed ${fmt(spanR, 3)} m (${fmt(areaR, 3)} m²), both with breakaway feathering${p.feather ? '' : ' disabled'}.`, 'calc', Math.min(UrollDeployed, UrollReefed) >= p.gust ? 'ok' : 'bad');
+    k('Wing breakaway (feathering) wind', p.feather ? UbreakD : NaN, 'm/s', `D3 torque-limited breakaway calibrated so wing + body overturning moment ≤ 0.8 × restoring moment and side force ≤ 0.7 μmg: F_y = ${fmt(FyBreakD, 4)} N.`, 'calc');
+    k('Rollover apparent-wind limit', Uroll, 'm/s', `${p.feather ? 'Wings feathered above breakaway; ' : ''}Wings loaded at C_s = ${p.Cs}; tipping arm ${fmt(tipArm, 3)} m, centre of pressure ${fmt(hcp, 3)} m.`, 'calc', Uroll >= p.gust ? 'ok' : Uroll >= 0.6 * p.gust ? 'warn' : 'bad');
     k('Highest RPN', fm[0][6], '', `${fm[0][1]} (${fm[0][0]}).`, 'hypothetical', fm[0][6] > 200 ? 'bad' : 'warn');
     k('“Unable to stop safely” per trip (bounds)', `${top[0].toExponential(1)} … ${top[1].toExponential(1)}`, '', 'Order-of-magnitude interval from judgement-based basic events — NOT a validated probability.', 'hypothetical');
     // verdicts
     out.verdicts.push({ test: 'Wing-root structural reliability', status: F.beta >= p.betaTarget ? 'pass' : F.beta >= 2.5 ? 'warn' : 'fail', detail: `β = ${fmt(F.beta, 3)} (target ${p.betaTarget}); deterministic SF ${fmt(sfWing, 3)}.`, fix: 'Increase spar wall/depth, use higher-strength laminate, or rely on validated gust-load alleviation (Suite 08) to cut the root moment.' });
-    out.verdicts.push({ test: 'Crosswind rollover envelope', status: Uroll >= p.gust ? 'pass' : 'fail', detail: `Static tipping at ≈ ${fmt(Uroll, 3)} m/s apparent wind with wings loaded, below the ${p.gust} m/s design gust — the wings MUST be unloaded/feathered above ≈ ${fmt(Uroll / 1.25, 3)} m/s.`, fix: 'Widen the track, lower the centre of pressure (shorter wings), add mass low, or adopt automatic passive wing unloading with a validated threshold.' });
+    out.verdicts.push({ test: 'Crosswind rollover envelope', status: Uroll >= p.gust ? 'pass' : 'fail', detail: p.feather ? `Wings loaded up to breakaway at ${fmt(UbreakD, 3)} m/s (side force ${fmt(FyBreakD, 4)} N), feathered above: static tipping only at ≈ ${fmt(Uroll, 3)} m/s vs ${p.gust} m/s design gust (wings permanently loaded would tip at ${fmt(UrollLoaded, 3)} m/s).` : `Static tipping at ≈ ${fmt(Uroll, 3)} m/s apparent wind with wings loaded, ${Uroll >= p.gust ? 'above' : 'below'} the ${p.gust} m/s design gust — the wings MUST be unloaded/feathered above ≈ ${fmt(Uroll / 1.25, 3)} m/s.`, fix: 'Widen the track, lower the centre of pressure (shorter wings), add mass low, or adopt automatic passive wing unloading with a validated threshold.' });
     out.verdicts.push({ test: 'Hub cartridge durability', status: lifeYr >= 2 ? 'pass' : lifeYr >= 0.5 ? 'warn' : 'fail', detail: `${fmt(lifeYr, 3)} years (${fmt(lifeKm, 3)} km) at ${p.epsA} % strain amplitude.`, fix: 'Reduce strain amplitude below ~1 %, use fatigue-optimised NiTiCu, or design cartridges as scheduled replaceables.' });
     out.verdicts.push({ test: 'Insert damage tolerance', status: Ninsp / cycYrGust >= 1 ? 'pass' : 'warn', detail: `Inspect every ${fmt(Ninsp / cycYrGust, 3)} years; total growth life ${fmt(Ntot / cycYrGust, 3)} years.` });
     out.verdicts.push({ test: 'Quantified probability claims', status: 'info', detail: 'Fault-tree and FMEA occurrence values are judgement-based; this suite deliberately reports intervals, not precise probabilities, until component reliability data are imported.' });
@@ -186,6 +204,8 @@ export default {
     out.recs.push({ level: 'good', text: 'Adopt a recognised functional-safety style process (hazard log, safety requirements, verification evidence) and a staged test programme: unoccupied first, then an independently approved occupied programme.', basis: 'Specification Module 23 & Part B §30' });
     out.recs.push({ level: 'sustain', text: 'Design cartridges, skins and pads for replacement and recycling (NiTi and titanium have high scrap value); durability is part of sustainability — a short-lived light part can be worse over the life cycle.', basis: 'Durability–sustainability coupling' });
     out.explain.push({ title: 'Deterministic vs probabilistic', text: 'The safety factor compares nominal stress to an allowable; the reliability index β measures how many standard deviations separate the mean margin from failure, accounting for uncertain wind, aerodynamic coefficient and strength. Both are reported because a comfortable SF can hide a large scatter.' });
+    out.views.push({ label: '2D animation: crack growth & fatigue damage', icon: '🎞', render: (el) => anim2dDamage(el, { grow, a0, ac, aD, Ntot, cycYrGust, Dyr, lifeYr, epsA: p.epsA }) });
+    out.views.push({ label: '3D risk map & failure scenarios', icon: '🛡', render: (el) => view3dRisk(el, { fm, sigma, allow, CLmax: p.CLmax, gust: p.gust, Uroll, sfWing, ctx }) });
     out.outputs = { minSafetyFactor: minSF, pfWingRoot: F.pf, betaWingRoot: F.beta, fatigueLife_cycles: lifeCycles, cartridgeLife_years: lifeYr, rolloverWind_ms: Uroll, topRisks: fm.slice(0, 5).map(r => ({ mode: r[1], rpn: r[6] })) };
     out.headline = `Governing hazard: crosswind rollover at ≈${fmt(Uroll, 3)} m/s apparent wind. Wing root β = ${fmt(F.beta, 3)}, NiTi cartridges ≈ ${fmt(lifeYr, 3)} years, insert inspection every ${fmt(Ninsp / cycYrGust, 3)} years.`;
     out.headlineKind = Uroll < p.gust || F.beta < p.betaTarget ? 'warn' : 'ok';
@@ -193,3 +213,62 @@ export default {
   },
 };
 void range; void mean;
+
+// 3D vehicle coloured by FMEA risk (max RPN per component) with failure-scenario playback driven by the solved
+// models of this suite: wing-root stress σ(U) from the gust load model against the allowable, and the solved static
+// rollover wind speed. Motion after tipping onset / skid kinematics are illustrative (dynamics in Suites 11–12).
+const RISK_MAP = { 'Wing / aeroelastic': ['wingSkin', 'spar', 'rootInsert', 'leadingEdge'], 'Vehicle dynamics': ['tyre', 'wheel'], Brakes: ['brake'], Steering: ['wheel'], 'Hub drive': ['actuator'], 'Passive switching': ['actuator'], 'Energy buffer': ['actuator'], Structure: ['chassis', 'rootInsert'], Thermal: ['collector', 'radiator'] };
+async function view3dRisk(el, { fm, sigma, allow, CLmax, gust, Uroll, sfWing, ctx }) {
+  const [{ viewer }, { playback, hud, legend3d }, { vehicleAssembly }, { cmap }, { h }, mats] = await Promise.all([import('../core/viz3d.js'), import('../core/sim3d.js'), import('../core/cad.js'), import('../core/chart.js'), import('../core/ui.js'), import('../core/materials.js')]);
+  const rpn = {}; for (const r of fm) for (const c of RISK_MAP[r[0]] || []) rpn[c] = Math.max(rpn[c] || 0, r[6]);
+  const top = {}; for (const r of fm) for (const c of RISK_MAP[r[0]] || []) if (!top[c]) top[c] = r[1];
+  let mode = 'risk';
+  const sel = h('select', { onchange: (e) => { mode = e.target.value; ctl.set(0); } }, h('option', { value: 'risk' }, 'Risk map (max RPN per component)'), h('option', { value: 'gust' }, 'Scenario: gust overload → wing-root stress → rollover'), h('option', { value: 'seize' }, 'Scenario: hub seizure → wheel lock skid'));
+  el.append(h('p', { class: 'small muted' }, `Risk colours = highest FMEA RPN affecting each component (hover a part for its top failure mode). Gust scenario: wind ramps to ${fmt(1.3 * Math.max(gust, Uroll), 3)} m/s; wing colour = solved root stress / allowable (${fmt(allow, 4)} MPa) at C_L,max ${CLmax}; tipping begins at the solved static rollover speed ${fmt(Uroll, 3)} m/s (post-tip motion illustrative). Seizure scenario: one locked wheel at 20 km/h decelerating at ≈ μg/3 (kinematic illustration — see Suites 11/12 for solved dynamics).`), sel);
+  const wrap = h('div'); el.append(wrap);
+  const V = await viewer(wrap, { height: 460, grid: true }); const THREE = V.THREE;
+  const matMap = Object.fromEntries(Object.keys(mats.COMPONENTS).map(k => [k, ctx.material(k)]));
+  const asm = vehicleAssembly(ctx.vehicle, { materials: matMap });
+  const objs = asm.parts.map(m => { m.materialName = rpn[m.component] ? `max RPN ${rpn[m.component]} — ${top[m.component]}` : 'no FMEA entry'; return { comp: m.component, group: m.group, o: V.add(m) }; });
+  const pivot = new THREE.Group(); V.root.add(pivot); for (const x of objs) pivot.add(x.o);
+  V.viewDir(0.9, -1.2, 0.6);
+  let spin = 0; V.animate = (dt) => { if (mode === 'risk') { spin += dt * 0.25; V.root.rotation.z = spin; } else V.root.rotation.z = 0; };
+  const H = hud(wrap); const rv = Object.values(rpn), rLo = Math.min(...rv) * 0.8, rHi = Math.max(...rv); const leg = legend3d(wrap, { title: 'Risk priority number', lo: rLo, hi: rHi, cmapName: 'turbo' });
+  const paint = (o, v, name) => { const c = cmap(v, name); o.material.color.setRGB(c[0] / 255, c[1] / 255, c[2] / 255); };
+  const yE = -ctx.vehicle.track / 2, Umax = 1.3 * Math.max(gust, Uroll);
+  const ctl = playback(wrap, { duration: 12, label: 'Scenario time', unit: 's', onFrame: (t) => {
+    pivot.rotation.set(0, 0, 0); pivot.position.set(0, 0, 0);
+    if (mode === 'risk') { leg.set(rLo, rHi); for (const x of objs) paint(x.o, rpn[x.comp] ? (rpn[x.comp] - rLo) / ((rHi - rLo) || 1) : 0, 'turbo'); const r0 = fm[0]; H.set([['Highest RPN', `${r0[6]} — ${r0[1]}`, '#ef4444'], ['Second', `${fm[1][6]} — ${fm[1][1]}`], ['Third', `${fm[2][6]} — ${fm[2][1]}`], ['Wing-root SF', fmt(sfWing, 3)], ['Rollover wind', fmt(Uroll, 3) + ' m/s']]); return; }
+    if (mode === 'gust') {
+      const U = Umax * 0.5 * (1 - Math.cos(Math.PI * Math.min(t, 10) / 10)), ratio = sigma(U, CLmax) / allow;
+      leg.set(0, 1.5); for (const x of objs) paint(x.o, ['wingSkin', 'spar', 'rootInsert'].includes(x.comp) ? Math.min(1, ratio / 1.5) : 0.05, 'inferno');
+      const th = U > Uroll ? Math.min(28, 4 * (U - Uroll) ** 1.5) * Math.PI / 180 : 0; pivot.rotation.x = -th; pivot.position.set(0, yE - yE * Math.cos(th), yE * Math.sin(th));
+      H.set([['Wind (apparent)', fmt(U, 3) + ' m/s'], ['Root stress / allowable', fmt(ratio, 3), ratio >= 1 ? '#ef4444' : ratio > 0.67 ? '#f59e0b' : '#22c55e'], ['Root failure', ratio >= 1 ? 'YES — exceeds allowable' : 'no'], ['Rollover', U > Uroll ? 'TIPPING (beyond solved static limit)' : `margin ${fmt(Uroll - U, 3)} m/s`, U > Uroll ? '#ef4444' : '#22c55e'], ['Mitigation', 'unload/feather wings above ' + fmt(Uroll / 1.25, 3) + ' m/s']]);
+      return;
+    }
+    const v0 = 20 / 3.6, a = (ctx.upstream?.('s10')?.muPeak ?? 0.8) * 9.81 / 3, ts = v0 / a, tt = Math.min(t, ts), x = v0 * tt - 0.5 * a * tt * tt, v = Math.max(0, v0 - a * t), yaw = Math.min(25, 30 * x / (v0 * ts / 2 || 1)) * Math.PI / 180 * (t < ts ? tt / ts : 1);
+    leg.set(0, 1); for (const x2 of objs) paint(x2.o, x2.comp === 'actuator' ? 1 : x2.comp === 'tyre' ? 0.6 : 0.08, 'inferno');
+    pivot.position.set(x, 0, 0); pivot.rotation.z = yaw;
+    H.set([['Event', 'Cam seizure → wheel locked'], ['Speed', fmt(v * 3.6, 3) + ' km/h'], ['Skid distance', fmt(x, 3) + ' m'], ['Yaw (illustrative)', fmt(yaw * 180 / Math.PI, 3) + '°'], ['Mitigation', 'torque-limiting shoe + disengagement']]);
+  } });
+}
+
+// 2D animation: Paris-law crack growth a(N) of the wing-root insert (solved by integration) with the crack drawn in a
+// schematic section, and Miner fatigue damage accumulation D(t) of the NiTi cartridges at the design strain amplitude.
+async function anim2dDamage(el, { grow, a0, ac, aD, Ntot, cycYrGust, Dyr, lifeYr, epsA }) {
+  const [{ anim2d }, { h }] = await Promise.all([import('../core/sim3d.js'), import('../core/ui.js')]);
+  const as = linspace(Math.log(a0), Math.log(ac * 0.999), 120).map(Math.exp), Ns = as.map(a => grow(a0, a));
+  const yrs = Ns.map(n => n / Math.max(1, cycYrGust)), Y = yrs[yrs.length - 1] || 1, tY = Math.max(Y, Number.isFinite(lifeYr) ? lifeYr * 1.3 : 0, 1);
+  el.append(h('p', { class: 'small muted' }, `Left: solved Paris-law growth from a₀ = ${fmt(a0 * 1000, 3)} mm to the critical size ${fmt(ac * 1000, 3)} mm (${fmt(Ntot, 3)} gust cycles ≈ ${fmt(Y, 3)} years); detection threshold ${fmt(aD * 1000, 3)} mm. Right: Miner damage of NiTi cartridges at ${epsA} % strain amplitude (D = 1 at ${fmt(lifeYr, 3)} years → replacement).`));
+  anim2d(el, { height: 420, duration: tY, rate: tY / 20, label: 'Service time', unit: 'years', onFrame: (t, g) => {
+    g.clear(); let j = yrs.findIndex(y => y >= t); if (j < 0) j = yrs.length - 1; const a = as[j] * 1000;
+    const A = g.panel(0, 0, g.W * 0.45, g.H * 0.62, { xr: [0, Y * 1.05], yr: [0, ac * 1000 * 1.1], xlabel: 'Years (gust cycles / year)', ylabel: 'Crack length a [mm]', title: `Insert crack a = ${fmt(a, 3)} mm` });
+    A.line(yrs, as.map(v => v * 1000), '#ef4444', 2); A.hline(aD * 1000, '#f59e0b'); A.hline(ac * 1000, '#ef4444'); A.vline(Math.min(t, Y)); A.point(yrs[j], a);
+    // schematic section with the crack
+    const sx = 40, sy = g.H * 0.7, sw = g.W * 0.38, sh = g.H * 0.22; g.ctx.fillStyle = 'rgba(148,163,184,.35)'; g.ctx.fillRect(sx, sy, sw, sh); g.ctx.strokeStyle = g.fg; g.ctx.strokeRect(sx, sy, sw, sh);
+    g.ctx.strokeStyle = '#ef4444'; g.ctx.lineWidth = 3; g.ctx.beginPath(); g.ctx.moveTo(sx, sy + sh / 2); g.ctx.lineTo(sx + sw * Math.min(1, a / (ac * 1000)), sy + sh / 2 + 3 * Math.sin(t * 9)); g.ctx.stroke(); g.ctx.lineWidth = 1;
+    g.text(t >= Y ? 'CRITICAL — insert pull-out' : a >= aD * 1000 ? 'Detectable at inspection' : 'Below detection threshold', sx, sy - 6, { size: 11, color: t >= Y ? '#ef4444' : a >= aD * 1000 ? '#f59e0b' : '#22c55e' });
+    const D = Dyr * t, B = g.panel(g.W * 0.5, 0, g.W * 0.5, g.H, { xr: [0, tY], yr: [0, Math.max(1.2, Dyr * tY * 1.05)], xlabel: 'Service years', ylabel: 'Miner damage D', title: `NiTi cartridges: D = ${fmt(D, 3)}${D >= 1 ? ' — replace' : ''}` });
+    B.line([0, tY], [0, Dyr * tY], '#a855f7', 2); B.hline(1, '#ef4444'); B.vline(t); B.point(t, D, D >= 1 ? '#ef4444' : '#22c55e');
+  } });
+}

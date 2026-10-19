@@ -93,7 +93,8 @@ export default {
     const yieldMC = gaps.filter(g => g >= p.gapLSL && g <= p.gapUSL).length / N, yieldAn = normCdf((p.gapUSL - mu) / sg) - normCdf((p.gapLSL - mu) / sg);
     const preloadVar = p.kFlex * 3 * sg, assemblyYield = yieldMC ** (2 * p.nCart);
     // ---------- NiTi transformation-temperature variability ----------
-    const AfNom = (act.Af ?? 60) + p.actStress / (act.CA || 7), AfSamples = range(N).map(() => AfNom + R0.normal(0, Math.hypot(90 * p.niSigma, p.htSigma)));
+    const s15m = ctx.upstream('s15'), actM = s15m?.grade ? (await import('../core/materials.js')).get(s15m.grade) || act : act; // follows the Suite 15 matched alloy (D5)
+    const AfNom = (actM.Af ?? 60) + (s15m?.tShift_K || 0) + p.actStress / (actM.CA || 7), AfSamples = range(N).map(() => AfNom + R0.normal(0, Math.hypot(90 * p.niSigma, p.htSigma)));
     const margin = 3, fullTransform = AfSamples.filter(a => a + margin <= p.Thot).length / N, AfSig = std(AfSamples);
     // ---------- composite cure ----------
     const chas = ctx.material('chassis'), A1 = 2e3, E1 = 66e3, A2 = p.A2kin, E2 = p.E2kin * 1e3, mK = 1, nK = 1.5, Tg0 = 0, TgInf = 200, lam = 0.4, Ccole = 30;
@@ -200,9 +201,87 @@ export default {
     out.recs.push({ level: 'sustain', text: `Processing electricity at ${p.grid} gCO₂/kWh: prefer out-of-autoclave prepregs and near-net-shape AM with powder reuse; schedule energy-intensive cures when grid carbon is low.`, basis: 'BOM process energy × grid intensity' });
     out.recs.push({ level: 'econ', text: `At ${p.quantity} units the average unit cost is ${fmt(avgUnit, 3)} USD (first unit ${fmt(proto, 3)} USD). Labour-dominated parts (high fabricated/material ratio) are the main targets for tooling investment.`, basis: 'Learning curve & BOM' });
     out.explain.push({ title: 'Why tolerances matter for the hub', text: 'The direct-rim drive transmits actuator work through contact between flexure shoes and a stationary cam. Clearance scatter changes preload and therefore the force–displacement path of every cartridge; too small and the cartridge binds (seizure risk), too large and stroke is lost to free play.' });
+    // ---------- Revision 2.2: telescoping reef joint (sliding fit Ø40 H7/g6 with PTFE-lined bushings) ----------
+    { const Dn = 40, hole = [0, 0.025], shaft = [-0.025, -0.009], liner = 0.010, dTmax = 40, aIn = (ctx.material('rootInsert')?.alpha ?? 8.6), aOut = 2.0;
+      const thermal = Dn * (aIn - aOut) * 1e-6 * dTmax; // mm: hot day closes the gap when the metal inner sleeve grows more than the CFRP outer tube
+      const R2 = rng(2202), cl = range(20000).map(() => (R2.normal((hole[0] + hole[1]) / 2, (hole[1] - hole[0]) / 6) - R2.normal((shaft[0] + shaft[1]) / 2, (shaft[1] - shaft[0]) / 6)) - Math.abs(R2.normal(0, liner / 3)) - thermal * R2());
+      const jam = cl.filter(c => c < 0.004).length / cl.length, play = cl.filter(c => c > 0.060).length / cl.length;
+      out.kpis.push({ label: 'Reef-joint sliding clearance (P5–P95)', value: `${fmt(percentile(cl, 0.05) * 1000, 3)}–${fmt(percentile(cl, 0.95) * 1000, 3)}`, unit: 'µm', explain: `Ø${Dn} H7/g6 with PTFE-lined bushings (±${liner * 1000} µm), differential expansion over ±${dTmax} K (${fmt(thermal * 1000, 3)} µm closure). Monte Carlo 20 000 assemblies.`, prov: 'calc', status: jam < 0.01 && play < 0.05 ? 'ok' : 'warn' });
+      out.verdicts.push({ test: 'Telescoping reef joint fit (no jamming, limited play)', status: jam < 0.01 && play < 0.05 ? 'pass' : jam < 0.05 ? 'warn' : 'fail', detail: `P(clearance < 4 µm, jam risk) = ${fmt(jam * 100, 3)} %; P(clearance > 60 µm, flutter-prone play) = ${fmt(play * 100, 3)} %.`, fix: 'Use H7/f7 with a compliant PTFE liner, match sleeve expansion (Ti vs CFRP) or add a dry-film lubricant; proof-test each joint at 1.5× limit load.' });
+      out.tables.push({ title: 'Reef joint manufacturing & inspection', cols: ['Item', 'Specification'], rows: [['Sleeve bore (CFRP tube with bonded Ti liner)', `Ø${Dn} H7 (+0/+25 µm), honed Ra ≤ 0.4 µm`], ['Sliding sleeve', `Ø${Dn} g6 (−9/−25 µm), Ti-6Al-4V, hard anodised`], ['Bushings', 'PTFE-lined bronze, 1.0 ± 0.01 mm wall, press fit'], ['Latch / breakaway detent', 'Release torque set ± 10 % at assembly, recorded'], ['Proof test', '1.5 × limit bending load, 60 s, no permanent set > 0.1 mm'], ['Inspection', 'Release-torque and slide-force check every 6 months']] }); }
+    out.views.push({ label: '2D animation: cure & tolerance Monte Carlo', icon: '🎞', render: (el) => anim2dMfg(el, { hist: cr.hist, gaps, LSL: p.gapLSL, USL: p.gapUSL, Cpk }) });
+    out.views.push({ label: '3D additive build (lattice)', icon: '🖨', render: (el) => view3dBuild(el, { amp, proc: p.amProc, cell: p.cell, strut: p.strut, incl: p.incl, amChecks }) });
+    out.views.push({ label: '3D composite cure', icon: '♨', render: (el) => view3dCure(el, { hist: cr.hist, cureT: p.cureT, chasName: chas.name, aFinal: cr.a, TgFinal: cr.Tg }) });
     out.outputs = { productionCost: avgUnit, prototypeCost: proto, Cpk, toleranceStack_mm: rss, bomMass_kg: mass, transformYield: fullTransform, degreeOfCure: cr.a, bom: B.map(r => ({ key: r.key, name: r.name, material: r.material, mass: r.mass, fabCost: r.fabCost, co2: r.co2, energy: r.energy, life: r.life, recyc: r.recyc, eolCredit: r.eolCredit })) };
     out.headline = `Prototype ${fmt(proto, 3)} USD → ${fmt(avgUnit, 3)} USD average at ${p.quantity} units · hub Cpk ${fmt(Cpk, 3)} · ${fmt(fullTransform * 100, 3)} % of cartridges transform fully · laminate α ${fmt(cr.a, 3)}.`;
     return out;
   },
 };
 void percentile;
+
+// 3D layer-by-layer additive build of a lattice block: strut geometry from the chosen cell size, strut diameter and
+// inclination; build time from the process volumetric rate; struts flagged red where the solved overhang check fails.
+async function view3dBuild(el, { amp, proc, cell, strut, incl, amChecks }) {
+  const [{ viewer }, { playback, hud }, { h }] = await Promise.all([import('../core/viz3d.js'), import('../core/sim3d.js'), import('../core/ui.js')]);
+  const nx = 4, ny = 4, nz = 3, a = cell, c = Math.SQRT2 * a * Math.tan(incl * Math.PI / 180), Ld = Math.hypot(a / Math.SQRT2, c / 2); // mm
+  const nDiag = nx * ny * nz * 8, nVert = (nx + 1) * (ny + 1) * nz, Vmm3 = (nDiag * Ld + nVert * c) * Math.PI * strut * strut / 4, Vcm3 = Vmm3 / 1000, hours = Vcm3 / amp.rate, Hmm = nz * c;
+  const overhangOK = incl >= 90 - amp.overhang, strutOK = strut >= amp.minStrut;
+  el.append(h('p', { class: 'small muted' }, `${proc}: ${nx}×${ny}×${nz} cells, cell ${a} mm, strut Ø ${strut} mm at ${incl}° → cell height ${fmt(c, 3)} mm, strut volume ≈ ${fmt(Vcm3, 3)} cm³, build time ≈ ${fmt(hours, 3)} h at ${amp.rate} cm³/h (ignores recoating and support time). Inclined struts are red if they violate the solved self-supporting overhang limit (needs ≥ ${90 - amp.overhang}°).`));
+  const wrap = h('div'); el.append(wrap);
+  const V = await viewer(wrap, { height: 440, grid: true }); const THREE = V.THREE;
+  const k = 0.03, plane = new THREE.Plane(new THREE.Vector3(0, 0, -1), 0); // 1 mm → 0.03 scene units
+  const geo = new THREE.CylinderGeometry(1, 1, 1, 8); geo.rotateX(Math.PI / 2);
+  const matOK = new THREE.MeshStandardMaterial({ color: 0xb8c0cc, metalness: 0.6, roughness: 0.4, clippingPlanes: [plane] }), matBad = new THREE.MeshStandardMaterial({ color: 0xef4444, clippingPlanes: [plane] }), matV = matOK;
+  const r = Math.max(strut, 0.15) / 2 * k;
+  const strutMesh = (A, B, mat) => { const m = new THREE.Mesh(geo, mat); const va = new THREE.Vector3(...A).multiplyScalar(k), vb = new THREE.Vector3(...B).multiplyScalar(k); m.position.copy(va.clone().add(vb).multiplyScalar(0.5)); m.scale.set(r, r, va.distanceTo(vb)); m.lookAt(vb); V.root.add(m); };
+  for (let iz = 0; iz < nz; iz++) for (let ix = 0; ix < nx; ix++) for (let iy = 0; iy < ny; iy++) { const x0 = (ix - nx / 2) * a, y0 = (iy - ny / 2) * a, z0 = iz * c, C = [x0 + a / 2, y0 + a / 2, z0 + c / 2]; for (const dx of [0, a]) for (const dy of [0, a]) for (const dz of [0, c]) strutMesh([x0 + dx, y0 + dy, z0 + dz], C, overhangOK ? matOK : matBad); }
+  for (let iz = 0; iz < nz; iz++) for (let ix = 0; ix <= nx; ix++) for (let iy = 0; iy <= ny; iy++) strutMesh([(ix - nx / 2) * a, (iy - ny / 2) * a, iz * c], [(ix - nx / 2) * a, (iy - ny / 2) * a, (iz + 1) * c], matV);
+  const plate = new THREE.Mesh(new THREE.BoxGeometry((nx + 1.5) * a * k, (ny + 1.5) * a * k, 0.04), new THREE.MeshStandardMaterial({ color: 0x334155 })); plate.position.z = -0.02 - a * k * 0.05; plate.position.x = 0; V.root.add(plate);
+  const layer = new THREE.Mesh(new THREE.PlaneGeometry((nx + 1) * a * k, (ny + 1) * a * k), new THREE.MeshBasicMaterial({ color: 0xf97316, transparent: true, opacity: 0.25, side: THREE.DoubleSide })); V.root.add(layer);
+  const laser = new THREE.Mesh(new THREE.SphereGeometry(r * 2.5, 12, 8), new THREE.MeshBasicMaterial({ color: 0xffe066 })); V.root.add(laser);
+  V.viewDir(0.9, -1.2, 0.8);
+  const H = hud(wrap);
+  playback(wrap, { duration: hours, rate: hours / 20, label: 'Build time', unit: 'h', onFrame: (t) => {
+    const zmm = Math.min(Hmm, t / hours * Hmm); plane.constant = zmm * k + 1e-4; layer.position.z = zmm * k; const ph = t * 40; laser.position.set(Math.cos(ph) * nx * a * k / 2.5, Math.sin(ph * 1.3) * ny * a * k / 2.5, zmm * k);
+    H.set([['Build height', `${fmt(zmm, 4)} / ${fmt(Hmm, 4)} mm`], ['Elapsed', fmt(t, 3) + ' h'], ['Volume built', fmt(Vcm3 * zmm / Hmm, 3) + ' cm³'], ['Overhang check', overhangOK ? 'self-supporting' : 'FAILS — supports needed', overhangOK ? '#22c55e' : '#ef4444'], ['Min strut check', strutOK ? 'printable' : 'below process minimum', strutOK ? '#22c55e' : '#ef4444'], ['Failed checks', amChecks.filter(c => c.status === 'fail').length + ' of ' + amChecks.length]]);
+  } });
+}
+// 3D composite cure: laminate shell on its tool, coloured by the solved degree of cure α(t) (Kamal kinetics with
+// diffusion control); tool colour = solved cure temperature T(t); HUD shows glass transition and vitrification.
+async function view3dCure(el, { hist, cureT, chasName, aFinal, TgFinal }) {
+  const [{ viewer }, { playback, hud, legend3d, turntable }, { loft, box }, { cmap }, { h }] = await Promise.all([import('../core/viz3d.js'), import('../core/sim3d.js'), import('../core/cad.js'), import('../core/chart.js'), import('../core/ui.js')]);
+  el.append(h('p', { class: 'small muted' }, `${chasName} panel on a heated tool. Solved by the cure-kinetics model: temperature ramp/dwell/cool-down to ${cureT} °C, degree of cure α(t) and glass-transition T_g(α) (DiBenedetto). Final α = ${fmt(aFinal, 3)}, T_g = ${fmt(TgFinal, 3)} °C. Colours are uniform through the panel (lumped kinetics; through-thickness exotherm not modelled).`));
+  const wrap = h('div'); el.append(wrap);
+  const V = await viewer(wrap, { height: 420, grid: true });
+  const secs = []; for (let i = 0; i <= 20; i++) { const x = -1 + 2 * i / 20, ring = []; for (let j = 0; j <= 16; j++) { const y = -0.6 + 1.2 * j / 16; ring.push([x, y, 0.32 + 0.18 * Math.cos(y * 2.2) + 0.012]); } for (let j = 16; j >= 0; j--) { const y = -0.6 + 1.2 * j / 16; ring.push([x, y, 0.32 + 0.18 * Math.cos(y * 2.2)]); } secs.push(ring); }
+  const panel = V.add(loft('Laminate (degree of cure)', secs, { color: '#334155' }));
+  const tool = box('Heated tool', 2.2, 1.4, 0.3, { color: '#64748b' }); tool.translate(0, 0, 0.15); const oTool = V.add(tool);
+  V.viewDir(0.8, -1.1, 0.7); turntable(V, 0.2);
+  const H = hud(wrap); legend3d(wrap, { title: 'Degree of cure α', lo: 0, hi: 1, cmapName: 'viridis' });
+  const tEnd = hist.t[hist.t.length - 1] || 1, at = (arr, t) => { const i = Math.min(arr.length - 1, Math.max(0, Math.round(t / tEnd * (hist.t.length - 1)))); return arr[i]; };
+  playback(wrap, { duration: tEnd, rate: tEnd / 20, label: 'Cure time', unit: 'min', onFrame: (t) => {
+    const a = at(hist.a, t), T = at(hist.T, t), Tg = at(hist.Tg, t), ca = cmap(a, 'viridis'), cT = cmap((T - 20) / Math.max(1, cureT - 20), 'inferno');
+    panel.material.color.setRGB(ca[0] / 255, ca[1] / 255, ca[2] / 255); oTool.material.color.setRGB(cT[0] / 255, cT[1] / 255, cT[2] / 255);
+    H.set([['Time', fmt(t, 4) + ' min'], ['Tool temperature', fmt(T, 4) + ' °C'], ['Degree of cure α', fmt(a, 3), a > 0.9 ? '#22c55e' : undefined], ['Glass transition T_g', fmt(Tg, 4) + ' °C'], ['State', Tg >= T ? 'vitrified (reaction diffusion-limited)' : a > 0.05 ? 'rubbery, curing' : 'liquid / gel not reached']]);
+  } });
+}
+
+// 2D animation: solved cure kinetics α(t), T(t), T_g(t) with a cursor, and the 20 000-sample Monte Carlo clearance
+// histogram filling up sample by sample against the specification limits (running yield and C_pk).
+async function anim2dMfg(el, { hist, gaps, LSL, USL, Cpk }) {
+  const [{ anim2d }, { h }] = await Promise.all([import('../core/sim3d.js'), import('../core/ui.js')]);
+  el.append(h('p', { class: 'small muted' }, `Left: solved cure cycle (Kamal kinetics with diffusion control). Right: the solved Monte Carlo tolerance stack, revealed progressively (final C_pk ${fmt(Cpk, 3)}).`));
+  const tE = hist.t[hist.t.length - 1] || 1, gl = Math.min(LSL, ...gaps.slice(0, 2000)) - 0.05, gh = Math.max(USL, ...gaps.slice(0, 2000)) + 0.05, nb = 40, bw = (gh - gl) / nb;
+  const counts = new Array(nb).fill(0); let filled = 0;
+  const fill = (n) => { if (n < filled) { counts.fill(0); filled = 0; } for (; filled < n; filled++) { const b = Math.floor((gaps[filled] - gl) / bw); if (b >= 0 && b < nb) counts[b]++; } };
+  const Tmax = Math.max(...hist.T, ...hist.Tg);
+  anim2d(el, { height: 420, duration: 20, label: 'Animation time', unit: 's', onFrame: (t, g) => {
+    g.clear(); const tc = t / 20 * tE, j = Math.min(hist.t.length - 1, Math.round(t / 20 * (hist.t.length - 1)));
+    const A = g.panel(0, 0, g.W / 2, g.H, { xr: [0, tE], yr: [0, Math.max(1.05, Tmax / 100 * 1.05)], xlabel: 'Cure time [min]', ylabel: 'α  |  T/100 °C', title: `Cure: α = ${fmt(hist.a[j], 3)}, T = ${fmt(hist.T[j], 4)} °C, T_g = ${fmt(hist.Tg[j], 4)} °C` });
+    A.line(hist.t, hist.T.map(v => v / 100), '#ef4444', 1.5); A.line(hist.t, hist.Tg.map(v => v / 100), '#a855f7', 1.5, [4, 3]); A.line(hist.t.slice(0, j + 1), hist.a.slice(0, j + 1), '#22c55e', 3); A.vline(tc); A.point(hist.t[j], hist.a[j], '#22c55e');
+    fill(Math.min(gaps.length, Math.round(t / 18 * gaps.length))); const cmax = Math.max(1, ...counts);
+    const B = g.panel(g.W / 2, 0, g.W / 2, g.H, { xr: [gl, gh], yr: [0, cmax * 1.1], xlabel: 'Hub radial clearance [mm]', ylabel: 'Samples', title: `Monte Carlo: ${filled.toLocaleString()} / ${gaps.length.toLocaleString()} assemblies` });
+    counts.forEach((c, b) => { const x = gl + (b + 0.5) * bw, inSpec = x >= LSL && x <= USL; B.bar(x, bw * 0.9, 0, c, inSpec ? '#38bdf8' : '#ef4444'); }); B.vline(LSL, '#ef4444'); B.vline(USL, '#ef4444');
+    const ok = gaps.slice(0, filled).filter(x => x >= LSL && x <= USL).length; g.text(`running yield ${fmt(filled ? 100 * ok / filled : 0, 4)} %`, B.px + 6, B.py + 16, { size: 12 });
+  } });
+}

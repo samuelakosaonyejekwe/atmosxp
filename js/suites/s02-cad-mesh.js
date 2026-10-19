@@ -161,6 +161,9 @@ export default {
     // ---- views ----
     const matMap = mats;
     out.views.push({ label: '3D CAD', icon: '🧊', render: (el) => cadView(el, parts, p, ctx, veh) });
+    out.views.push({ label: '3D styling & finishes', icon: '🎨', render: (el) => view3dStyling(el, { veh, ctx }) });
+    out.views.push({ label: '3D assembly & rolling', icon: '🎬', render: (el) => view3dAssembly(el, { veh, ctx }) });
+    out.views.push({ label: '2D animation: mesh refinement levels', icon: '🎞', render: (el) => anim2dMesh(el, { study, chosen, p }) });
     out.views.push({ label: '2D drawings', icon: '📐', render: (el) => drawingsView(el, parts, p, af, { cr, ct, span, st }, veh) });
     out.views.push({ label: 'Mesh', icon: '▦', render: (el) => meshView(el, chosen.mesh, Q, p) });
     out.views.push({ label: 'Export manager', icon: '⇩', render: (el) => exportView(el, parts, chosen.mesh, af, Q, p) });
@@ -187,10 +190,13 @@ async function cadView(el, parts, p, ctx, veh) {
   const { viewer } = await import('../core/viz3d.js');
   const bar = h('div', { class: 'row gap wrap', style: 'margin-bottom:8px' }), box = h('div');
   el.append(bar, box);
-  const V = await viewer(box, { height: 480 });
+  const V = await viewer(box, { height: 480 }); V.controls.autoRotate = true; V.controls.autoRotateSpeed = 0.8; // slow orbit; drag to take control
+  V.renderer.domElement.addEventListener('pointerdown', () => { V.controls.autoRotate = false; });
   const show = (list) => { V.clear(); for (const m of list) V.add(m); V.fit(); };
   show(parts);
   const imp = ctx.store.project.imports?.geometry;
+  let reefed = false; const reefBtn = h('button', { class: 'btn sm', title: 'Revision 2.2: telescope the upper wing sections into the lower ones (transit / strong wind)', onclick: () => { reefed = !reefed; reefBtn.textContent = reefed ? 'Deploy wings' : 'Reef wings'; const mats = Object.fromEntries(Object.keys(COMPONENTS).map(k => [k, componentMaterial(ctx.store, k)])); show(vehicleAssembly(veh, { materials: mats, reefed }).parts); } }, 'Reef wings');
+  bar.append(reefBtn);
   bar.append(h('button', { class: 'btn sm', onclick: () => show(parts) }, 'Full vehicle'), h('button', { class: 'btn sm', onclick: () => show(parts.filter(m => m.group === 'Wings')) }, 'Wings only'), h('button', { class: 'btn sm', onclick: () => show(parts.filter(m => ['Wheels', 'Hub drive', 'Brakes'].includes(m.group))) }, 'Running gear'),
     h('button', { class: 'btn sm', onclick: () => { const hub = hubAssembly({ R: veh.wheelRadius, nCart: p.nCart }).parts; show(hub); let th = 0; V.animate = (dt) => { th += dt * 0.6; for (const o of V.objects) if (o.userData.cartridge !== undefined || o.name.startsWith('Flexure') || ['Rim', 'Tyre', 'Containment ring'].includes(o.name)) o.rotation.z = th; }; } }, 'Direct-rim hub (animated)'),
     ...(imp ? [h('button', { class: 'btn sm', onclick: () => { const n = imp.positions.length / 3, m = { name: imp.name || 'Imported geometry', positions: imp.positions, indices: Uint32Array.from(range(n)), color: '#eab308', group: 'Imported', centroid: () => [0, 0, 0] }; V.clear(); V.add(m); V.fit(); } }, 'Imported geometry')] : []));
@@ -263,4 +269,79 @@ function exportView(el, parts, m, af, Q, p) {
     h('h4', {}, 'Conversion report'), repBox,
     callout('info', 'Neutral formats cannot carry the full parametric feature tree, constitutive models or solver settings; the native project JSON remains the master record. CGNS, Parasolid, ACIS, JT and DWG require licensed or binary kernels and are provided through STEP/STL/glTF interchange.'));
   void max; void linspace; void Mesh;
+}
+
+// 3D assembly sequence (sub-assemblies installed in build order) followed by the vehicle rolling at the coupled
+// sustainable speed: wheel spin = distance / wheel radius (exact rolling kinematics). Driving dynamics are solved in Suite 20.
+async function view3dAssembly(el, { veh, ctx }) {
+  const [{ vehicleScene, playback, hud }, mats] = await Promise.all([import('../core/sim3d.js'), import('../core/materials.js')]);
+  const vS = ctx.upstream('s20')?.sustainableSpeed_kmh, vk = Number.isFinite(vS) && vS > 0 ? Math.min(vS, 60) : 20, v = vk / 3.6;
+  el.append(h('p', { class: 'small muted' }, `0–8 s: assembly sequence (monocoque → cabin → wheels, hub drive & brakes → wings → thermal surfaces). 8–24 s: rolling at ${fmt(vk, 3)} km/h (${Number.isFinite(vS) ? 'Suite 20 sustainable speed' : 'reference 20 km/h — run Suite 20 to couple'}); wheel rotation follows exact rolling kinematics θ = s/R. Geometry and materials are the current CAD configuration.`));
+  const wrap = h('div'); el.append(wrap);
+  const matMap = Object.fromEntries(Object.keys(mats.COMPONENTS).map(k => [k, ctx.material(k)]));
+  const S = await vehicleScene(wrap, { vehicle: veh, materials: matMap, follow: true, height: 460 });
+  for (const k of ['thrust', 'side', 'drag', 'hub', 'wind']) S.setArrow(k, [0, 0, 0]);
+  const order = { Chassis: 0, Cabin: 1, Wheels: 2, 'Hub drive': 2, Brakes: 2, Wings: 3, Thermal: 4 };
+  const items = S.car.children.filter(o => o.type !== 'Object3D' || o.children.length).filter(o => !o.isArrowHelper && o.type !== 'ArrowHelper').map(o => ({ o, base: o.position.clone(), stage: o.userData?.group !== undefined ? (order[o.userData.group] ?? 4) : 2 }));
+  const H = hud(wrap), stages = ['Monocoque', 'Cabin', 'Wheels, hub drive & brakes', 'Wings (spar, skin, root fittings)', 'Thermal surfaces'];
+  playback(wrap, { duration: 24, label: 'Time', unit: 's', onFrame: (t) => {
+    const asmT = Math.min(t, 8) / 8 * 5;
+    for (const it of items) { const pr = Math.max(0, Math.min(1, asmT - it.stage)); it.o.visible = pr > 0; it.o.position.set(it.base.x, it.base.y, it.base.z + (1 - pr) ** 2 * 2.5); }
+    const tr = Math.max(0, t - 8), x = v * tr;
+    S.setPose({ x, y: 0, heading: 0, dist: x });
+    H.set(t < 8 ? [['Phase', 'Assembly'], ['Installing', stages[Math.min(4, Math.floor(asmT))]], ['Progress', fmt(100 * asmT / 5, 3) + ' %']] : [['Phase', 'Rolling'], ['Speed', fmt(vk, 3) + ' km/h'], ['Distance', fmt(x, 4) + ' m'], ['Wheel speed', fmt(v / veh.wheelRadius * 60 / (2 * Math.PI), 4) + ' rpm'], ['Wheel revolutions', fmt(x / (2 * Math.PI * veh.wheelRadius), 4)]]);
+  } });
+}
+
+// 2D animation stepping through the solved mesh-sensitivity levels (coarse → fine) with a slow zoom from the whole
+// section to the leading edge, and the convergence of the monitored quantity toward the Richardson-extrapolated value.
+async function anim2dMesh(el, { study, chosen, p }) {
+  const [{ anim2d }] = await Promise.all([import('../core/sim3d.js')]);
+  const L = study.sorted.slice().reverse(), n = L.length, fext = study.gci?.fext, per = 6;
+  el.append(h('p', { class: 'small muted' }, `${n} solved mesh levels (coarse → fine), each shown for ${per} s while zooming from the section to the leading edge. The selected level (${chosen.cells} cells) is highlighted.`));
+  anim2d(el, { height: 440, duration: n * per, label: 'Animation time', unit: 's', onFrame: (t, g) => {
+    g.clear(); const k = Math.min(n - 1, Math.floor(t / per)), f = (t - k * per) / per, M = L[k].mesh, ctx = g.ctx;
+    const z = 1 - 0.85 * (0.5 - 0.5 * Math.cos(Math.PI * f)), cxw = 0.5 - 0.48 * (1 - z), win = [cxw - 0.9 * z, cxw + 0.9 * z, -0.45 * z, 0.45 * z];
+    const W = g.W * 0.62, Hh = g.H, sx = (x) => (x - win[0]) / (win[1] - win[0]) * W, sy = (y) => Hh / 2 - y / (win[1] - win[0]) * W;
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, W, Hh); ctx.clip(); ctx.strokeStyle = L[k].cells === chosen.cells ? 'rgba(34,197,94,.7)' : 'rgba(56,189,248,.55)'; ctx.lineWidth = 0.6; ctx.beginPath();
+    for (const e of M.elems) { const a = M.nodes[e[0]]; if (!a) continue; let inside = false; for (const id of e) { const q = M.nodes[id]; if (q[0] > win[0] && q[0] < win[1] && q[1] > win[2] && q[1] < win[3]) { inside = true; break; } } if (!inside) continue; ctx.moveTo(sx(a[0]), sy(a[1])); for (let m2 = 1; m2 <= e.length; m2++) { const q = M.nodes[e[m2 % e.length]]; ctx.lineTo(sx(q[0]), sy(q[1])); } }
+    ctx.stroke(); ctx.restore();
+    g.text(`Level ${k + 1}/${n}: ${L[k].cells.toLocaleString()} cells, h = ${fmt(L[k].h, 3)}${L[k].cells === chosen.cells ? '  ← selected' : ''}`, 8, 18, { bold: true, color: L[k].cells === chosen.cells ? '#22c55e' : g.fg });
+    const P = g.panel(W, 0, g.W - W, g.H, { xr: [0, n + 1], yr: [Math.min(...L.map(l => l.value), fext ?? Infinity) * 0.995, Math.max(...L.map(l => l.value), fext ?? -Infinity) * 1.005], xlabel: 'Level (coarse → fine)', ylabel: 'V_max/V∞', title: 'Convergence' });
+    P.line(L.slice(0, k + 1).map((_, i) => i + 1), L.slice(0, k + 1).map(l => l.value), '#38bdf8', 2); L.slice(0, k + 1).forEach((l, i) => P.point(i + 1, l.value, l.cells === chosen.cells ? '#22c55e' : '#38bdf8', 4)); if (Number.isFinite(fext)) P.hline(fext, '#a855f7');
+  } });
+}
+
+// Styling view: paint schemes and finishes on the current lifting-body CAD (spats and root fairings included), with the
+// quantities that matter for performance and sustainability: painted area, finish mass, coating CO₂e and solar absorptance
+// (a dark body heats more in sun; light finishes keep the cabin and composite cooler).
+const SCHEMES = {
+  'Arctic white & carbon': { body: '#f1f5f9', wings: '#e2e8f0', accents: '#111827', aS: 0.25 },
+  'Solar orange': { body: '#f97316', wings: '#f8fafc', accents: '#1f2937', aS: 0.55 },
+  'Midnight blue': { body: '#1e3a8a', wings: '#cbd5e1', accents: '#f59e0b', aS: 0.85 },
+  'Raw carbon (clear coat)': { body: '#262a31', wings: '#3b4250', accents: '#9ca3af', aS: 0.92 },
+  'Material truth (as assigned)': null,
+};
+const FINISH = { Gloss: { r: 0.18, m: 0.1 }, Satin: { r: 0.45, m: 0.1 }, Matte: { r: 0.85, m: 0.0 } };
+async function view3dStyling(el, { veh, ctx }) {
+  const [{ viewer }, { hud }] = await Promise.all([import('../core/viz3d.js'), import('../core/sim3d.js')]);
+  let scheme = 'Arctic white & carbon', finish = 'Satin';
+  const selS = h('select', { onchange: (e) => { scheme = e.target.value; paint(); } }, ...Object.keys(SCHEMES).map(k => h('option', {}, k)));
+  const selF = h('select', { onchange: (e) => { finish = e.target.value; paint(); } }, ...Object.keys(FINISH).map(k => h('option', { selected: k === finish }, k)));
+  el.append(h('div', { class: 'row gap wrap' }, h('label', {}, 'Paint scheme ', selS), h('label', {}, 'Finish ', selF)), h('p', { class: 'small muted' }, 'Finishes apply to the lifting body, spats and root fairings; the wing skins use a light UV-stable film; the collector and radiator keep their functional coatings. Areas come from the CAD surfaces; coating mass 0.12 kg/m² (dry film ≈ 80 µm), 3.0 kg CO₂e/kg (waterborne system).'));
+  const box = h('div'); el.append(box);
+  const V = await viewer(box, { height: 480 }); V.controls.autoRotate = true; V.controls.autoRotateSpeed = 1.2; V.renderer.domElement.addEventListener('pointerdown', () => { V.controls.autoRotate = false; });
+  const mats = Object.fromEntries(Object.keys(COMPONENTS).map(k => [k, componentMaterial(ctx.store, k)]));
+  const parts = vehicleAssembly(veh, { materials: mats }).parts, objs = parts.map(m => ({ m, o: V.add(m) })); V.fit();
+  const role = (m) => /collector|radiat/i.test(m.name) || ['collector', 'radiator'].includes(m.component) ? 'functional' : /tyre|rim|spoke|disc|hub|cartridge/i.test(m.name) ? 'running' : m.group === 'Wings' && !/fairing|root/i.test(m.name) ? 'wings' : /canopy|cabin/i.test(m.name) ? 'glass' : /fairing|spat/i.test(m.name) ? 'accents' : /monocoque|lifting body|body shell|nose|tail/i.test(m.name) ? 'body' : 'internal';
+  const H = hud(box);
+  const areaOf = (r) => objs.filter(x => role(x.m) === r).reduce((s2, x) => s2 + x.m.area(), 0);
+  const Abody = areaOf('body') + areaOf('accents'), Awing = areaOf('wings') / 2;
+  function paint() {
+    const S = SCHEMES[scheme], F = FINISH[finish];
+    for (const { m, o } of objs) { const r = role(m); if (S && (r === 'body' || r === 'wings' || r === 'accents')) o.material.color.set(r === 'body' ? S.body : r === 'wings' ? S.wings : S.accents); else o.material.color.set(m.color); o.material.roughness = F.r; o.material.metalness = F.m; o.material.needsUpdate = true; }
+    const paintMass = Abody * 0.12, co2 = paintMass * 3.0, aS = S ? S.aS : 0.9;
+    H.set([['Scheme', scheme], ['Finish', finish], ['Painted area (body, spats, fairings)', fmt(Abody, 3) + ' m²'], ['Wing film area', fmt(Awing, 3) + ' m²'], ['Coating mass', fmt(paintMass, 3) + ' kg'], ['Coating CO₂e', fmt(co2, 3) + ' kg'], ['Body solar absorptance', fmt(aS, 2), aS > 0.7 ? '#f59e0b' : '#22c55e'], ['Peak skin heating (850 W/m², still air)', '≈ +' + fmt(aS * 850 / 18, 3) + ' K']]);
+  }
+  paint();
 }

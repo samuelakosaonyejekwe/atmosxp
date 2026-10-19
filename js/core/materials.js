@@ -108,7 +108,7 @@ export const COMPONENTS = {
   spreader: { name: 'Heat spreaders / thermal pathways', use: 'spreader', def: 'al-1050', suite: 's14' },
   heatpipe: { name: 'Heat pipes', use: 'heatpipe', def: 'heatpipe-cuw', suite: 's14' },
   insulator: { name: 'Thermal insulation / isolation', use: 'insulator', def: 'aerogel', suite: 's14' },
-  actuator: { name: 'Thermal actuator cartridges (active)', use: 'actuator', def: 'niti-lowT', suite: 's15' },
+  actuator: { name: 'Thermal actuator cartridges (active)', use: 'actuator', def: 'nitcu', suite: 's15' },
   cartridgeHousing: { name: 'Cartridge housing / containment ring', use: 'cartridgeHousing', def: 'ti-6al4v', suite: 's17' },
   cam: { name: 'Stationary reaction cam', use: 'cam', def: 'st-17-4', suite: 's17' },
   flexure: { name: 'Compliant force-transfer shoes / flexures', use: 'flexure', def: 'ti-beta21s', suite: 's17' },

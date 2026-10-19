@@ -41,7 +41,7 @@ export default {
   },
   formats: { import: ['CSV temperature/heat-flux logs', 'XLSX', 'JSON'], export: ['CSV field and network results', 'VTK field (via Suite 02 export manager)', 'PNG/SVG'] },
   params: [
-    { key: 'case', label: 'Operating case', type: 'select', group: 'Case', default: 'night', options: [{ value: 'night', label: 'Night (ambient source → radiator sink)' }, { value: 'day', label: 'Day (solar absorber → radiator/ambient sink)' }, { value: 'current', label: 'Current Suite 05 snapshot' }] },
+    { key: 'case', label: 'Operating case', type: 'select', group: 'Case', default: 'night', auto: (c) => { const e = c.upstream('s05') || c.env; const sunny = !!(e?.isDay && (e.ghi || 0) > 200) || (e?.series || []).some(r => (r.ghi || 0) > 200); return { value: sunny ? 'day' : 'night', prov: 'coupled' }; }, options: [{ value: 'night', label: 'Night (ambient source → radiator sink)' }, { value: 'day', label: 'Day (solar absorber → radiator/ambient sink)' }, { value: 'current', label: 'Current Suite 05 snapshot' }] },
     { key: 'spreader', label: 'Spreader / thermal metamaterial', type: 'select', group: 'Materials', default: 'al-1050', options: forUse('spreader').map(m => ({ value: m.id, label: m.name })), auto: (c) => ({ value: c.store.material('spreader', 'al-1050'), prov: 'library' }) },
     { key: 'insulator', label: 'Hot/cold isolation', type: 'select', group: 'Materials', default: 'aerogel', options: forUse('insulator').map(m => ({ value: m.id, label: m.name })), auto: (c) => ({ value: c.store.material('insulator', 'aerogel'), prov: 'library' }) },
     { key: 'anis', label: 'Lattice anisotropy k_in-plane / k_through', type: 'range', min: 1, max: 200, step: 1, group: 'Materials', default: 1, help: 'Architected thermal metamaterial: >1 channels heat along the spreader while limiting through-thickness leakage.' },
@@ -70,7 +70,10 @@ export default {
     const sky = TH.skySpectralEmissivity(TaK, c.eps ?? 0.8).fn, G = c.isDay ? (c.ghi || 0) : 0;
     const cacheA = new Map(), cacheR = new Map();
     const surf = (tab, T, cache) => { const k = Math.round(T * 20); if (!cache.has(k)) cache.set(k, TH.radiativeTerms(tab, k / 20, TaK, sky, G)); return cache.get(k); };
-    const Qhot = (T) => { const r = surf(epsCol, T, cacheA); return Acol * (r.solAbs - (r.emit - r.atm) - h * (T - TaK)) + Acol * (p.fin - 1) * h * (TaK - T); };
+    // Revision 2 (D5): in the day case the hot side is the Suite 13 glazed collector — use its solved q(T) curve so the
+    // collector operating temperature found there is carried through the heat path; otherwise the bare-surface model.
+    const curveA = p.case === 'day' && s13?.curves?.absorber?.T?.length ? s13.curves.absorber : null;
+    const Qhot = curveA ? (T) => Acol * interpX(curveA.T, curveA.q, T - KELVIN) : (T) => { const r = surf(epsCol, T, cacheA); return Acol * (r.solAbs - (r.emit - r.atm) - h * (T - TaK)) + Acol * (p.fin - 1) * h * (TaK - T); };
     const Qcold = (T) => { const r = surf(epsRad, T, cacheR); return Arad * ((r.emit - r.atm) - r.solAbs - h * (TaK - T)) + Arad * (p.fin - 1) * h * (T - TaK); };
     const sp = get(p.spreader), ins = get(p.insulator), hpM = get(ctx.store.material('heatpipe', 'heatpipe-cuw'));
     const kIn = sp.k;
@@ -149,7 +152,10 @@ export default {
     K('Warm-up time constant', tau, 's', 'Time to reach 63 % of steady interface ΔT from an isothermal start.', 'calc');
     // verdicts
     out.verdicts.push({ test: 'Interface temperatures solved (not assumed)', status: 'pass', detail: `T_hi = ${fmt(S.Thi - KELVIN, 4)} °C vs ambient ${fmt(c.T, 4)} °C; T_ci = ${fmt(S.Tci - KELVIN, 4)} °C (${c.src}).` });
-    out.verdicts.push({ test: 'Usable actuator ΔT', status: dTi > 15 ? 'pass' : dTi > 5 ? 'warn' : 'fail', detail: `${fmt(dTi, 3)} K under load. NiTi transformation hysteresis is typically 10–30 K, so ΔT below the hysteresis cannot cycle the material.`, fix: 'Reduce path resistance (more heat pipes, better interface material), enlarge collector/radiator areas, or lower the actuator draw.' });
+    const actM = get(ctx.store.project.materials?.actuator || 'nitcu') || get('nitcu'), s15o = ctx.upstream('s15'), needDT = s15o?.minDT_K ?? ((actM.Af - actM.Mf) + 6 + 150 / (actM.CA || 7) - 20 / (actM.CM || 6.5));
+    K('Achievable ΔT vs actuator requirement', `${fmt(dTi, 3)} / ${fmt(needDT, 3)}`, 'K', `${actM.name}: hysteresis (A_f − M_f = ${fmt(actM.Af - actM.Mf, 3)} K) + stress shift + 2 × 3 K margins. ${s15o?.minDT_K ? 'From Suite 15.' : 'Estimated at σ_H = 150, σ_L = 20 MPa.'}`, s15o ? 'coupled' : 'estimated', dTi >= needDT ? 'ok' : 'bad');
+    if (curveA) K('Collector curve source', 'Suite 13 glazed collector', '', `Hot-side heat q(T) taken from Suite 13 (exergy-optimal point ${fmt(s13.Thot_C, 4)} °C); the network solves the actual collector temperature under the actuator draw.`, 'coupled');
+    out.verdicts.push({ test: 'Usable actuator ΔT', status: dTi >= needDT ? 'pass' : dTi > 0.5 * needDT ? 'warn' : 'fail', detail: `${fmt(dTi, 3)} K under load vs ${fmt(needDT, 3)} K needed by ${actM.name} (hysteresis + stress shift + margins). Below that the alloy cannot complete a transformation cycle.`, fix: 'Reduce path resistance (more heat pipes, better interface material), enlarge collector/radiator areas, or lower the actuator draw.' });
     out.verdicts.push({ test: 'Heat-pipe operating limits', status: !p.nHP ? 'info' : lim.frozen ? 'fail' : qPerPipe > lim.Qmax ? 'fail' : 'pass', detail: p.nHP ? `${fmt(qPerPipe, 3)} W per pipe vs ${lim.governing} limit ${fmt(lim.Qmax, 3)} W at ${fmt(hpT, 3)} °C.` : 'Heat pipes not used.', fix: 'Add pipes, use larger diameter or finer wick, avoid adverse tilt; water pipes freeze below 0 °C — use another working fluid in cold climates.' });
     out.verdicts.push({ test: 'Isolation effectiveness', status: S.Qleak < 0.1 * Math.abs(S.Qconv) ? 'pass' : 'warn', detail: `Leakage ${fmt(S.Qleak, 3)} W = ${fmt(100 * S.Qleak / Math.max(1e-9, Math.abs(S.Qconv)), 3)} % of converter heat.` });
     // charts
@@ -168,6 +174,8 @@ export default {
     if (p.anis < 5) out.recs.push({ level: 'info', text: 'An anisotropic thermal metamaterial (graphite-laminate or aligned lattice, k_in/k_through ≥ 20) channels heat to the interfaces while suppressing cross-leakage.', basis: 'Anisotropic conduction' });
     out.recs.push({ level: 'sustain', text: 'Aluminium spreaders and copper/water heat pipes are highly recyclable; aerogel insulation is energy-intensive to produce — size it to the leakage target rather than over-insulating.', basis: 'Embodied energy in materials registry' });
     out.explain.push({ title: 'Why interface temperatures matter', text: 'The actuator does not see ambient air or the sky. It sees the ends of a thermal path whose resistances, leakage and radiative boundaries reduce the available temperature difference — especially once heat actually flows. These solved interface temperatures feed Suites 15 and 17.' });
+    out.views.push({ label: '2D animation: transient temperature field', icon: '🎞', render: (el) => anim2dField(el, { tr, Z, nx, ny, nH, nI, TaK, S }) });
+    out.views.push({ label: '3D heat path (transient)', icon: '🌡', render: (el) => view3dHeatPath(el, { S, tr, Z, nx, ny, nH, nI, TaK, spName: sp.name, insName: ins.name, nHP: p.nHP }) });
     out.outputs = { Qhot_W: S.Qconv, Qleak_W: S.Qleak, ThotIface_C: S.Thi - KELVIN, TcoldIface_C: S.Tci - KELVIN, Rth_K_W: 2 * Rpath, tauThermal_s: tau, Gconv_W_K: p.Gconv, case: p.case, Wideal_W: S.Wideal, dTopen_K: dTopen, TambC: c.T, bestG_W_K: Gs[iBest] };
     out.convergence = { title: 'Newton residual history', series: [{ name: 'network', x: range(S.hist.length), y: S.hist.map(v => Math.max(v, 1e-14)) }] };
     out.headline = `${p.case === 'day' ? 'Day' : p.case === 'night' ? 'Night' : 'Current'} case: actuator interfaces at ${fmt(S.Thi - KELVIN, 4)} °C / ${fmt(S.Tci - KELVIN, 4)} °C (ΔT ${fmt(dTi, 3)} K) delivering ${fmt(S.Qconv, 3)} W of heat; ideal work ≤ ${fmt(S.Wideal, 3)} W.`;
@@ -175,3 +183,70 @@ export default {
     return out;
   },
 };
+
+// 3D heat-path assembly: collector → hot spreader → actuator → cold spreader → radiator, with the insulation gap.
+// Node temperatures vs time are the solved RK45 transient; the in-spreader distribution is the solved steady 2-D
+// finite-volume field scaled by the node response at each instant (interpolated between solved states).
+async function view3dHeatPath(el, { S, tr, Z, nx, ny, nH, nI, TaK, spName, insName, nHP }) {
+  const [{ viewer }, { playback, hud, legend3d, fieldMesh, tracers }, { box, loft }, { cmap }, { h }] = await Promise.all([import('../core/viz3d.js'), import('../core/sim3d.js'), import('../core/cad.js'), import('../core/chart.js'), import('../core/ui.js')]);
+  el.append(h('p', { class: 'small muted' }, `Solved: transient hot/cold node temperatures (RK45 network model) and the steady 2-D anisotropic temperature field in the ${spName} spreaders across the ${insName} isolation (finite-volume, PCG). The displayed field at time t is the steady field scaled by each side's solved transient response; geometry is schematic, thicknesses exaggerated ×10. Arrows: heat flows (length ∝ W).`));
+  const wrap = h('div'); el.append(wrap);
+  const V = await viewer(wrap, { height: 440, grid: false }); const THREE = V.THREE;
+  const Lh = 0.8, Lg = 0.8 * nI / nH, T = 0.12; // visual lengths (m) of hot block, insulation gap and slab thickness
+  const x0 = -(2 * Lh + Lg) / 2, xH1 = x0 + Lh, xC0 = xH1 + Lg, xC1 = xC0 + Lh;
+  const slab = (name, xa, xb, nSeg) => { const secs = []; for (let k = 0; k <= nSeg; k++) { const x = xa + (xb - xa) * k / nSeg; const ring = []; for (let j = 0; j <= 6; j++) ring.push([x, -0.25, j * T / 6]); for (let j = 1; j <= 4; j++) ring.push([x, -0.25 + 0.5 * j / 4, T]); for (let j = 5; j >= 0; j--) ring.push([x, 0.25, j * T / 6]); for (let j = 3; j >= 1; j--) ring.push([x, -0.25 + 0.5 * j / 4, 0]); secs.push(ring); } return loft(name, secs, { color: '#999' }); };
+  const ssK = (i, j) => Z[Math.max(0, Math.min(ny - 1, j))][Math.max(0, Math.min(nx - 1, i))] + KELVIN0;
+  const KELVIN0 = 273.15;
+  const Th_ss = tr.y[tr.y.length - 1][0], Tc_ss = tr.y[tr.y.length - 1][1];
+  let fH = 1, fC = 1;
+  const valAt = (x, y, z) => { const i = x < xH1 ? Math.floor((x - x0) / Lh * nH) : x < xC0 ? nH + Math.floor((x - xH1) / Lg * nI) : nH + nI + Math.floor((x - xC0) / Lh * nH); const j = Math.floor(z / T * ny); const Tss = ssK(i, j), side = x < (xH1 + xC0) / 2 ? fH : fC; return TaK + (Tss - TaK) * side - KELVIN0; };
+  const all = Z.flat(), lo = Math.min(...all, TaK - KELVIN0, Tc_ss - KELVIN0, S.Trad - KELVIN0), hi = Math.max(...all, TaK - KELVIN0, Th_ss - KELVIN0, S.Tcol - KELVIN0);
+  const fm = fieldMesh(V, slab('Spreaders + isolation (2-D field)', x0, xC1, 3 * (nH + nI)), valAt, { cmapName: 'coolwarm', range: [lo, hi] });
+  const add = (m, color) => { const o = V.add(m); o.material.color.set(color); return o; };
+  const col = box('Collector / hot face', Lh * 0.95, 0.6, 0.03, { color: '#f97316' }); col.translate(x0 + Lh / 2, 0, T + 0.45); const oCol = add(col, '#f97316');
+  const rad = box('Radiator / cold face', Lh * 0.95, 0.6, 0.03, { color: '#38bdf8' }); rad.translate(xC0 + Lh / 2, 0, T + 0.45); const oRad = add(rad, '#38bdf8');
+  const legs = []; for (const [xa, name] of [[x0 + Lh / 2, 'Hot conduction path' + (nHP ? ` (+${nHP} heat pipes)` : '')], [xC0 + Lh / 2, 'Cold conduction path']]) { const b = box(name, 0.08, 0.08, 0.42, { color: '#b8c0cc' }); b.translate(xa, 0, T + 0.22); legs.push(add(b, '#b8c0cc')); }
+  const act = box('Actuator (NiTi cartridge) between interfaces', xC0 - xH1 + 0.5, 0.3, 0.1, { color: '#c58b4b' }); act.translate((xH1 + xC0) / 2, 0, -0.07); const oAct = add(act, '#c58b4b');
+  const arrow = (from, dir, color) => { const a = new THREE.ArrowHelper(new THREE.Vector3(...dir).normalize(), new THREE.Vector3(...from), 0.3, color, 0.1, 0.06); V.root.add(a); return a; };
+  const aIn = arrow([x0 + Lh / 2 + 0.15, 0.32, T + 0.42], [0, 0, -1], 0xf97316), aConv = arrow([xH1 - 0.1, 0.32, -0.02], [1, 0, 0], 0xc58b4b), aLeak = arrow([xH1, 0, T + 0.06], [1, 0, 0], 0xef4444), aOut = arrow([xC0 + Lh / 2 + 0.15, 0.32, T + 0.05], [0, 0, 1], 0x38bdf8);
+  const trHot = tracers(V, [[x0 + Lh / 2, 0.1, T + 0.45], [x0 + Lh / 2, 0.1, T], [xH1, 0.1, T / 2], [xH1 + 0.05, 0.1, -0.07], [xC0 - 0.05, 0.1, -0.07], [xC0, 0.1, T / 2], [xC0 + Lh / 2, 0.1, T], [xC0 + Lh / 2, 0.1, T + 0.45]], { n: 14, color: 0xf97316 });
+  const trLeak = tracers(V, [[xH1, -0.1, T / 2], [xC0, -0.1, T / 2]], { n: 4, color: 0xef4444, size: 0.018 });
+  let lastT = 0;
+  V.viewDir(0.35, -1.1, 0.6); V.controls.autoRotate = true; V.controls.autoRotateSpeed = 2; V.renderer.domElement.addEventListener('pointerdown', () => { V.controls.autoRotate = false; });
+  const H = hud(wrap); legend3d(wrap, { title: 'Temperature', lo, hi, unit: ' °C', cmapName: 'coolwarm' });
+  const tint = (o, Tc) => { const c = cmap((Tc - lo) / ((hi - lo) || 1), 'coolwarm'); o.material.color.setRGB(c[0] / 255, c[1] / 255, c[2] / 255); };
+  const tEnd = tr.t[tr.t.length - 1], Qscale = Math.max(1e-6, Math.abs(S.Qin), Math.abs(S.Qconv), Math.abs(S.Qleak));
+  playback(wrap, { duration: tEnd, rate: tEnd / 20, label: 'Time from start-up', unit: 's', onFrame: (t) => {
+    const Th = interpT(tr.t, tr.y.map(y => y[0]), t), Tc = interpT(tr.t, tr.y.map(y => y[1]), t);
+    fH = (Th - TaK) / ((Th_ss - TaK) || 1); fC = (Tc - TaK) / ((Tc_ss - TaK) || 1); if (!Number.isFinite(fH)) fH = 1; if (!Number.isFinite(fC)) fC = 1;
+    fm.update(valAt, [lo, hi]); tint(oCol, Th - KELVIN0); tint(oRad, Tc - KELVIN0); tint(legs[0], Th - KELVIN0); tint(legs[1], Tc - KELVIN0); tint(oAct, (Th + Tc) / 2 - KELVIN0);
+    const g = Math.max(0, Math.min(1, Math.abs(Th - TaK) / (Math.abs(Th_ss - TaK) || 1))); const len = (q) => 0.12 + 0.5 * Math.abs(q) / Qscale * g;
+    { const dt = Math.max(0, Math.min(0.1, (performance.now() - lastT) / 1000)); lastT = performance.now(); trHot.step(dt, 0.08 + 0.35 * Math.abs(S.Qconv) / Qscale * Math.max(0.05, g)); trLeak.step(dt, 0.05 + 0.35 * Math.abs(S.Qleak) / Qscale * Math.max(0.05, g)); }
+    aIn.setLength(len(S.Qin), 0.1, 0.06); aConv.setLength(len(S.Qconv), 0.1, 0.06); aLeak.setLength(len(S.Qleak), 0.1, 0.06); aOut.setLength(len(S.Qconv), 0.1, 0.06);
+    H.set([['Time', fmt(t, 3) + ' s'], ['Hot node', fmt(Th - KELVIN0, 4) + ' °C', '#f97316'], ['Cold node', fmt(Tc - KELVIN0, 4) + ' °C', '#38bdf8'], ['ΔT hot–cold', fmt(Th - Tc, 3) + ' K'], ['Steady Q_in', fmt(S.Qin, 3) + ' W'], ['Steady Q_conv', fmt(S.Qconv, 3) + ' W'], ['Steady Q_leak', fmt(S.Qleak, 3) + ' W', '#ef4444'], ['Response', fmt(100 * g, 3) + ' % of steady']]);
+  } });
+}
+function interpT(ts, ys, t) { if (t <= ts[0]) return ys[0]; for (let i = 1; i < ts.length; i++) if (ts[i] >= t) { const f = (t - ts[i - 1]) / ((ts[i] - ts[i - 1]) || 1); return ys[i - 1] + f * (ys[i] - ys[i - 1]); } return ys[ys.length - 1]; }
+
+function interpX(xs, ys, x) { const n = xs.length; if (x <= xs[0]) return ys[0] + (ys[1] - ys[0]) * (x - xs[0]) / ((xs[1] - xs[0]) || 1); if (x >= xs[n - 1]) return ys[n - 1] + (ys[n - 1] - ys[n - 2]) * (x - xs[n - 1]) / ((xs[n - 1] - xs[n - 2]) || 1); let i = 1; while (xs[i] < x) i++; const f = (x - xs[i - 1]) / ((xs[i] - xs[i - 1]) || 1); return ys[i - 1] + f * (ys[i] - ys[i - 1]); }
+
+// 2D animated temperature contour of the spreader–isolation–spreader section: solved steady 2-D field scaled at each
+// instant by the solved transient node responses (hot and cold side), with the node temperature traces and cursor.
+async function anim2dField(el, { tr, Z, nx, ny, nH, nI, TaK, S }) {
+  const [{ anim2d }, { h }, { cmap }] = await Promise.all([import('../core/sim3d.js'), import('../core/ui.js'), import('../core/chart.js')]);
+  el.append(h('p', { class: 'small muted' }, 'Top: section temperature (x along hot spreader | isolation | cold spreader, y through the thickness ×-stretched). Bottom: solved hot/cold node temperatures from start-up with the time cursor.'));
+  const K0 = 273.15, Ths = tr.y[tr.y.length - 1][0], Tcs = tr.y[tr.y.length - 1][1], all = Z.flat(), lo = Math.min(...all, TaK - K0, Tcs - K0), hi = Math.max(...all, TaK - K0, Ths - K0), tEnd = tr.t[tr.t.length - 1];
+  const Th = tr.y.map(y => y[0] - K0), Tc = tr.y.map(y => y[1] - K0);
+  anim2d(el, { height: 440, duration: tEnd, rate: tEnd / 20, label: 'Time from start-up', unit: 's', onFrame: (t, g) => {
+    g.clear(); let j = tr.t.findIndex(x => x >= t); if (j < 0) j = tr.t.length - 1;
+    const fH = (Th[j] + K0 - TaK) / ((Ths - TaK) || 1), fC = (Tc[j] + K0 - TaK) / ((Tcs - TaK) || 1), x0 = 60, y0 = 26, w = g.W - 160, hgt = g.H * 0.45;
+    for (let jj = 0; jj < ny; jj++) for (let i = 0; i < nx; i++) { const side = i < nH + nI / 2 ? fH : fC, v = TaK - K0 + (Z[jj][i] + K0 - TaK) * (Number.isFinite(side) ? side : 1), c = cmap((v - lo) / ((hi - lo) || 1), 'coolwarm'); g.ctx.fillStyle = `rgb(${c.map(Math.round).join(',')})`; g.ctx.fillRect(x0 + i * w / nx, y0 + (ny - 1 - jj) * hgt / ny, w / nx + 1, hgt / ny + 1); }
+    g.ctx.strokeStyle = g.fg; g.ctx.strokeRect(x0, y0, w, hgt); g.ctx.strokeRect(x0 + nH * w / nx, y0, nI * w / nx, hgt);
+    { const now = performance.now() / 1000, sp = 0.08 + 0.25 * Math.min(1, Math.abs(S.Qconv) / Math.max(1e-9, Math.abs(S.Qin))); g.ctx.fillStyle = 'rgba(255,255,255,.9)'; for (let q = 0; q < 16; q++) { const f = (now * sp + q / 16) % 1; g.ctx.beginPath(); g.ctx.arc(x0 + f * w, y0 + hgt * (0.2 + 0.3 * (q % 3)), 6, 0, 2 * Math.PI); g.ctx.fill(); } g.text('● heat-flow tracers (speed ∝ solved Q_conv / Q_in)', x0, y0 + hgt + 12, { size: 10, color: g.mute }); }
+    g.text('hot spreader', x0 + 4, y0 - 6, { size: 11 }); g.text('isolation', x0 + nH * w / nx + 2, y0 - 6, { size: 11 }); g.text('cold spreader', x0 + (nH + nI) * w / nx + 4, y0 - 6, { size: 11 });
+    for (let k = 0; k <= 10; k++) { const c = cmap(k / 10, 'coolwarm'); g.ctx.fillStyle = `rgb(${c.map(Math.round).join(',')})`; g.ctx.fillRect(g.W - 80, y0 + hgt - (k + 1) * hgt / 11, 14, hgt / 11 + 1); }
+    g.text(fmt(hi, 3) + ' °C', g.W - 62, y0 + 10, { size: 10 }); g.text(fmt(lo, 3) + ' °C', g.W - 62, y0 + hgt, { size: 10 });
+    const P = g.panel(0, y0 + hgt + 10, g.W, g.H - hgt - y0 - 10, { xr: [0, tEnd], yr: [lo - 0.5, hi + 0.5], xlabel: 'Time [s]', ylabel: 'T [°C]', title: `Node temperatures — hot ${fmt(Th[j], 4)} °C, cold ${fmt(Tc[j], 4)} °C, ΔT ${fmt(Th[j] - Tc[j], 3)} K` });
+    P.line(tr.t, Th, '#ef4444', 2); P.line(tr.t, Tc, '#3b82f6', 2); P.vline(t); P.point(tr.t[j], Th[j], '#ef4444'); P.point(tr.t[j], Tc[j], '#3b82f6');
+  } });
+}

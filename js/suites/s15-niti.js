@@ -21,6 +21,24 @@ export function evaluateSMA(mat, q) {
   return { cyc, ideal, tim, f, P_kg, ThE, TcE, temps: tH, epsTr, fatigue: TH.smaFatigue(epsTr, sH), etaC: Math.max(0, 1 - (Tc + KELVIN) / (Th + KELVIN)) };
 }
 
+// Design Revision 2 (D5): shift the transformation temperatures by composition / heat treatment so that
+// A_f(σ_H) ≤ T_hot − 3 K and M_f(σ_L) ≥ T_cold + 3 K. Admissible shift ±maxShift K (≈ ±0.4 at% Ni or Cu/Hf
+// substitution plus ageing). If the interface ΔT is narrower than the alloy's own hysteresis + stress shift,
+// no shift can make it cycle — the alloy is then centred on the window and still classified incapable.
+export function matchAlloy(mat, { Th, Tc, sH, sL }, maxShift = 40) {
+  const hiLim = Th - 3 - (mat.Af + sH / mat.CA), loLim = Tc + 3 - (mat.Mf + sL / mat.CM);
+  const need = (mat.Af + sH / mat.CA) - (mat.Mf + sL / mat.CM) + 6; // minimum ΔT for full transformation both ways
+  let shift, feasible = loLim <= hiLim;
+  if (feasible) shift = Math.max(-maxShift, Math.min(maxShift, 0.5 * (loLim + hiLim)));
+  else shift = Math.max(-maxShift, Math.min(maxShift, 0.5 * (Th + Tc) - 0.5 * ((mat.Af + sH / mat.CA) + (mat.Mf + sL / mat.CM))));
+  const withinRange = feasible && shift >= loLim - 1e-9 && shift <= hiLim + 1e-9;
+  const dNi = -shift / 100; // ≈ −10 K per +0.1 at% Ni (Ni-rich NiTi lowers M_s)
+  const note = `${shift >= 0 ? 'Raise' : 'Lower'} all transformation temperatures by ${Math.abs(shift).toFixed(1)} K: ≈ ${dNi >= 0 ? '+' : ''}${dNi.toFixed(2)} at% Ni relative to the library grade, followed by solution treatment (850 °C, 30 min, water quench) and ageing 400–500 °C for 0.5–2 h to trim M_s; confirm by DSC.`;
+  return { mat: { ...mat, Ms: mat.Ms + shift, Mf: mat.Mf + shift, As: mat.As + shift, Af: mat.Af + shift, id: mat.id + (shift ? '-matched' : '') }, shift, feasible: withinRange, need, note };
+}
+// D6: limit the transformation strain amplitude (mechanical stops / training) for fatigue life.
+export const capStrain = (mat, epsAmp) => ({ ...mat, epsL: Math.min(mat.epsL, epsAmp) });
+
 export default {
   description: 'Thermomechanical simulation of architected NiTi (and other SMA) actuator elements: stress-dependent phase transformation, complete heating–loading–cooling–unloading cycles at the solved interface temperatures, net work per cycle, thermal-diffusion-limited cycle frequency, continuous power density, efficiency against the Carnot bound, and functional/structural fatigue. A configuration that cannot complete a repeatable net-positive cycle is classified incapable of sustained propulsion.',
   literature: 'NiTi shape memory alloy heat engine elastocaloric cycle work output frequency fatigue',
@@ -47,14 +65,18 @@ export default {
   },
   formats: { import: ['CSV/XLSX DSC curves', 'CSV force–displacement–temperature cycles', 'JSON'], export: ['CSV cycle paths', 'JSON calibrated parameter set', 'Abaqus INP / Nastran BDF material cards via Suite 02 export manager', 'PNG/SVG'] },
   params: [
-    { key: 'grade', label: 'Shape-memory alloy grade', type: 'select', group: 'Material', default: 'niti-lowT', options: SMAS.map(m => ({ value: m.id, label: m.name })), auto: (c) => { const id = c.store.material('actuator', 'niti-lowT'); return { value: SMAS.some(m => m.id === id) ? id : 'niti-lowT', prov: 'library' }; } },
+    { key: 'grade', label: 'Shape-memory alloy grade', type: 'select', group: 'Material', default: 'nitcu', options: SMAS.map(m => ({ value: m.id, label: m.name })), auto: (c) => { const id = c.store.project.materials?.actuator; return { value: id && SMAS.some(m => m.id === id) ? id : 'nitcu', prov: id ? 'user' : 'library' }; }, help: 'Revision 2 default: low-hysteresis NiTiCu.' },
+    { key: 'autoMatch', label: 'Match transformation temperatures to the interfaces', type: 'bool', group: 'Material', default: true, help: 'Composition / heat-treatment tuning within ±40 K so A_f(σ_H) ≤ T_hot − 3 K and M_f(σ_L) ≥ T_cold + 3 K.' },
+    { key: 'epsAmp', label: 'Transformation strain amplitude limit', unit: '%', type: 'number', min: 0.2, max: 6, step: 0.1, group: 'Mechanical', default: 1.0, help: 'Revision 2 (D6): 1 % for ≥ 10⁷-cycle life.' },
     { key: 'source', label: 'Thermal boundary source', type: 'select', group: 'Thermal', default: 'coupled', options: [{ value: 'coupled', label: 'Coupled interface temperatures (Suite 14)' }, { value: 'imposed', label: 'Imposed laboratory ΔT (not atmospheric)' }] },
     { key: 'Th', label: 'Hot-interface temperature', unit: '°C', type: 'number', min: -20, max: 200, step: 0.5, group: 'Thermal', default: 25, auto: (c) => { const o = c.upstream('s14'); return o ? { value: +o.ThotIface_C.toFixed(2), prov: 'coupled' } : { value: +((c.env?.T ?? 20) + 5).toFixed(1), prov: 'hypothetical' }; } },
     { key: 'Tc', label: 'Cold-interface temperature', unit: '°C', type: 'number', min: -40, max: 150, step: 0.5, group: 'Thermal', default: 20, auto: (c) => { const o = c.upstream('s14'); return o ? { value: +o.TcoldIface_C.toFixed(2), prov: 'coupled' } : { value: +(c.env?.T ?? 20).toFixed(1), prov: 'hypothetical' }; } },
     { key: 'hc', label: 'Interface conductance to lamella', unit: 'W/m²K', type: 'number', min: 100, max: 100000, step: 100, group: 'Thermal', default: 5000 },
     { key: 'sH', label: 'Recovery-stroke stress σ_H', unit: 'MPa', type: 'range', min: 20, max: 500, step: 5, group: 'Mechanical', default: 150 },
     { key: 'sL', label: 'Reset (bias) stress σ_L', unit: 'MPa', type: 'range', min: 0, max: 200, step: 5, group: 'Mechanical', default: 20 },
-    { key: 't', label: 'Lamella thickness', unit: 'mm', type: 'number', min: 0.05, max: 5, step: 0.05, group: 'Geometry', default: 0.3, help: 'Thin lamellae/microstruts shorten thermal diffusion time but reduce force per element.' },
+    { key: 'tAuto', label: 'Size thickness from cycle-frequency requirement', type: 'bool', group: 'Geometry', default: true },
+    { key: 'fReq', label: 'Required cycle frequency', unit: 'Hz', type: 'number', min: 0.05, max: 20, step: 0.05, group: 'Geometry', default: 2.95, auto: (c) => ({ value: +(20 / 3.6 / (2 * Math.PI * (c.vehicle.wheelRadius || 0.3))).toFixed(2), prov: 'calc' }), help: 'One cycle per wheel revolution at 20 km/h.' },
+    { key: 't', label: 'Lamella thickness (manual)', unit: 'mm', type: 'number', min: 0.05, max: 5, step: 0.05, group: 'Geometry', default: 0.3, help: 'Used when automatic sizing is off. Thin lamellae shorten thermal diffusion time but reduce force per element.' },
     { key: 'w', label: 'Lamella width', unit: 'mm', type: 'number', min: 1, max: 50, step: 0.5, group: 'Geometry', default: 12 },
     { key: 'L', label: 'Active length', unit: 'mm', type: 'number', min: 5, max: 500, step: 1, group: 'Geometry', default: 120 },
     { key: 'nElem', label: 'Active elements (system)', type: 'number', min: 1, max: 2000, step: 1, group: 'Geometry', default: 48, help: '24 cartridges × 2 driven wheels in the reference layout.' },
@@ -65,9 +87,15 @@ export default {
 
   async run(p, ctx) {
     const out = { kpis: [], charts: [], tables: [], verdicts: [], recs: [], checks: [], explain: [], views: [] };
-    const mat = get(p.grade); if (!mat) throw new Error('Unknown alloy grade');
-    const q = { Th: p.Th, Tc: p.Tc, sH: p.sH, sL: p.sL, t_mm: p.t, hc: p.hc, dwell: p.dwell };
+    const mat0 = get(p.grade); if (!mat0) throw new Error('Unknown alloy grade');
     if (p.Th <= p.Tc) throw new Error('Hot-interface temperature must exceed cold-interface temperature (no heat-engine cycle is possible otherwise).');
+    const capped = capStrain(mat0, (p.epsAmp ?? 1) / 100), MA = p.autoMatch !== false ? matchAlloy(capped, { Th: p.Th, Tc: p.Tc, sH: p.sH, sL: p.sL }) : { mat: capped, shift: 0, feasible: null, need: NaN, note: 'Library transformation temperatures used.' };
+    const mat = MA.mat;
+    // D5: thickness = largest lamella that still reaches the required cycle frequency
+    let tUse = p.t, tNote = 'manual';
+    if (p.tAuto !== false) { const ts = [2, 1.5, 1.2, 1, 0.8, 0.6, 0.5, 0.4, 0.3, 0.25, 0.2, 0.15, 0.1, 0.07, 0.05]; const ok = ts.find(t => evaluateSMA(mat, { Th: p.Th, Tc: p.Tc, sH: p.sH, sL: p.sL, t_mm: t, hc: p.hc, dwell: p.dwell }).f >= p.fReq); tUse = ok ?? 0.05; tNote = ok ? `largest thickness meeting ${p.fReq} Hz` : `even 0.05 mm cannot reach ${p.fReq} Hz`; }
+    p = { ...p, t: tUse };
+    const q = { Th: p.Th, Tc: p.Tc, sH: p.sH, sL: p.sL, t_mm: p.t, hc: p.hc, dwell: p.dwell };
     const R = evaluateSMA(mat, q), cyc = R.cyc;
     const V = p.t * p.w * p.L * 1e-9, mElem = mat.rho * V, mTot = mElem * p.nElem;
     const Wcycle = cyc.w_J_m3 * V, Psys = R.P_kg * mTot, Fh = p.sH * p.t * p.w, stroke = cyc.strokeStrain * p.L;
@@ -94,6 +122,8 @@ export default {
     const K = (label, value, unit, explain, prov, status) => out.kpis.push({ label, value, unit, explain, prov, status });
     const prov = p.source === 'coupled' ? (ctx.upstream('s14') ? 'coupled' : 'hypothetical') : 'user';
     K('Interface ΔT', p.Th - p.Tc, 'K', p.source === 'imposed' ? 'Imposed laboratory temperature difference — NOT evidence of atmospheric operation.' : 'Solved interface temperature difference from Suite 14 (or a hypothetical 5 K if not yet run).', prov, p.Th - p.Tc > 15 ? 'ok' : 'bad');
+    K('Transformation-temperature shift (matching)', MA.shift, 'K', `${MA.note} ${MA.feasible === false ? `Matching is impossible: the alloy needs ΔT ≥ ${fmt(MA.need, 3)} K (hysteresis + stress shift + 6 K margins) but only ${fmt(p.Th - p.Tc, 3)} K is available.` : ''}`, 'generated', MA.feasible === false ? 'bad' : 'ok');
+    K('Lamella thickness (sized)', p.t, 'mm', `Sizing: ${tNote}.`, p.tAuto !== false ? 'generated' : 'user');
     K('A_s / A_f under σ_H', `${fmt(R.temps.H.As, 3)} / ${fmt(R.temps.H.Af, 3)}`, '°C', 'Reverse-transformation window shifted upward by the recovery stress (Clausius–Clapeyron). The hot side must exceed A_s(σ_H).', 'calc');
     K('M_s / M_f under σ_L', `${fmt(R.temps.L.Ms, 3)} / ${fmt(R.temps.L.Mf, 3)}`, '°C', 'Forward-transformation window at the reset stress. The cold side must fall below M_s(σ_L).', 'calc');
     K('Recovered phase fraction per cycle Δξ', cyc.dXiHeat, '', 'Fraction of the material that actually transforms in the available time.', 'calc', cyc.dXiHeat > 0.5 ? 'ok' : cyc.dXiHeat > 0.05 ? 'warn' : 'bad');
@@ -125,7 +155,7 @@ export default {
     out.charts.push({ title: 'Sensitivity of power density (local, ± ranges)', type: 'tornado', rows: sens.rows, base: sens.base, x: { label: 'Power density', unit: 'W/kg' }, explain: 'Which inputs most change continuous power density. Temperature inputs usually dominate — the environment, not the alloy, sets the ceiling.' });
     out.charts.push({ title: 'Power density context (W/kg)', type: 'bar', horizontal: true, categories: ['This design', 'Lab NiTi heat engine (literature)', `Needed for ${p.Ptarget} W with ${fmt(mTot, 3)} kg`], series: [{ name: 'W/kg', values: [R.P_kg, 52, p.Ptarget / mTot], colors: ['#38bdf8', '#94a3b8', '#ef4444'] }], y: { label: 'Power density', unit: 'W/kg' }, showValues: true, explain: 'Literature values come from strong laboratory gradients; atmospheric gradients are much weaker.' });
     // tables
-    out.tables.push({ title: 'Transformation temperatures (°C)', cols: ['State', 'M_f', 'M_s', 'A_s', 'A_f'], rows: [['Stress-free (library)', mat.Mf, mat.Ms, mat.As, mat.Af], [`σ_L = ${p.sL} MPa`, R.temps.L.Mf, R.temps.L.Ms, R.temps.L.As, R.temps.L.Af], [`σ_H = ${p.sH} MPa`, R.temps.H.Mf, R.temps.H.Ms, R.temps.H.As, R.temps.H.Af]] });
+    out.tables.push({ title: 'Transformation temperatures (°C)', cols: ['State', 'M_f', 'M_s', 'A_s', 'A_f'], rows: [['Stress-free (library grade)', mat0.Mf, mat0.Ms, mat0.As, mat0.Af], [`Stress-free (matched, shift ${fmt(MA.shift, 3)} K)`, mat.Mf, mat.Ms, mat.As, mat.Af], [`σ_L = ${p.sL} MPa`, R.temps.L.Mf, R.temps.L.Ms, R.temps.L.As, R.temps.L.Af], [`σ_H = ${p.sH} MPa`, R.temps.H.Mf, R.temps.H.Ms, R.temps.H.As, R.temps.H.Af]] });
     out.tables.push({ title: 'Cycle energy accounting (per kg)', cols: ['Quantity', 'Value', 'Unit'], rows: [['Net work', cyc.w_J_kg, 'J/kg'], ['Sensible heat c_pΔT', mat.cp * (p.Th - p.Tc), 'J/kg'], ['Latent heat L_hΔξ', mat.Lh * cyc.dXiHeat, 'J/kg'], ['Total heat input', cyc.qIn_J_kg, 'J/kg'], ['Efficiency', cyc.eta * 100, '%'], ['Carnot limit', cyc.etaCarnot * 100, '%'], ['Heat demand at system scale', cyc.qIn_J_kg * mTot * R.f, 'W']] });
     out.tables.push({ title: 'Experimental and numerical references (literature context, not predictions of this design)', cols: ['Source', 'Reported result', 'Conditions'], rows: [['NiTi heat engine (laboratory)', '≈ 52 W/kg mechanical', 'Strong hot/cold reservoirs'], ['NiTi heat engine on geothermal source (2024)', '3.5 / 8.5 / 11.5 W', 'Source at 60 / 80 / 90 °C'], ['Optimised SMA thermoelastic harvesting (2025, numerical)', '8.6 % efficiency', '55 K temperature difference'], ['Calm night reference (this specification)', 'Carnot 1.71 %', '293 K / 288 K']] });
     // recs
@@ -135,10 +165,78 @@ export default {
     out.recs.push({ level: 'good', text: 'Before hardware: measure DSC transformation temperatures, isobaric strain–temperature loops at σ_H and σ_L, and a full heat-engine cycle on a single cartridge with all heat flows metered (Gate 2).', basis: 'Specification development gates' });
     out.recs.push({ level: 'sustain', text: 'NiTi has high embodied energy (≈ 900 MJ/kg); maximise fatigue life and design cartridges for replacement and alloy recovery rather than disposal.', basis: 'Materials registry life-cycle data' });
     out.explain.push({ title: 'What “capable of propulsion” means here', text: 'A shape-memory element can produce a large recovery force on a single heating. Sustained propulsion requires repeated complete cycles whose work output exceeds the reset work, at a frequency the heat transfer can sustain, with heat supplied by the environment. All four conditions are evaluated; failing any one classifies the configuration as incapable under the simulated condition.' });
-    out.outputs = { wNet_J_kg: cyc.w_J_kg, Wcycle_J: Wcycle, maxFreqHz: R.f, powerDensity_W_kg: R.P_kg, efficiency: cyc.eta, carnotFrac: cyc.etaCarnot ? cyc.eta / cyc.etaCarnot : 0, fatigueCycles: R.fatigue, netPositive, recoveryStress_MPa: p.sH, Gconv_W_K: Gconv, grade: p.grade, Th: p.Th, Tc: p.Tc, sL: p.sL, elem: { t: p.t, w: p.w, L: p.L, mass: mElem }, activeMass_kg: mTot, systemPower_W: Psys, tau_s: R.tim.tau, source: p.source, heatPerCycle_J_kg: cyc.qIn_J_kg };
+    out.views.push({ label: '3D actuator cycle', icon: '🔩', render: (el) => view3dCycle(el, { path: cyc.path, mat, p, f: R.f, netPositive, wNet: cyc.w_J_kg }) });
+    out.views.push({ label: '2D animation: σ–ε–T cycle', icon: '🎞', render: (el) => anim2dCycle(el, { path: cyc.path, mat, netPositive, wNet: cyc.w_J_kg, Th: p.Th, Tc: p.Tc }) });
+    out.outputs = { tShift_K: MA.shift, matchFeasible: MA.feasible, minDT_K: MA.need, matchNote: MA.note, tSized_mm: p.t, epsAmp: p.epsAmp, wNet_J_kg: cyc.w_J_kg, Wcycle_J: Wcycle, maxFreqHz: R.f, powerDensity_W_kg: R.P_kg, efficiency: cyc.eta, carnotFrac: cyc.etaCarnot ? cyc.eta / cyc.etaCarnot : 0, fatigueCycles: R.fatigue, netPositive, recoveryStress_MPa: p.sH, Gconv_W_K: Gconv, grade: p.grade, Th: p.Th, Tc: p.Tc, sL: p.sL, elem: { t: p.t, w: p.w, L: p.L, mass: mElem }, activeMass_kg: mTot, systemPower_W: Psys, tau_s: R.tim.tau, source: p.source, heatPerCycle_J_kg: cyc.qIn_J_kg };
     out.headline = netPositive ? `Net-positive cycle: ${fmt(cyc.w_J_kg, 4)} J/kg at ${fmt(R.f, 3)} Hz → ${fmt(R.P_kg, 3)} W/kg; system ${fmt(Psys, 3)} W vs ${p.Ptarget} W target.` : `INCAPABLE under this condition: no repeatable net-positive cycle at ΔT = ${fmt(p.Th - p.Tc, 3)} K (threshold ≈ ${thr ? fmt(thr, 3) : '>80'} K).`;
     out.headlineKind = netPositive && Psys >= p.Ptarget ? 'ok' : netPositive ? 'warn' : 'fail';
     void max;
     return out;
   },
 };
+
+// 3D NiTi cartridge animated through the solved thermomechanical cycle (path from the constitutive integration):
+// lamella length follows the solved strain (exaggerated for visibility), colour follows the solved martensite
+// fraction or temperature, the bias load moves with the stroke, and an inset tracks the point on the σ–ε loop.
+async function view3dCycle(el, { path, mat, p, f, netPositive, wNet }) {
+  const [{ viewer }, { playback, hud, legend3d, magnifier }, { box }, { cmap }, { h }] = await Promise.all([import('../core/viz3d.js'), import('../core/sim3d.js'), import('../core/cad.js'), import('../core/chart.js'), import('../core/ui.js')]);
+  const period = f > 0 ? 1 / f : NaN, eRange = Math.max(...path.map(r => r.e)) - Math.min(...path.map(r => r.e));
+  let colorBy = 'xi';
+  const sel = h('select', { onchange: (e) => { colorBy = e.target.value; } }, h('option', { value: 'xi' }, 'Colour: martensite fraction ξ'), h('option', { value: 'T' }, 'Colour: temperature'), h('option', { value: 's' }, 'Colour: stress'));
+  el.append(h('p', { class: 'small muted' }, `Solved: the full ${mat.name} heating–loading–cooling–unloading path (${path.length} integration points, stress-dependent transformation, hysteresis). Lamella extension = solved strain × magnification (slider); colour = solved state; inset = σ–ε loop with the current point. Real cycle period ${Number.isFinite(period) ? fmt(period, 3) + ' s' : 'undefined (no repeatable cycle)'}; playback shows one cycle as 0–100 %.`), sel);
+  if (!netPositive) el.append(h('div', { class: 'callout fail' }, 'This configuration has no repeatable net-positive cycle: the animation shows the solved (collapsed) loop — the element barely moves and delivers no net work.'));
+  const mag = magnifier(el, { auto: Math.min(500, 0.3 / Math.max(eRange, 3e-4)), truePeak: eRange * p.L, unit: ' mm stroke' });
+  const wrap = h('div'); el.append(wrap);
+  const V = await viewer(wrap, { height: 440, grid: true }); const THREE = V.THREE;
+  const Lv = 1.2, nLam = 6, gap = 0.05, tv = 0.025, wv = 0.18; // visual dimensions (m)
+  const e0 = Math.min(...path.map(r => r.e));
+  const top = box('Fixed end plate', 0.5, 0.4, 0.06, { color: '#64748b' }); top.translate(0, 0, Lv + 0.4); V.add(top);
+  const hot = box('Hot interface plate', 0.04, 0.5, Lv * 0.9, { color: '#ef4444' }); hot.translate(-0.25, 0, Lv / 2 + 0.3); const oHot = V.add(hot, { opacity: 0.7 });
+  const cold = box('Cold interface plate', 0.04, 0.5, Lv * 0.9, { color: '#3b82f6' }); cold.translate(0.25, 0, Lv / 2 + 0.3); const oCold = V.add(cold, { opacity: 0.7 });
+  const lams = []; for (let i = 0; i < nLam; i++) { const m = box(`NiTi lamella ${i + 1}`, tv, wv, 1, { color: '#c58b4b' }); m.translate(-((nLam - 1) * gap) / 2 + i * gap, 0, -0.5); const o = V.add(m); o.position.z = Lv + 0.37; lams.push(o); }
+  const mass = box('Bias / load block', 0.42, 0.35, 0.14, { color: '#94a3b8' }); const oMass = V.add(mass);
+  const arrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, -1), new THREE.Vector3(), 0.4, 0xfacc15, 0.1, 0.06); V.root.add(arrow);
+  V.viewDir(1, -1.4, 0.5);
+  const sMax = Math.max(...path.map(r => r.s)), Tmin = Math.min(...path.map(r => r.T)), Tmax = Math.max(...path.map(r => r.T));
+  const H = hud(wrap); const leg = legend3d(wrap, { title: 'ξ (0 = austenite, 1 = martensite)', lo: 0, hi: 1, cmapName: 'viridis' });
+  // inset σ–ε loop
+  const es = path.map(r => r.e * 100), ss = path.map(r => r.s), ex0 = Math.min(...es), ex1 = Math.max(...es) || 1, sy1 = Math.max(...ss) || 1;
+  const X = (e) => 10 + 160 * (e - ex0) / ((ex1 - ex0) || 1), Y = (s) => 110 - 95 * s / sy1;
+  const inset = h('div', { class: 'sim-legend', style: 'left:8px;right:auto;bottom:60px;width:190px', html: `<div class="small">σ–ε loop (solved)</div><svg viewBox="0 0 180 120" width="180" height="120"><polyline points="${path.map((r, i) => X(es[i]).toFixed(1) + ',' + Y(ss[i]).toFixed(1)).join(' ')}" fill="none" stroke="#38bdf8" stroke-width="1.5"/><circle r="4" fill="#facc15"/></svg><div class="small">ε ${fmt(ex0, 3)}–${fmt(ex1, 3)} %, σ ≤ ${fmt(sy1, 3)} MPa</div>` });
+  wrap.append(inset); const dot = inset.querySelector('circle');
+  // cumulative work along the path (J/kg): w = −∮σ dε with σ in Pa
+  const cum = [0]; for (let i = 1; i < path.length; i++) cum.push(cum[i - 1] - 0.5 * (path[i].s + path[i - 1].s) * 1e6 * (path[i].e - path[i - 1].e) / mat.rho);
+  playback(wrap, { duration: 100, rate: 12, label: 'Cycle progress', unit: '%', onFrame: (t) => {
+    const x = t / 100 * (path.length - 1), i = Math.min(path.length - 2, Math.floor(x)), fr = x - i, A = path[i], B = path[i + 1];
+    const e = A.e + (B.e - A.e) * fr, sg = A.s + (B.s - A.s) * fr, T = A.T + (B.T - A.T) * fr, xi = A.xi + (B.xi - A.xi) * fr;
+    const len = Lv * (1 + mag.value * (e - e0));
+    const v = colorBy === 'xi' ? xi : colorBy === 'T' ? (T - Tmin) / ((Tmax - Tmin) || 1) : sg / (sMax || 1), c = cmap(v, colorBy === 'xi' ? 'viridis' : colorBy === 'T' ? 'coolwarm' : 'inferno');
+    for (const o of lams) { o.scale.z = len; o.material.color.setRGB(c[0] / 255, c[1] / 255, c[2] / 255); }
+    oMass.position.set(0, 0, Lv + 0.37 - len - 0.07); arrow.position.set(0.32, 0, Lv + 0.37 - len - 0.07); arrow.setLength(0.15 + 0.5 * sg / (sMax || 1), 0.1, 0.06);
+    const heating = B.T > A.T + 1e-9, cooling = B.T < A.T - 1e-9; oHot.material.opacity = heating ? 0.95 : 0.25; oCold.material.opacity = cooling ? 0.95 : 0.25;
+    leg.set(colorBy === 'xi' ? 0 : colorBy === 'T' ? Tmin : 0, colorBy === 'xi' ? 1 : colorBy === 'T' ? Tmax : sMax);
+    dot.setAttribute('cx', X(e * 100)); dot.setAttribute('cy', Y(sg));
+    const w = cum[i] + (cum[i + 1] - cum[i]) * fr;
+    H.set([['Stage', heating ? 'Heating (A transformation)' : cooling ? 'Cooling (M transformation)' : 'Load change'], ['Temperature', fmt(T, 4) + ' °C', heating ? '#ef4444' : cooling ? '#38bdf8' : undefined], ['Stress σ', fmt(sg, 4) + ' MPa'], ['Strain ε', fmt(e * 100, 4) + ' %'], ['Martensite ξ', fmt(xi, 3)], ['Work so far', fmt(w, 4) + ' J/kg'], ['Net work / cycle', fmt(wNet, 4) + ' J/kg', netPositive ? '#22c55e' : '#ef4444'], ['Real period', Number.isFinite(period) ? fmt(period, 3) + ' s' : '—']]);
+  } });
+}
+
+// 2D animation of the solved cycle: σ–ε loop and T–ε hysteresis with a moving state marker, ξ and T traces with a
+// cursor, a phase-fraction bar and the running work integral −∫σ dε.
+async function anim2dCycle(el, { path, mat, netPositive, wNet, Th, Tc }) {
+  const [{ anim2d }, { h }, { cmap }] = await Promise.all([import('../core/sim3d.js'), import('../core/ui.js'), import('../core/chart.js')]);
+  el.append(h('p', { class: 'small muted' }, `Every frame is a point of the solved constitutive path (${path.length} points, ${mat.name}). Net work per cycle ${fmt(wNet, 4)} J/kg ${netPositive ? '(net-positive)' : '(NOT net-positive)'}.`));
+  const E = path.map(r => r.e * 100), S = path.map(r => r.s), T = path.map(r => r.T), X = path.map(r => r.xi), idx = path.map((_, i) => i);
+  const pad = (a) => { const lo = Math.min(...a), hi = Math.max(...a), d = (hi - lo) * 0.1 || 1; return [lo - d, hi + d]; };
+  const cum = [0]; for (let i = 1; i < path.length; i++) cum.push(cum[i - 1] - 0.5 * (path[i].s + path[i - 1].s) * 1e6 * (path[i].e - path[i - 1].e) / mat.rho);
+  anim2d(el, { height: 420, duration: 100, rate: 12, label: 'Cycle progress', unit: '%', onFrame: (t, g) => {
+    g.clear(); const W = g.W, H = g.H, i = Math.min(path.length - 1, Math.round(t / 100 * (path.length - 1)));
+    const A = g.panel(0, 0, W / 2, H - 70, { xr: pad(E), yr: pad(S), xlabel: 'Strain ε [%]', ylabel: 'Stress σ [MPa]', title: 'σ–ε loop (enclosed area = net work)' });
+    A.line(E, S, '#38bdf8', 2); A.line(E.slice(0, i + 1), S.slice(0, i + 1), '#f97316', 3); A.point(E[i], S[i]);
+    const B = g.panel(W / 2, 0, W / 2, H - 70, { xr: [0, path.length - 1], yr: [Math.min(Tc, ...T) - 2, Math.max(Th, ...T) + 2], xlabel: 'Cycle step', ylabel: 'Temperature [°C]', title: 'Temperature (red) and ξ (green, right scale 0–1)' });
+    B.line(idx, T, '#ef4444', 2);
+    const Tlo = Math.min(Tc, ...T) - 2, Thi = Math.max(Th, ...T) + 2; B.line(idx, X.map(x => Tlo + x * (Thi - Tlo)), '#22c55e', 2, [5, 3]); B.vline(i); B.point(i, T[i], '#ef4444', 4); B.point(i, Tlo + X[i] * (Thi - Tlo), '#22c55e', 4);
+    const c = cmap(X[i], 'viridis'); g.gauge(60, H - 40, W * 0.35, X[i], `Martensite fraction ξ = ${fmt(X[i], 3)}`, `rgb(${c.map(Math.round).join(',')})`);
+    g.text(`σ = ${fmt(S[i], 4)} MPa   ε = ${fmt(E[i], 4)} %   T = ${fmt(T[i], 4)} °C   work so far ${fmt(cum[i], 4)} J/kg`, W * 0.45, H - 30, { size: 12, color: cum[i] >= 0 ? '#22c55e' : '#ef4444' });
+  } });
+}
