@@ -1,8 +1,8 @@
 // Suite 08 — Coupled fluid–structure interaction and aeroelastic simulation.
-import { WING_PARAMS, buildWing, solveStatic, wingLoads, runGust } from './s06-wing.js';
+import { WING_PARAMS, buildWing, solveStatic, wingLoads, runGust, sizeSpar, uncoupledOmegas, featherState } from './s06-wing.js';
 import { beamResultants, beamModes } from '../core/fem.js';
 import { flutterVg } from '../core/aeroelastic.js';
-import { range, fmt, deg, max, gci, interp1 } from '../core/num.js';
+import { range, fmt, deg, rad, max, gci, interp1 } from '../core/num.js';
 import { h } from '../core/ui.js';
 
 export default {
@@ -27,6 +27,7 @@ export default {
 
   async run(p, ctx) {
     const out = { kpis: [], charts: [], tables: [], verdicts: [], recs: [], checks: [], explain: [], views: [] };
+    const SZ = sizeSpar(p, ctx); Object.assign(p, SZ.values); // follow the Revision-2 spar sizing of Suite 06
     const W = buildWing(p, ctx), { model, props, span } = W, N = model.N, nW = ctx.vehicle.nWings || 2;
     ctx.progress(0.1, 'static FSI: algorithm comparison');
     const runs = {}; for (const m of ['fixed', 'aitken', 'iqn']) { const t0 = performance.now(); runs[m] = solveStatic(W, p, { method: m, tol: p.tolFsi, maxIt: 150 }); runs[m].ms = performance.now() - t0; }
@@ -42,8 +43,8 @@ export default {
     const pk = (G) => Math.abs(G.peakMroot || 0), g = gci(pk(G4), pk(G2), pk(Gi), dt / 4, dt / 2, dt), dtErr = Math.abs(pk(Gi) - g.fext) / (Math.abs(g.fext) || 1);
     const Mstatic = res[0].M, Mpk = pk(G4), looseErr = Math.abs(pk(Gs) - Mpk) / (Mpk || 1);
     // flutter & added mass
-    const modes = beamModes(model, 6), fb = modes.find(m => m.type === 'bending'), ft = modes.find(m => m.type === 'torsion') || modes[1];
-    const P75 = props(0.75 * span), b = W.chord(0.75 * span) / 2, FL = flutterVg({ m: P75.m, Ia: P75.Ip, xa: P75.xa / b, a: (P75.xEA - 0.5) * 2, b, wh: fb.omega, wa: ft.omega, rho: p.rho, gs: 2 * p.zeta });
+    const modes = beamModes(model, 40), fb = modes.find(m => m.type === 'bending'), ft = modes.find(m => m.type === 'torsion') || modes[1];
+    const P75 = props(0.75 * span), b = W.chord(0.75 * span) / 2, UO = uncoupledOmegas(W), FL = flutterVg({ m: P75.m, Ia: P75.Ip, xa: P75.xa / b, a: (P75.xEA - 0.5) * 2, b, wh: UO.wh, wa: UO.wa, rho: p.rho, gs: 2 * p.zeta });
     const Vmax = max(range(N).map(i => W.app(model.z[i]).Va)), mu = P75.m / (Math.PI * p.rho * b * b), fm = FL.Vflutter / Vmax;
     // checks
     for (const m of ['fixed', 'aitken', 'iqn']) out.checks.push({ name: `Static FSI convergence — ${m}`, value: runs[m].history[runs[m].history.length - 1], target: `< ${p.tolFsi}`, pass: runs[m].converged, detail: `${runs[m].iterations} iterations, ${fmt(runs[m].ms, 3)} ms` });
@@ -83,14 +84,18 @@ export default {
     out.charts.push({ title: 'V–g flutter boundary', type: 'line', x: { label: 'Apparent wind', unit: 'm/s', min: 0, max: Math.min(400, (Number.isFinite(FL.Vflutter) ? FL.Vflutter : 80) * 1.3) }, y: { label: 'g', min: -1, max: 0.4 }, series: FL.branches.map((B, j) => ({ name: 'Branch ' + (j + 1), x: B.map(q => q.V), y: B.map(q => q.g) })), annotations: [{ type: 'vline', x: Vmax, label: 'V_max' }], explain: 'Flutter onset where a branch crosses the structural damping level.' });
     out.tables.push({ title: 'Coupling algorithms', cols: ['Algorithm', 'Converged', 'Iterations', 'Final residual', 'Tip twist [°]', 'Wall time [ms]'], rows: ['fixed', 'aitken', 'iqn'].map(m => [m, runs[m].converged ? 'yes' : 'no', runs[m].iterations, runs[m].history[runs[m].history.length - 1], deg(runs[m].sol.phi[N - 1]), runs[m].ms]) });
     out.tables.push({ title: 'Time-step study (peak dynamic root moment)', cols: ['Δt [s]', 'Peak ΔM [N·m]'], rows: [[dt, pk(Gi)], [dt / 2, pk(G2)], [dt / 4, pk(G4)], ['Richardson extrapolated', g.fext], ['Observed order', g.p]] });
-    out.views.push({ label: 'Evolving wing shape (3D playback)', icon: '🎞', render: (el) => playback(el, W, p, S, Gi) });
+    out.views.unshift({ label: '3D FSI: evolving wing & gust flow (timeline)', icon: '🎞', render: (el) => fsi3D(el, W, p, S, Gi) });
     if (!runs.fixed.converged) out.recs.push({ level: 'info', text: `Fixed-point coupling with ω = ${p.omega0} did not converge in 150 exchanges; use Aitken (${runs.aitken.iterations}) or IQN-ILS (${runs.iqn.iterations}) for high-fidelity CFD–FEA coupling.`, basis: 'Algorithm comparison' });
     if (looseErr >= 0.02 || mu < 5) out.recs.push({ level: 'warn', text: 'Use strongly coupled (sub-iterated) partitioned FSI for transient gusts on this wing; the added-mass ratio and loose-coupling error indicate staggered schemes are not accurate enough.', basis: 'Added-mass ratio & loose/strong comparison' });
     if (dtErr >= 0.03) out.recs.push({ level: 'warn', text: `Reduce the time step: discretisation error ${fmt(dtErr * 100, 3)} % at Δt = ${dt} s.`, basis: 'Richardson extrapolation' });
     out.recs.push({ level: 'good', text: 'Validate with simultaneous pressure-tap and digital-image-correlation measurements on a wind-tunnel section; keep the calibration and validation datasets separate (Suite 24).', basis: 'Specification calibration dataset for Module 08' });
     out.explain.push({ title: 'What “converged” means here', text: 'The aerodynamic model and the structural model are solved separately and exchange interface data. Convergence means the twist used to compute the loads equals the twist produced by those loads — kinematic continuity and traction equilibrium are both satisfied.' });
     out.convergence = { title: 'Static FSI residuals', series: ['fixed', 'aitken', 'iqn'].map(m => ({ name: m, x: runs[m].history.map((_, i) => i + 1), y: runs[m].history })) };
-    out.outputs = { converged: S.converged, iterations: S.iterations, twistTip_deg: tipTw, tipDefl_m: tipW, CLdeformed: ll.CL, CLrigid: rigid.aero.ll.CL, flutterMargin: fm, flutterSpeed: FL.Vflutter, gustPeakRootMoment: Math.abs(Mstatic) + Mpk, rootMoment_Nm: Mstatic, thrustN: Lc.thrust * nW, sideN: Lc.side * nW, rootShear_N: ll.L };
+    // Free-feathering breakaway during the gust (D3): side force scales with the solved lift history
+    const FSg = featherState(W, p, ctx, Lc, nW), Lpk = ll.L + Math.max(...Gi.lift), sidePk = FSg.side * Lpk / Math.max(1e-9, ll.L), iRel = Gi.lift.findIndex(dl => FSg.side * (ll.L + dl) / Math.max(1e-9, ll.L) > FSg.FySafe);
+    out.kpis.push({ label: 'Gust peak side force / breakaway setting', value: `${fmt(sidePk, 3)} / ${fmt(FSg.FySafe, 3)}`, unit: 'N', explain: `Both wings; ${p.wingState === 'reefed' ? 'reefed' : 'deployed'} configuration. Above the setting the torque-limited lock releases and the wings weathervane.`, prov: 'calc', status: sidePk <= FSg.FySafe ? 'ok' : 'warn' });
+    out.verdicts.push({ test: 'Gust response with free-feathering breakaway (D3)', status: sidePk <= FSg.FySafe || p.breakaway ? 'pass' : 'fail', detail: sidePk <= FSg.FySafe ? `Peak side force ${fmt(sidePk, 3)} N stays below the breakaway setting ${fmt(FSg.FySafe, 3)} N — wings remain locked through the gust.` : p.breakaway ? `Breakaway releases at t = ${fmt(Gi.t[iRel], 3)} s (side force reaches ${fmt(FSg.FySafe, 3)} N); feathered residual side force ${fmt(FSg.feathered.side, 3)} N — rollover protected, propulsion paused until re-latching.` : `Peak side force ${fmt(sidePk, 3)} N exceeds the safe limit with the breakaway disabled.` });
+    out.outputs = { converged: S.converged, iterations: S.iterations, twistTip_deg: tipTw, tipDefl_m: tipW, CLdeformed: ll.CL, CLrigid: rigid.aero.ll.CL, flutterMargin: fm, flutterSpeed: FL.Vflutter, gustPeakRootMoment: Math.abs(Mstatic) + Mpk, rootMomentStatic: Math.abs(Mstatic), rootMoment_Nm: Mstatic, thrustN: Lc.thrust * nW, sideN: Lc.side * nW, rootShear_N: ll.L };
     out.headline = `${p.method} FSI converged in ${S.iterations} exchanges; coupled tip twist ${fmt(tipTw, 3)}°, root moment ${fmt(Mstatic, 4)} N·m (${fmt((Mstatic / (resR[0].M || 1) - 1) * 100, 3)} % vs rigid); gust peak ${fmt(Math.abs(Mstatic) + Mpk, 4)} N·m; flutter margin ${fmt(fm, 3)}.`;
     return out;
   },
@@ -114,3 +119,53 @@ async function playback(el, W, p, S, G) {
   el.append(sl, lbl, h('button', { class: 'btn sm', onclick: (e) => { playing = !playing; e.target.textContent = playing ? 'Pause' : 'Play'; } }, 'Pause'), h('p', { class: 'small muted' }, `Solved transient shapes (modal superposition about the static equilibrium). Deflection drawn ×${amp}; twist at true scale; colour = twist increment.`));
   frame(0);
 }
+
+// ---------------- 3-D FSI timeline: solved transient wing shape + gust-driven flow field ----------------
+// Solved: static coupled equilibrium, modal gust response q(t), gust history ΔU(t), lift increment and root moment.
+// Displayed flow: lifting-line vortex system carrying the solved lift L(t) in the (gust-modified) apparent wind,
+// with a reflection plane at the wing root; particles advected through it. Bending magnified, twist true scale.
+async function fsi3D(el, W, p, S, G) {
+  const [{ viewer }, { wing }, { playback, particles, hud, legend3d }, { vehicleFlowModel, sampledField }] = await Promise.all([import('../core/viz3d.js'), import('../core/cad.js'), import('../core/sim3d.js'), import('../core/flow3d.js')]);
+  el.append(h('p', { class: 'small muted' }, 'Timeline of the solved partitioned FSI gust response: wing shape from the static equilibrium plus modal response q(t); colour = solved twist increment (fixed range over the whole history). Particles move through a flow field rebuilt every 0.05 s from the gust-modified apparent wind and a lifting-line vortex system that carries exactly the solved lift (static + increment). The default wing is very stiff, so deflection and twist increments are magnified (slider; true-scale values shown).'));
+  const box = h('div'); el.append(box);
+  const V = await viewer(box, { height: 480 }), span = W.span, modes = G.modes, N = W.model.N, Z = W.model.z;
+  const m = wing('Wing (transient FSI)', { airfoil: W.af, span, rootChord: W.cr, tipChord: W.ct, twistTip: p.twistBuilt, nSpan: 18, opts: { color: '#e5e7eb' } });
+  const base = Float32Array.from(m.p), obj = V.add(m, { field: { name: 'Twist increment', unit: '°', values: new Array(base.length / 3).fill(0), min: -1, max: 1, cmap: 'coolwarm' } });
+  // translucent undeformed reference wing so the solved deformation is always visible against it
+  const ref = wing('Undeformed reference', { airfoil: W.af, span, rootChord: W.cr, tipChord: W.ct, twistTip: p.twistBuilt, nSpan: 18, opts: { color: '#94a3b8', opacity: 0.22 } }); V.add(ref, { opacity: 0.22 });
+  const liftArrow = V.addArrow([0.3 * W.cr, 0, span * 0.55], [0, 1, 0], 0.5, 0x22c55e);
+  const plate = new V.THREE.Mesh(new V.THREE.BoxGeometry(W.cr * 2.4, W.cr * 1.4, 0.04), new V.THREE.MeshStandardMaterial({ color: 0x334155, transparent: true, opacity: 0.8 })); plate.position.set(W.cr * 0.5, 0, -0.02); V.root.add(plate);
+  const ll = S.aero.ll, Lstatic = ll.L, dU = oneMinus(p), zMid = span / 2;
+  const alphaAt = (z, g) => rad(g.awa - W.setAngle + p.twistBuilt * z / span) + interp1(Z, S.sol.phi, z);
+  const H = hud(box), leg = legend3d(box, { title: 'Air speed (m/s)', lo: 0, hi: 1 });
+  const wTipMax = Math.max(1e-12, ...G.wTip.map(Math.abs)), wStat = Math.abs(S.sol.w[N - 1]), autoAmp = Math.max(1, Math.round(0.1 * span / wTipMax)), ampS = Math.max(1, Math.round(0.05 * span / Math.max(1e-12, wStat)));
+  const ampIn = h('input', { type: 'range', min: 1, max: Math.max(1000, 3 * autoAmp), step: 1, value: autoAmp }), ampLab = h('div', { class: 'small mono' }); let amp = autoAmp;
+  const lab = () => { amp = +ampIn.value; ampLab.textContent = `Gust increment ×${amp} (auto ×${autoAmp}; true-scale peak Δ tip deflection = ${fmt(wTipMax * 1000, 4)} mm, peak Δ tip twist = ${fmt(Math.max(...G.twistTip.map(Math.abs)), 3)}°) · static shape ×${ampS} (true tip ${fmt(wStat * 1000, 4)} mm)`; };
+  ampIn.oninput = lab; lab(); box.before(h('label', {}, 'Deformation magnification ', ampIn), ampLab);
+  const bounds = [[-span * 0.8, span * 1.2], [-span * 0.6, span * 0.6], [0.02, span * 1.3]];
+  let field = null, lastBuild = -1, P = null;
+  const build = (t) => {
+    const du = dU(t), air = (z) => { const g = W.appGust(Math.min(span, Math.max(0, z)), du), a = alphaAt(Math.min(span, Math.max(0, z)), g); return [g.Va * Math.cos(a), g.Va * Math.sin(a)]; };
+    const i = Math.min(G.t.length - 1, Math.max(0, Math.round(t / (G.t[1] - G.t[0]))));
+    const M = vehicleFlowModel({ air, wings: [{ x: 0.25 * W.cr, z0: 0, z1: span, L: Lstatic + G.lift[i], nDir: [-Math.sin(alphaAt(zMid, W.app(zMid))), Math.cos(alphaAt(zMid, W.app(zMid)))] }], rho: p.rho, Va: W.app(zMid).Va, rc: 0.05 * W.cr });
+    field = sampledField(M.vel, bounds, [23, 17, 14]); lastBuild = t;
+  };
+  build(0); const Vref = W.app(zMid).Va, cr0 = 0.7 * Vref, cr1 = 1.15 * Vref + 1.2 * p.gustAmp; leg.set(cr0, cr1);
+  P = particles(V, { count: matchMedia('(max-width:600px)').matches ? 900 : 1800, bounds, vel: (x, y, z) => field.sample(x, y, z), colorRange: [cr0, cr1], size: 0.09 });
+  // frame the wing (not the particle cloud), looking along the chord so lateral bending is in the image plane
+  V.controls.target.set(0.4 * W.cr, 0, span * 0.5); V.camera.position.set(0.4 * W.cr + span * 2.1, -span * 0.6, span * 0.75); V.controls.update();
+  const mxTw = Math.max(1e-3, ...G.twistTip.map(Math.abs)); let lastT = 0;
+  const pb = playback(box, { duration: G.t[G.t.length - 1], rate: 1, label: 'FSI time', onFrame: (t) => {
+    if (Math.abs(t - lastBuild) > 0.05) build(t);
+    const k = Math.min(G.t.length - 1, Math.max(0, Math.round(t / (G.t[1] - G.t[0])))), q = G.q[k] || G.q[0];
+    const w = range(N).map(i => S.sol.w[i] + modes.reduce((s, md, j) => s + md.full[3 * i] * q[j], 0)), ph = range(N).map(i => S.sol.phi[i] + modes.reduce((s, md, j) => s + md.full[3 * i + 2] * q[j], 0));
+    const Pp = obj.geometry.attributes.position.array, vals = new Array(base.length / 3), xr = 0.25 * W.cr;
+    for (let v = 0; v < base.length; v += 3) { const z = base[v + 2], a0 = interp1(Z, S.sol.phi, z), w0 = interp1(Z, S.sol.w, z), a = Math.max(-0.45, Math.min(0.45, a0 * ampS + (interp1(Z, ph, z) - a0) * amp)), wz = w0 * ampS + (interp1(Z, w, z) - w0) * amp, x = base[v] - xr, y = base[v + 1]; Pp[v] = xr + x * Math.cos(a) - y * Math.sin(a); Pp[v + 1] = x * Math.sin(a) + y * Math.cos(a) + wz; Pp[v + 2] = z; vals[v / 3] = deg(interp1(Z, ph, z) - a0); }
+    obj.geometry.attributes.position.needsUpdate = true; obj.geometry.computeVertexNormals(); V.updateField(obj, { name: 'Twist increment', unit: '°', values: vals, min: -mxTw, max: mxTw, cmap: 'coolwarm' });
+    const dt = Math.min(0.03, Math.max(0, t - lastT)) || 0.01; lastT = t; P.step(dt * 4, t);
+    { const Lt = Lstatic + G.lift[k], Lmax = Lstatic + Math.max(...G.lift.map(Math.abs)); liftArrow.setLength(Math.max(0.08, 1.4 * span * 0.5 * Math.abs(Lt) / Math.max(1e-9, Lmax)), 0.12, 0.07); }
+    H.set([['Gust ΔU (solved input)', fmt(G.gust?.[k] ?? dU(t), 3) + ' m/s'], ['Lift: static + Δ', fmt(Lstatic, 3) + ' + ' + fmt(G.lift[k], 3) + ' N'], ['Δ root moment', fmt(G.Mroot[k], 4) + ' N·m'], ['Δ tip twist', fmt(G.twistTip[k], 3) + '°'], ['Display scales', `static ×${ampS}, gust ×${amp}`]]);
+  } });
+  return { dispose: () => pb.dispose() };
+}
+function oneMinus(p) { return (t) => (t < 0.3 || t > 0.3 + p.gustDur) ? 0 : 0.5 * p.gustAmp * (1 - Math.cos(2 * Math.PI * (t - 0.3) / p.gustDur)); }

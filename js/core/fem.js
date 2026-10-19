@@ -84,7 +84,10 @@ export function beamStatic(model, F) { // F full-size load vector (forces on w, 
 }
 export function beamModes(model, nModes = 4) {
   const { values, vectors } = eigGen(model.Kr, model.Mr);
-  return values.slice(0, nModes).map((lam, k) => { const full = new Array(model.ndof).fill(0); model.free.forEach((d, j) => full[d] = vectors[k][j]); const w = range(model.N).map(i => full[3 * i]), phi = range(model.N).map(i => full[3 * i + 2]); const wn = Math.max(...w.map(Math.abs)), pn = Math.max(...phi.map(Math.abs)) * 0.5; return { omega: Math.sqrt(Math.max(lam, 0)), f: Math.sqrt(Math.max(lam, 0)) / (2 * Math.PI), vec: vectors[k], full, w, phi, type: wn >= pn ? 'bending' : 'torsion' }; });
+  return values.slice(0, nModes).map((lam, k) => { const full = new Array(model.ndof).fill(0); model.free.forEach((d, j) => full[d] = vectors[k][j]); const w = range(model.N).map(i => full[3 * i]), phi = range(model.N).map(i => full[3 * i + 2]); const wn = Math.max(...w.map(Math.abs)), pn = Math.max(...phi.map(Math.abs)) * 0.5; void wn; void pn;
+    // classify by modal kinetic-energy split (bending w/θ DOFs vs torsion φ DOFs) — unit-consistent
+    let Eb = 0, Et = 0; if (model.M) { for (let a = 0; a < model.ndof; a++) { if (!full[a]) continue; const ta = a % 3 === 2; for (let b = 0; b < model.ndof; b++) { if (!full[b] || (b % 3 === 2) !== ta) continue; const e = full[a] * model.M[a][b] * full[b]; if (ta) Et += e; else Eb += e; } } } else { Eb = Math.max(...w.map(Math.abs)); Et = Math.max(...phi.map(Math.abs)) * 0.5; }
+    return { omega: Math.sqrt(Math.max(lam, 0)), f: Math.sqrt(Math.max(lam, 0)) / (2 * Math.PI), vec: vectors[k], full, w, phi, type: Eb >= Et ? 'bending' : 'torsion', bendingFraction: Eb / ((Eb + Et) || 1) }; });
 }
 // Internal bending moment & torque along the beam from the displacement solution (element mid values)
 export function beamResultants(model, u, props) {

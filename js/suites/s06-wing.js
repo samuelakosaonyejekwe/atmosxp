@@ -1,6 +1,6 @@
 // Suite 06 — Fixed skeleton, passive aeroelastic wings and morphing metamaterial surfaces.
 import { lamina, laminate, parseLayup, plyStresses, beamModel, beamModes, beamResultants, beamStatic } from '../core/fem.js';
-import { sectionModel, liftingLine, staticAeroelastic, divergenceQ, flutterVg, gustResponse, oneMinusCosGust } from '../core/aeroelastic.js';
+import { sectionModel, liftingLine, staticAeroelastic, divergenceQ, flutterVg, gustResponse, oneMinusCosGust, flutterModeShape } from '../core/aeroelastic.js';
 import { naca4, airfoilStats } from '../core/cad.js';
 import { logWind, apparentWind, ROUGHNESS } from '../core/physics.js';
 import { range, fmt, linspace, rad, deg, interp1, max, min } from '../core/num.js';
@@ -12,6 +12,12 @@ const skinMats = MATERIALS.filter(m => m.uses.includes('wingSkin'));
 const ribMats = MATERIALS.filter(m => m.uses.includes('rib'));
 
 export const WING_PARAMS = [
+  { key: 'wingState', label: 'Wing configuration (Revision 2.2 reefable wing)', type: 'select', group: 'Wing geometry', default: 'deployed', options: [{ value: 'deployed', label: 'Deployed — full span (light wind)' }, { value: 'reefed', label: 'Reefed — upper stage telescoped in (strong wind / transit)' }] },
+  { key: 'reefSpan', label: 'Reefed span', unit: 'm', type: 'number', min: 0.5, max: 6, step: 0.1, group: 'Wing geometry', default: 2, auto: (c) => ({ value: c.vehicle.wingReefSpan ?? c.vehicle.wingHeight, prov: 'user' }) },
+  { key: 'overlap', label: 'Telescoping overlap at the reef joint', unit: 'm', type: 'number', min: 0.05, max: 1, step: 0.01, group: 'Wing geometry', default: 0.3, help: 'Must be ≥ 1.5 × local section thickness.' },
+  { key: 'bushAllow', label: 'Joint bushing allowable contact pressure', unit: 'MPa', type: 'number', min: 2, max: 100, step: 1, group: 'Wing geometry', default: 25, expert: true, help: 'PTFE/PEEK-lined composite bushing, static.' },
+  { key: 'camberMorph', label: 'Passive leeward camber morphing', type: 'bool', group: 'Skin, ribs & core', default: true, help: 'The compliant trailing region cambers to the leeward side on either tack under aerodynamic load (symmetric when unloaded).' },
+  { key: 'camberPct', label: 'Morphed camber at design load', unit: '% chord', type: 'range', min: 0, max: 12, step: 0.5, group: 'Skin, ribs & core', default: 7 },
   { key: 'span', label: 'Wing height (span)', unit: 'm', type: 'number', min: 1, max: 6, step: 0.1, group: 'Wing geometry', default: 3, auto: (c) => ({ value: c.vehicle.wingHeight, prov: 'user' }) },
   { key: 'area', label: 'Planform area per wing', unit: 'm²', type: 'number', min: 1, max: 12, step: 0.1, group: 'Wing geometry', default: 4, auto: (c) => ({ value: +(c.vehicle.wingArea / (c.vehicle.nWings || 2)).toFixed(2), prov: 'calc' }) },
   { key: 'taper', label: 'Taper ratio c_tip/c_root', type: 'range', min: 0.3, max: 1, step: 0.05, group: 'Wing geometry', default: 0.6 },
@@ -24,20 +30,31 @@ export const WING_PARAMS = [
   { key: 'aoa', label: 'Root angle of attack', unit: '°', type: 'range', min: 0, max: 20, step: 0.5, group: 'Operating point', default: 10, help: 'Wing set so that the root section sees this angle to the local apparent wind.' },
   { key: 'rho', label: 'Air density', unit: 'kg/m³', type: 'number', min: 0.9, max: 1.35, step: 0.001, group: 'Operating point', default: 1.225, auto: (c) => c.env ? { value: +(+c.env.rho).toFixed(4), prov: 'coupled' } : undefined },
   { key: 'z0', label: 'Terrain roughness length', unit: 'm', type: 'number', min: 0.0002, max: 2, step: 0.001, group: 'Operating point', default: 0.1, auto: (c) => c.env?.z0 ? { value: c.env.z0, prov: 'coupled' } : (ROUGHNESS[c.site.roughness] ? { value: ROUGHNESS[c.site.roughness], prov: 'user' } : undefined) },
+  { key: 'sparType', label: 'Spar architecture', type: 'select', group: 'Spar (skeleton)', default: 'tube', options: [{ value: 'tube', label: 'Torsion-tailored: open CFRP caps + torsion tube on the feathering pivot (Revision 2, D3/D4)' }, { value: 'box', label: 'Closed CFRP box spar (Revision 1 — torsionally very stiff)' }], help: 'The closed box makes the wing torsionally rigid (negligible passive washout). The Revision-2 skeleton carries bending in open caps and torsion in a sized tube on the pivot axis, with a slotted trailing edge, so the wing washes out under load.' },
+  { key: 'autoSize', label: 'Auto-size spar to the design targets (D4)', type: 'bool', group: 'Spar (skeleton)', default: true, help: 'Bisection on cap ply thickness (strength factor 2.5) and torsion-tube wall (target tip washout at the reference apparent wind), then leading-edge mass balance for the flutter target. Re-runs whenever geometry, materials or loads change.' },
+  { key: 'targetTwist', label: 'Target tip washout at reference wind', unit: '°', type: 'number', min: -8, max: -0.5, step: 0.1, group: 'Spar (skeleton)', default: -3 },
+  { key: 'refVa', label: 'Reference apparent wind for sizing', unit: 'm/s', type: 'number', min: 4, max: 25, step: 0.5, group: 'Spar (skeleton)', default: 10 },
+  { key: 'xPivot', label: 'Pivot / torsion axis', unit: 'x/c', type: 'range', min: 0.15, max: 0.3, step: 0.01, group: 'Spar (skeleton)', default: 0.21, help: 'Free-feathering pivot ahead of the aerodynamic centre (D3): aerodynamic torque then twists the loaded wing nose-down (washout) and the wing weathervanes when released.' },
+  { key: 'rTube', label: 'Torsion-tube radius', unit: 'mm', type: 'number', min: 5, max: 80, step: 1, group: 'Spar (skeleton)', default: 22 },
+  { key: 'tTube', label: 'Torsion-tube wall (±45°)', unit: 'mm', type: 'number', min: 0.05, max: 5, step: 0.01, group: 'Spar (skeleton)', default: 0.4 },
+  { key: 'teSlot', label: 'Slotted (sliding) trailing edge', type: 'bool', group: 'Skin, ribs & core', default: true, help: 'Open-section skin: the skin no longer acts as a closed torsion cell, so twist is governed by the designed torsion tube.' },
+  { key: 'leBallast', label: 'Leading-edge mass balance', unit: 'kg/m', type: 'number', min: 0, max: 10, step: 0.05, group: 'Dynamics & fatigue', default: 1.0, help: 'Mass at 2 % chord bringing the section CG to (or ahead of) the torsion axis — the classical flutter cure.' },
+  { key: 'flutterTarget', label: 'Required flutter speed', unit: 'm/s', type: 'number', min: 10, max: 80, step: 0.5, group: 'Dynamics & fatigue', default: 32.5, help: 'D4: ≥ 1.3 × 25 m/s.' },
+  { key: 'breakaway', label: 'Free-feathering breakaway (D3)', type: 'bool', group: 'Operating point', default: true, help: 'Torque-limited incidence lock releases at the safe side force; the wing then weathervanes (C_L ≈ 0, C_D ≈ 0.02).' },
   { key: 'sparMat', label: 'Spar material', type: 'select', group: 'Spar (skeleton)', default: 'cfrp-t700', options: sparMats.map(m => ({ value: m.id, label: m.name })), auto: (c) => ({ value: c.material('spar')?.id || 'cfrp-t700', prov: 'library' }) },
-  { key: 'layup', label: 'Spar-cover layup (deg, root→out)', type: 'text', group: 'Spar (skeleton)', default: '0,20,20,0,45,-45', help: 'Upper cover; lower cover is mirrored (circumferentially asymmetric stiffness) so off-axis plies create bend–twist coupling. Balanced layups (±θ pairs) give no coupling.' },
-  { key: 'tPly', label: 'Ply thickness', unit: 'mm', type: 'number', min: 0.05, max: 1, step: 0.005, group: 'Spar (skeleton)', default: 0.2 },
+  { key: 'layup', label: 'Spar-cover layup (deg, root→out)', type: 'text', group: 'Spar (skeleton)', default: '0,0,20,-20,0', help: 'Upper cover; lower cover is mirrored (circumferentially asymmetric stiffness) so off-axis plies create bend–twist coupling. Balanced layups (±θ pairs) give no coupling.' },
+  { key: 'tPly', label: 'Cap ply thickness', unit: 'mm', type: 'number', min: 0.01, max: 1, step: 0.005, group: 'Spar (skeleton)', default: 0.1 },
   { key: 'boxW', label: 'Box width / chord', type: 'range', min: 0.08, max: 0.45, step: 0.01, group: 'Spar (skeleton)', default: 0.18 },
   { key: 'webLayup', label: 'Shear-web layup', type: 'text', group: 'Spar (skeleton)', default: '45,-45,45,-45', expert: true },
   { key: 'skinMat', label: 'Morphing skin material', type: 'select', group: 'Skin, ribs & core', default: 'tpu-glass', options: skinMats.map(m => ({ value: m.id, label: m.name })), auto: (c) => ({ value: c.material('wingSkin')?.id || 'tpu-glass', prov: 'library' }) },
-  { key: 'tSkin', label: 'Skin thickness', unit: 'mm', type: 'number', min: 0.2, max: 5, step: 0.1, group: 'Skin, ribs & core', default: 0.8 },
+  { key: 'tSkin', label: 'Skin thickness', unit: 'mm', type: 'number', min: 0.2, max: 5, step: 0.1, group: 'Skin, ribs & core', default: 0.6 },
   { key: 'ribMat', label: 'Flexible rib material', type: 'select', group: 'Skin, ribs & core', default: 'gfrp-e', options: ribMats.map(m => ({ value: m.id, label: m.name })), auto: (c) => ({ value: c.material('rib')?.id || 'gfrp-e', prov: 'library' }) },
   { key: 'ribSolid', label: 'Rib solidity (after lightening holes)', type: 'range', min: 0.1, max: 1, step: 0.05, group: 'Skin, ribs & core', default: 0.3 },
   { key: 'coreFill', label: 'Lattice fill fraction of trailing region', type: 'range', min: 0.05, max: 1, step: 0.05, group: 'Skin, ribs & core', default: 0.35 },
   { key: 'ribPitch', label: 'Rib pitch', unit: 'm', type: 'number', min: 0.15, max: 1, step: 0.05, group: 'Skin, ribs & core', default: 0.4 },
-  { key: 'coreE', label: 'Trailing-core effective modulus', unit: 'MPa', type: 'number', min: 0.5, max: 5000, step: 0.5, group: 'Skin, ribs & core', default: 60, auto: (c) => { const o = c.upstream('s04'); return o?.Ey_Pa ? { value: +(o.Ey_Pa / 1e6).toFixed(2), prov: 'coupled' } : undefined; }, help: 'Bending stiffness of the compliant trailing region (from the Suite 04 lattice).' },
-  { key: 'coreG', label: 'Trailing-core effective shear modulus', unit: 'MPa', type: 'number', min: 0.1, max: 2000, step: 0.1, group: 'Skin, ribs & core', default: 5, auto: (c) => { const o = c.upstream('s04'); return o?.Geff_Pa ? { value: +(o.Geff_Pa / 1e6).toFixed(3), prov: 'coupled' } : undefined; } },
-  { key: 'coreRho', label: 'Trailing-core effective density', unit: 'kg/m³', type: 'number', min: 20, max: 2000, step: 5, group: 'Skin, ribs & core', default: 120, auto: (c) => { const o = c.upstream('s04'); return o?.rhoEff ? { value: Math.round(o.rhoEff), prov: 'coupled' } : undefined; } },
+  { key: 'coreE', label: 'Trailing-core effective modulus', unit: 'MPa', type: 'number', min: 0.5, max: 5000, step: 0.5, group: 'Skin, ribs & core', default: 4, auto: (c) => { const o = c.upstream('s04'); return o?.Ey_Pa ? { value: +(o.Ey_Pa / 1e6).toFixed(2), prov: 'coupled' } : undefined; }, help: 'Bending stiffness of the compliant trailing region (from the Suite 04 lattice).' },
+  { key: 'coreG', label: 'Trailing-core effective shear modulus', unit: 'MPa', type: 'number', min: 0.01, max: 2000, step: 0.01, group: 'Skin, ribs & core', default: 0.3, auto: (c) => { const o = c.upstream('s04'); return o?.Geff_Pa ? { value: +(o.Geff_Pa / 1e6).toFixed(3), prov: 'coupled' } : undefined; } },
+  { key: 'coreRho', label: 'Trailing-core effective density', unit: 'kg/m³', type: 'number', min: 10, max: 2000, step: 5, group: 'Skin, ribs & core', default: 40, auto: (c) => { const o = c.upstream('s04'); return o?.rhoEff ? { value: Math.round(o.rhoEff), prov: 'coupled' } : undefined; } },
   { key: 'teFrac', label: 'Compliant trailing-region chord fraction', type: 'range', min: 0.15, max: 0.6, step: 0.01, group: 'Skin, ribs & core', default: 0.4 },
   { key: 'gustAmp', label: 'Design gust amplitude (1-cos)', unit: 'm/s', type: 'number', min: 0, max: 20, step: 0.5, group: 'Dynamics & fatigue', default: 4, auto: (c) => c.env ? { value: +Math.max(1, c.env.gust - c.env.U).toFixed(1), prov: 'coupled' } : undefined },
   { key: 'gustDur', label: 'Gust duration', unit: 's', type: 'number', min: 0.2, max: 10, step: 0.1, group: 'Dynamics & fatigue', default: 1.5 },
@@ -51,16 +68,21 @@ export const WING_PARAMS = [
 
 // Shared wing model (used by Suites 06 and 08)
 export function buildWing(p, ctx) {
-  const span = p.span, cm = p.area / span, cr = 2 * cm / (1 + p.taper), ct = cr * p.taper, chord = (z) => cr + (ct - cr) * z / span;
+  const reef = p.wingState === 'reefed', span = reef ? Math.min(p.span, p.reefSpan || p.span) : p.span, cm = p.area / p.span, cr = 2 * cm / (1 + p.taper), ctD = cr * p.taper, chord = (z) => cr + (ctD - cr) * z / p.span, ct = chord(span); // reefed: deployed planform truncated at the reef station
   const af = naca4(String(p.airfoil).padStart(4, '0'), 61), st = airfoilStats(af.points), tc = st.tmax;
   const polar = ctx.upstream('s07')?.polar || null;
-  const section = sectionModel({ a0: 2 * Math.PI * (1 + 0.77 * tc) * 0.9, alpha0: -2 * (af.m || 0) * 1.0, clmax: 0.95 + 1.2 * tc + 2 * (af.m || 0), cd0: 0.0075 + 0.02 * tc, polar: polar && polar.alpha?.length ? polar : null });
+  // passive leeward camber (D-rev 2.2): thin-aerofoil zero-lift shift −2m and an empirical high-camber C_l,max (≈1.2 + 9m, cf. cambered
+  // sail-wing sections); the symmetric polar from Suite 07 is used only when morphing is off.
+  const mC = p.camberMorph ? (p.camberPct || 0) / 100 : (af.m || 0);
+  const section = p.camberMorph ? sectionModel({ a0: 2 * Math.PI * (1 + 0.77 * tc) * 0.9, alpha0: -2 * mC, clmax: Math.min(2.1, 1.2 + 9 * mC), cd0: 0.0075 + 0.02 * tc + 0.04 * mC * mC, polar: null })
+    : sectionModel({ a0: 2 * Math.PI * (1 + 0.77 * tc) * 0.9, alpha0: -2 * (af.m || 0) * 1.0, clmax: 0.95 + 1.2 * tc + 2 * (af.m || 0), cd0: 0.0075 + 0.02 * tc, polar: polar && polar.alpha?.length ? polar : null });
   const SM = getMat(p.sparMat) || getMat('cfrp-t700'), L = lamina(SM), tp = p.tPly / 1000;
   const cover = laminate(parseLayup(p.layup, L, tp)), web = laminate(parseLayup(p.webLayup || '45,-45,45,-45', L, tp));
   const red = (A) => { const a = A; const d = a[1][1]; return [[a[0][0] - a[0][1] ** 2 / d, a[0][2] - a[0][1] * a[1][2] / d], [a[0][2] - a[0][1] * a[1][2] / d, a[2][2] - a[1][2] ** 2 / d]]; };
   const Ac = red(cover.A), Aw = red(web.A);
   const SK = getMat(p.skinMat) || getMat('tpu-glass'), RB = getMat(p.ribMat) || getMat('gfrp-e'), tsk = p.tSkin / 1000;
   const Gsk = (SK.E || 0.8) * 1e9 / (2 * (1 + (SK.nu ?? 0.4)));
+  const tube = p.sparType !== 'box';
   const props = (z) => {
     const c = chord(z), hs = 0.85 * tc * c, wb = p.boxW * c, Abox = wb * hs, P = 2 * (wb + hs);
     const EIc = 2 * wb * Ac[0][0] * (hs / 2) ** 2, EIw = 2 * Aw[0][0] * hs ** 3 / 12, gam = 2 * Abox / P;
@@ -68,13 +90,23 @@ export function buildWing(p, ctx) {
     const Askin = 0.68 * tc * c * c, Pskin = 2.04 * c, GJskin = 4 * Askin ** 2 * Gsk * tsk / Pskin;
     const tTE = 0.5 * tc * c * 0.6, aTE = p.teFrac * c, fill = p.coreFill ?? 0.35, tEff = 0.25 * tTE, GJcore = fill * p.coreG * 1e6 * aTE * tTE ** 3 / 3;
     let K = 2 * wb * Ac[0][1] * (hs / 2) * gam;
-    const EI = EIc + EIw + (SK.E || 0.8) * 1e9 * tsk * c * (tc * c / 2) ** 2 * 0.5, GJ = GJbox + GJskin + GJcore;
+    let EI = EIc + EIw + (SK.E || 0.8) * 1e9 * tsk * c * (tc * c / 2) ** 2 * 0.5, GJ = GJbox + GJskin + GJcore, xEAtube = null, mTube = 0, gamOpen = null;
+    if (tube) {
+      // open caps + single web (open-section St-Venant torsion), torsion tube on the pivot axis, skin open if slotted
+      const Gc = Ac[1][1] / cover.h, Gw = Aw[1][1] / web.h, rT = p.rTube / 1000, tT = p.tTube / 1000;
+      const GJopen = (2 * wb * cover.h ** 3 * Gc + hs * web.h ** 3 * Gw) / 3, GJtube = Gw * 2 * Math.PI * rT ** 3 * tT;
+      const GJsk = p.teSlot ? Pskin * tsk ** 3 * Gsk / 3 : GJskin;
+      GJ = GJopen + GJtube + GJsk + GJcore; EI = EIc + hs ** 3 * Aw[0][0] / 12 + (SK.E || 0.8) * 1e9 * tsk * c * (tc * c / 2) ** 2 * (p.teSlot ? 0.25 : 0.5);
+      K = 0; // open caps cannot carry the closed-cell shear flow that produces bend–twist coupling
+      gamOpen = cover.h; // St-Venant open-section shear strain in the caps = φ′·t
+      xEAtube = p.xPivot; mTube = 2 * Math.PI * rT * tT * (SM.rho || 1550);
+    }
     const Kmax = 0.95 * Math.sqrt(EI * GJ); if (Math.abs(K) > Kmax) K = Math.sign(K) * Kmax;
     const mSpar = P * cover.h * (SM.rho || 1550), mSkin = Pskin * tsk * (SK.rho || 1300), mCore = fill * aTE * tTE * p.coreRho, mRib = (p.ribSolid ?? 0.3) * Askin * 0.003 * (RB.rho || 2000) / p.ribPitch;
-    const m = mSpar + mSkin + mCore + mRib;
-    const xEA = 0.15 + p.boxW / 2, xCG = (mSpar * xEA + mSkin * 0.42 + mCore * (1 - p.teFrac / 2) + mRib * 0.42) / m; // chord fractions
-    const Ip = m * (c * 0.28) ** 2 + m * ((xCG - xEA) * c) ** 2;
-    return { EI, GJ, K, m, Ip, xa: (xCG - xEA) * c, c, hs, wb, gam, xEA, xCG, Abox, mSpar, mSkin, mCore, mRib, D_TE: p.coreE * 1e6 * tEff ** 3 / 12 + (SK.E || 0.8) * 1e9 * 2 * tsk * (tEff / 2) ** 2, aTE };
+    const mBal = tube ? (p.leBallast || 0) : 0, m = mSpar + mSkin + mCore + mRib + mTube + mBal;
+    const xEA = xEAtube ?? (0.15 + p.boxW / 2), xCG = (mSpar * xEA + mTube * xEA + mSkin * 0.42 + mCore * (1 - p.teFrac / 2) + mRib * 0.42 + mBal * 0.02) / m; // chord fractions
+    const Ip = (m - mBal) * (c * 0.28) ** 2 + mBal * ((0.02 - xEA) * c) ** 2 + (m - mBal) * ((xCG - xEA) * c) ** 2;
+    return { EI, GJ, K, m, Ip, xa: (xCG - xEA) * c, c, hs, wb, gam: gamOpen ?? gam, xEA, xCG, Abox, mSpar, mSkin, mCore, mRib, mTube, mBal, D_TE: p.coreE * 1e6 * tEff ** 3 / 12 + (SK.E || 0.8) * 1e9 * 2 * tsk * (tEff / 2) ** 2, aTE };
   };
   const model = beamModel(span, Math.round(p.nEl || 20), props);
   // apparent wind distribution over the span (log-law shear + vehicle motion)
@@ -83,7 +115,63 @@ export function buildWing(p, ctx) {
   const appGust = (z, dU) => { const aw = apparentWind(Vz(z) * (1 + dU / Math.max(p.U10, 0.1)), p.twa, 0, v); return { Va: Math.max(0.05, aw.Va), awa: Math.abs(aw.beta) }; };
   const app0 = app(span * 0.05), setAngle = app0.awa - p.aoa; // wing angle to vehicle axis
   const e = (z) => (props(z).xEA - 0.25) * chord(z); // EA aft of aerodynamic centre
-  return { span, cr, ct, cm, chord, af, tc, section, cover, web, SM, SK, RB, L, props, model, app, appGust, setAngle, e, V: (z) => app(z).Va, airfoilName: af.name };
+  return { span, reef, mC, cr, ct, cm, chord, af, tc, section, cover, web, SM, SK, RB, L, props, model, app, appGust, setAngle, e, V: (z) => app(z).Va, airfoilName: af.name };
+}
+
+// ---------------- Revision-2 spar sizing (D4) ----------------
+// Evaluate a candidate at the sizing reference (beam reach, apparent wind refVa at mid-span): tip twist, root
+// first-ply strength ratio, flutter speed and wing mass.
+// Uncoupled bending and torsion frequencies (Rayleigh quotients with cantilever shape functions) — the inputs the
+// typical-section flutter model expects; inertial coupling enters separately through x_α.
+export function uncoupledOmegas(W) {
+  const L = W.span, n = 60, k = Math.PI / (2 * L); let nb = 0, db = 0, nt = 0, dt = 0;
+  for (let i = 0; i < n; i++) { const z = (i + 0.5) * L / n, P = W.props(z), dz = L / n, wb = 1 - Math.cos(k * z), wbpp = k * k * Math.cos(k * z), ph = Math.sin(k * z), php = k * Math.cos(k * z); nb += P.EI * wbpp ** 2 * dz; db += (P.m) * wb ** 2 * dz; nt += P.GJ * php ** 2 * dz; dt += P.Ip * ph ** 2 * dz; }
+  return { wh: Math.sqrt(nb / db), wa: Math.sqrt(nt / dt) };
+}
+export function evalDesign(p0, ctx, { statics = true, flutter = true } = {}) {
+  const p = { ...p0, vkmh: 0, twa: 90 };
+  let W = buildWing(p, ctx); const f = p.refVa / Math.max(0.05, W.app(W.span / 2).Va); p.U10 = Math.max(0.1, p.U10 || 1) * f; W = buildWing(p, ctx);
+  const out = { mass: W.model.z.slice(0, -1).reduce((acc, z) => acc + W.props(z + W.model.le / 2).m * W.model.le, 0), xEA: W.props(0.75 * W.span).xEA, xCG: W.props(0.75 * W.span).xCG };
+  if (statics) { const S = solveStatic(W, p, { tol: 1e-6, maxIt: 60 }), N = W.model.N; out.tip = deg(S.sol.phi[N - 1]); out.converged = S.converged; const r = beamResultants(W.model, S.sol.u, W.props)[0], P = W.props(r.z), eps = r.M * (P.hs / 2) / P.EI; out.R = Math.min(...plyStresses(W.cover, [eps, 0, r.T / P.GJ * P.gam]).map(q => q.R)); }
+  if (flutter) { const U = uncoupledOmegas(W), z75 = 0.75 * W.span, P75 = W.props(z75), b = W.chord(z75) / 2; out.VF = flutterVg({ m: P75.m, Ia: P75.Ip, xa: P75.xa / b, a: (P75.xEA - 0.5) * 2, b, wh: U.wh, wa: U.wa, rho: p.rho, gs: p.zeta * 2 }).Vflutter; out.fb = U.wh / (2 * Math.PI); out.ft = U.wa / (2 * Math.PI); }
+  return out;
+}
+const sizeCache = new Map();
+export function sizeSpar(p, ctx) {
+  if (!p.autoSize || p.sparType === 'box') return { values: {}, log: [], sized: false };
+  const keyObj = { ...p }; delete keyObj.wingState; delete keyObj.tPly; delete keyObj.tTube; delete keyObj.rTube; delete keyObj.leBallast; const key = JSON.stringify(keyObj) + (ctx.material?.('spar')?.id || '');
+  if (sizeCache.has(key)) return sizeCache.get(key);
+  const v = { tPly: p.tPly, tTube: p.tTube, rTube: p.rTube, leBallast: p.leBallast }, log = [], ev = (o) => evalDesign({ ...p, ...v, ...o, wingState: 'deployed' }, ctx, { flutter: false }), evF = (o) => Math.min(evalDesign({ ...p, ...v, ...o, wingState: 'deployed' }, ctx, { statics: false }).VF, evalDesign({ ...p, ...v, ...o, wingState: 'reefed' }, ctx, { statics: false }).VF); // sized on the deployed (worst-case) wing; flutter checked in both states
+  const bis = (lo, hi, fn, target, it = 22, logScale = true) => { let a = lo, b = hi; const g = (x) => fn(x) - target; let ga = g(a); for (let i = 0; i < it; i++) { const m = logScale ? Math.sqrt(a * b) : (a + b) / 2, gm = g(m); if (ga * gm <= 0) b = m; else { a = m; ga = gm; } } return logScale ? Math.sqrt(a * b) : (a + b) / 2; };
+  v.tTube = Math.max(0.25, p.tTube); // two thin ±45° plies: practical minimum wall; the radius is the sizing variable
+  for (let pass = 0; pass < 2; pass++) {
+    // A: cap ply thickness for strength factor 2.5 (first-ply failure at the root, reference load)
+    const tMin = 0.03, Rlo = ev({ tPly: tMin }).R; // 0.03 mm = thin-ply minimum gauge
+    if (Rlo >= 2.5) { v.tPly = tMin; log.push(`cap thickness governed by minimum gauge (SF ${fmt(Rlo, 3)} at 0.03 mm plies)`); }
+    else { const Rhi = ev({ tPly: 2 }).R; v.tPly = Rhi <= 2.5 ? 2 : bis(tMin, 2, (t) => ev({ tPly: t }).R, 2.5, 14); }
+    // B: torsion-tube radius for the target tip washout (GJ ∝ r³)
+    const tw = (r) => ev({ rTube: r }).tip, tSmall = tw(3), tBig = tw(80);
+    v.rTube = (tSmall - p.targetTwist) * (tBig - p.targetTwist) > 0 ? (Math.abs(tSmall - p.targetTwist) < Math.abs(tBig - p.targetTwist) ? 3 : 80) : bis(3, 80, tw, p.targetTwist, 14);
+    if (v.rTube === 3) log.push('target washout exceeded even with the smallest tube — the core/skin alone are too compliant (stiffen the lattice core)');
+    log.push(`pass ${pass + 1}: cap ply ${fmt(v.tPly, 3)} mm, torsion tube r = ${fmt(v.rTube, 3)} mm × ${fmt(v.tTube, 3)} mm`);
+    if (Rlo >= 2.5) break; // strength at minimum gauge does not depend on the tube → one pass suffices
+  }
+  // C: leading-edge mass balance for the flutter target (lightest balance that meets it)
+  const vf = (mb) => evF({ leBallast: mb });
+  if (vf(0) >= p.flutterTarget) v.leBallast = 0; else if (vf(10) < p.flutterTarget) { v.leBallast = 10; log.push('flutter target not reached with 10 kg/m balance'); } else v.leBallast = bis(0, 10, (mb) => Math.min(1e3, vf(mb)), p.flutterTarget, 10, false) * 1.05;
+  const final = evalDesign({ ...p, ...v, wingState: 'deployed' }, ctx); final.VFreef = evalDesign({ ...p, ...v, wingState: 'reefed' }, ctx, { statics: false }).VF; log.push(`balance ${fmt(v.leBallast, 3)} kg/m → tip ${fmt(final.tip, 3)}°, SF ${fmt(final.R, 3)}, V_F ${fmt(final.VF, 3)} m/s, mass ${fmt(final.mass, 3)} kg`);
+  const out = { values: v, log, sized: true, check: final };
+  sizeCache.set(key, out); if (sizeCache.size > 40) sizeCache.delete(sizeCache.keys().next().value);
+  return out;
+}
+// Free-feathering root (D3): breakaway side force and feathered loads
+export function featherState(W, p, ctx, loads, nW) {
+  const veh = ctx.vehicle, mu = ctx.upstream?.('s10')?.muPeak ?? 0.95, ssf = ctx.upstream?.('s11')?.ssf ?? ctx.upstream?.('s01')?.ssf ?? (veh.track / 2) * (2 / 3) / veh.cgHeight;
+  const hCE = p.zRoot + 0.45 * W.span, FyGrip = 0.7 * mu * veh.mass * 9.80665, FyRoll = 0.8 * ssf * veh.mass * 9.80665 * veh.cgHeight / hCE, FySafe = Math.min(FyGrip, FyRoll);
+  const side = Math.abs(loads.side * nW), released = !!p.breakaway && side > FySafe;
+  // feathered: wing weathervanes about the pivot, C_L ≈ 0, C_D ≈ 0.02 on the planform
+  let th = 0, sd = 0; W.model.z.forEach((z, i) => { if (i === 0) return; const a = W.app(z), q = 0.5 * p.rho * a.Va ** 2, dz = W.model.le, D = q * W.chord(z) * dz * 0.02, b = rad(a.awa); th += -D * Math.cos(b); sd += D * Math.sin(b); });
+  return { FySafe, FyGrip, FyRoll, ssf, hCE, side, released, feathered: { thrust: th * nW, side: sd * nW } };
 }
 
 // Static aeroelastic solution with passive washout (twist) and passive camber (compliant trailing region)
@@ -138,6 +226,8 @@ export default {
 
   async run(p, ctx) {
     const out = { kpis: [], charts: [], tables: [], verdicts: [], recs: [], checks: [], explain: [], views: [] };
+    ctx.progress(0.05, 'spar sizing');
+    const SZ = sizeSpar(p, ctx); Object.assign(p, SZ.values);
     const W = buildWing(p, ctx), { model, props, span, chord } = W;
     ctx.progress(0.15, 'coupled static aeroelastic solution');
     const S = solveStatic(W, p), R0 = solveStatic(W, p, { rigid: true });
@@ -148,10 +238,10 @@ export default {
     const stressRows = res.map(r => { const P = props(r.z), eps = r.M * (P.hs / 2) / P.EI, gam = r.T / P.GJ * P.gam, ps = plyStresses(W.cover, [eps, 0, gam]); const Rmin = Math.min(...ps.map(q => q.R)); return { z: r.z, eps, sx: eps * W.cover.Ex, R: Rmin, ps }; });
     const rootR = stressRows[0].R, rootM = res[0].M, rootT = res[0].T;
     ctx.progress(0.4, 'divergence, modes, flutter');
-    const modes = beamModes(model, 6), fb = modes.find(m => m.type === 'bending'), ft = modes.find(m => m.type === 'torsion') || modes[1];
+    const modes = beamModes(model, 40), fb = modes.find(m => m.type === 'bending') || modes[modes.length - 1], ft = modes.find(m => m.type === 'torsion') || modes[0];
     const qD = divergenceQ(model, chord, W.e, W.section.a0), VD = Math.sqrt(2 * qD / p.rho);
     const z75 = 0.75 * span, P75 = props(z75), b = chord(z75) / 2;
-    const FL = flutterVg({ m: P75.m, Ia: P75.Ip, xa: P75.xa / b, a: (P75.xEA - 0.5) * 2, b, wh: fb.omega, wa: ft.omega, rho: p.rho, gs: p.zeta * 2 });
+    const UO = uncoupledOmegas(W), FL = flutterVg({ m: P75.m, Ia: P75.Ip, xa: P75.xa / b, a: (P75.xEA - 0.5) * 2, b, wh: UO.wh, wa: UO.wa, rho: p.rho, gs: p.zeta * 2 });
     const Vtip = W.app(span).Va, Vmax = max(range(N).map(i => W.app(model.z[i]).Va));
     ctx.progress(0.6, 'gust response');
     const G = runGust(W, p, ll, { dt: 0.003 });
@@ -220,7 +310,8 @@ export default {
     out.tables.push({ title: 'Natural modes of the clamped wing', cols: ['Mode', 'Type', 'Frequency [Hz]', 'Tip w (norm.)', 'Tip φ (norm.)'], rows: modes.map((m, i) => [i + 1, m.type, m.f, m.w[N - 1], m.phi[N - 1]]) });
     out.tables.push({ title: 'Section properties (root / mid / tip)', cols: ['Station', 'Chord [m]', 'EI [N·m²]', 'GJ [N·m²]', 'K_bt [N·m²]', 'Mass [kg/m]', 'CG−EA [mm]'], rows: [0, 0.5, 1].map(f => { const P = props(f * span); return [`${f * 100}% span`, P.c, P.EI, P.GJ, P.K, P.m, P.xa * 1000]; }), explain: 'Box-spar stiffnesses from CLT; K_bt ≠ 0 only for unbalanced (CAS) cover layups.' });
     out.tables.push({ title: 'Root cover ply stresses (static)', cols: ['Ply angle [°]', 'σ₁ [MPa]', 'σ₂ [MPa]', 'τ₁₂ [MPa]', 'Tsai–Wu index', 'Strength ratio', 'Hashin fibre', 'Hashin matrix'], rows: stressRows[0].ps.map(q => [q.theta, q.s1 / 1e6, q.s2 / 1e6, q.t12 / 1e6, q.tsaiWu, q.R, q.hashinFiber, q.hashinMatrix]) });
-    out.views.push({ label: '3D deformed wing', icon: '🪽', render: (el) => wing3D(el, W, p, S, stressRows) });
+    out.views.unshift({ label: '3D dynamic wing: gust, modes & flutter', icon: '🎞', render: (el) => wingDynamic3D(el, { W, p, S, stressRows, G, modes, FL, P75, b, rootM, ctx }) });
+    out.views.push({ label: '3D deformed wing (static)', icon: '🪽', render: (el) => wing3D(el, W, p, S, stressRows) });
     // recommendations
     if (loads.thrust <= 0) out.recs.push({ level: 'critical', text: 'The wing produces no net forward thrust at this operating point. Increase the apparent wind angle (steer toward a beam reach), reduce vehicle speed, or raise the root angle of attack below stall.', basis: 'Body-axis force resolution' });
     if (tipTw > 0) out.recs.push({ level: 'warn', text: 'The current layup twists the wing nose-up under load (wash-in). Mirror the off-axis cover plies to obtain wash-out for passive gust alleviation and higher divergence speed.', basis: 'Sign of K_bt' });
@@ -232,7 +323,33 @@ export default {
     out.explain.push({ title: 'How the coupled wing is solved', text: 'The lifting line computes loads on the current deformed shape; the beam FE turns loads into bending and twist (with bend–twist coupling from the laminate); the new twist changes the angle of attack and the trailing-region pressure changes the camber. This loop is repeated with Aitken acceleration until the twist stops changing.' });
     out.explain.push({ title: 'Lift is not thrust', text: 'Only the component of the aerodynamic force along the road direction propels the car; the much larger side force must be carried by the tyres and creates the overturning moment that limits the safe wind.' });
     out.convergence = { title: 'Coupled static aeroelastic interface residual', series: [{ name: 'Aitken', x: S.history.map((_, i) => i + 1), y: S.history }] };
-    out.outputs = { CL: ll.CL, CD: ll.CD, liftN: loads.lift * nW, dragN: loads.drag * nW, thrustN: loads.thrust * nW, sideN: loads.side * nW, rollMomentN: (loads.roll + loads.side * p.zRoot) * nW, twistTip_deg: tipTw, tipDefl_m: tipW, rootMoment_Nm: rootM, rootTorque_Nm: rootT, rootShear_N: ll.L, flutterSpeed: FL.Vflutter, divergenceSpeed: VD, f1Hz: fb.f, fTorsionHz: ft.f, wingMass, safeWind: Number.isFinite(Usafe) ? Usafe : 25, rootStrengthRatio: rootR, zRoot: p.zRoot, span, setAngle: W.setAngle, awa: W.app(0.05 * span).awa };
+    // ---- Revision 2.2: telescoping reef joint (deployed state) and deployed-vs-reefed performance ----
+    if (!W.reef && p.reefSpan < span - 1e-6) {
+      const zr = p.reefSpan, Mj = interp1(res.map(r => r.z), res.map(r => r.M), zr), Vj = S.aero.Fw.reduce((acc, f, i) => acc + (model.z[i] > zr ? f : 0), 0);
+      const tj = W.tc * chord(zr), ovMin = 1.5 * tj, Fb = Math.abs(Mj) / p.overlap + Math.abs(Vj) / 2, wb = props(zr).wb, pc = Fb / (0.25 * p.overlap * wb) / 1e6;
+      k('Reef joint: moment / shear', `${fmt(Mj, 3)} N·m / ${fmt(Vj, 3)} N`, '', `Internal bending moment and shear at the telescoping station z = ${zr} m (structural discontinuity).`, 'calc');
+      k('Reef joint bushing contact pressure', pc, 'MPa', `Couple carried by two bushings ${fmt(p.overlap, 3)} m apart (each 25 % of the overlap long, ${fmt(wb * 1000, 3)} mm wide): F = M/L + V/2 = ${fmt(Fb, 3)} N.`, 'calc', pc <= p.bushAllow ? 'ok' : 'bad');
+      out.verdicts.push({ test: 'Telescoping reef joint (overlap & bushing pressure)', status: p.overlap >= ovMin && pc <= p.bushAllow ? 'pass' : 'fail', detail: `Overlap ${fmt(p.overlap, 3)} m vs required ≥ 1.5 t = ${fmt(ovMin, 3)} m; bushing pressure ${fmt(pc, 3)} MPa vs allowable ${p.bushAllow} MPa at the current load.`, fix: 'Lengthen the overlap or widen the bushings; the joint must also be checked at the breakaway load.' });
+    }
+    const states = ['deployed', 'reefed'], winds = [4, 6, 10], perf = [];
+    for (const st of states) for (const U of winds) { const pp = { ...p, wingState: st, U10: U, twa: 90 }; const W2 = buildWing(pp, ctx), S2 = solveStatic(W2, pp, { tol: 1e-6, maxIt: 40 }), L2 = wingLoads(W2, S2.aero.ll, pp.rho), F2 = featherState(W2, pp, ctx, L2, nW); perf.push({ st, U, thrust: F2.released ? F2.feathered.thrust : L2.thrust * nW, side: F2.released ? F2.feathered.side : L2.side * nW, rel: F2.released }); }
+    out.tables.push({ title: 'Deployed vs reefed wing — thrust and side force (beam true wind, current vehicle speed, both wings)', cols: ['True wind (10 m)', 'Deployed thrust [N]', 'Deployed side [N]', 'Reefed thrust [N]', 'Reefed side [N]'], rows: winds.map(U => { const d = perf.find(q => q.st === 'deployed' && q.U === U), r = perf.find(q => q.st === 'reefed' && q.U === U); return [`${U} m/s`, fmt(d.thrust, 4) + (d.rel ? ' (feathered)' : ''), fmt(d.side, 4), fmt(r.thrust, 4) + (r.rel ? ' (feathered)' : ''), fmt(r.side, 4)]; }), explain: 'Coupled aeroelastic solution with camber morphing, washout and the free-feathering breakaway. Deploy in light wind; reef when the deployed side force approaches the breakaway setting.' });
+    out.charts.push({ title: 'Deployed vs reefed: forward thrust by true wind (beam reach)', type: 'bar', categories: winds.map(U => `${U} m/s`), y: { label: 'Thrust (both wings)', unit: 'N' }, series: [{ name: 'Deployed', values: winds.map(U => perf.find(q => q.st === 'deployed' && q.U === U).thrust) }, { name: 'Reefed', values: winds.map(U => perf.find(q => q.st === 'reefed' && q.U === U).thrust) }], explain: 'The reefable wing keeps the large-area light-wind thrust when deployed and the low side force / low centre of effort when reefed.' });
+    k('Flutter speed deployed / reefed', `${fmt(SZ.check?.VF ?? FL.Vflutter, 3)} / ${fmt(SZ.check?.VFreef ?? NaN, 3)}`, 'm/s', 'Typical-section V–g flutter in both configurations (both must exceed the target).', 'calc');
+    out.outputs_perf = perf;
+    // ---- Revision 2: D4 sizing record and D3 free-feathering root ----
+    const FS = featherState(W, p, ctx, loads, nW);
+    if (SZ.sized) {
+      const ck = SZ.check;
+      k('Spar sizing (D4, generated design)', `caps ${fmt(p.tPly, 3)} mm/ply · tube r ${fmt(p.rTube, 3)} × ${fmt(p.tTube, 3)} mm · balance ${fmt(p.leBallast, 3)} kg/m`, '', SZ.log.join(' | '), 'generated');
+      out.tables.push({ title: 'Generated spar design (automatic sizing to Revision-2 targets)', cols: ['Quantity', 'Value', 'Target'], rows: [['Cap ply thickness', `${fmt(p.tPly, 3)} mm`, 'strength factor 2.5 (min gauge 0.03 mm)'], ['Torsion-tube radius × wall', `${fmt(p.rTube, 3)} × ${fmt(p.tTube, 3)} mm`, `tip washout ${p.targetTwist}° at ${p.refVa} m/s`], ['Leading-edge balance', `${fmt(p.leBallast, 3)} kg/m`, `V_F ≥ ${p.flutterTarget} m/s`], ['Tip twist at reference', `${fmt(ck.tip, 3)}°`, '−2 … −4°'], ['Root strength ratio at reference', fmt(ck.R, 3), '≥ 2'], ['Flutter speed', fmt(ck.VF, 3) + ' m/s', `≥ ${p.flutterTarget} m/s`], ['Wing mass (incl. balance)', fmt(ck.mass, 3) + ' kg', `≤ ${fmt(4 * p.area + 2 * p.leBallast * p.span / 2, 3)} kg (4 kg/m² structure)`]], explain: SZ.log.join(' · ') });
+      const okD4 = ck.tip <= -2 && ck.tip >= -4 && ck.R >= 2 && ck.VF >= p.flutterTarget;
+      out.verdicts.push({ test: 'D4 aeroelastic tailoring targets', status: okD4 ? 'pass' : 'fail', detail: `At ${p.refVa} m/s apparent wind: tip ${fmt(ck.tip, 3)}° (target −2…−4°), strength ratio ${fmt(ck.R, 3)} (≥ 2), flutter ${fmt(ck.VF, 3)} m/s (≥ ${p.flutterTarget}).`, fix: 'Adjust the target, pivot position or core stiffness; the sizing reports which bound is active.' });
+    } else out.verdicts.push({ test: 'D4 aeroelastic tailoring targets', status: 'warn', detail: p.sparType === 'box' ? 'Closed box spar (Revision 1) selected — it is torsionally too stiff for meaningful passive washout.' : 'Automatic sizing switched off; values are user-specified.' });
+    k('Safe side force (breakaway setting)', FS.FySafe, 'N', `min(0.7 μmg = ${fmt(FS.FyGrip, 3)} N, 0.8·SSF·mg·h_cg/h_CE = ${fmt(FS.FyRoll, 3)} N) with SSF ${fmt(FS.ssf, 3)} and centre of effort ${fmt(FS.hCE, 3)} m.`, 'calc');
+    k('Wing root state (D3)', FS.released ? 'FEATHERED (released)' : 'locked', '', FS.released ? `Side force ${fmt(FS.side, 3)} N exceeds the breakaway setting: the wings weathervane (C_L ≈ 0). Feathered thrust ${fmt(FS.feathered.thrust, 3)} N, side ${fmt(FS.feathered.side, 3)} N.` : `Side force ${fmt(FS.side, 3)} N below the breakaway setting ${fmt(FS.FySafe, 3)} N.`, 'calc', FS.released ? 'warn' : 'ok');
+    out.verdicts.push({ test: 'Rollover protection — free-feathering root (D3)', status: !FS.released ? 'pass' : p.breakaway ? 'pass' : 'fail', detail: !FS.released ? `Locked; side force ${fmt(FS.side, 3)} N ≤ breakaway ${fmt(FS.FySafe, 3)} N.` : p.breakaway ? `Released and feathered: residual side force ${fmt(FS.feathered.side, 3)} N (from ${fmt(FS.side, 3)} N), thrust ${fmt(FS.feathered.thrust, 3)} N — propulsion paused, vehicle protected.` : `Side force ${fmt(FS.side, 3)} N exceeds the safe limit ${fmt(FS.FySafe, 3)} N and the breakaway is disabled.` });
+    out.outputs = { perfStates: perf, wingState: p.wingState, camberPct: W.mC * 100, featherReleased: FS.released, FySafe: FS.FySafe, featheredThrustN: FS.feathered.thrust, featheredSideN: FS.feathered.side, sizedSpar: SZ.sized ? { tPly: p.tPly, rTube: p.rTube, tTube: p.tTube, leBallast: p.leBallast } : null, CL: ll.CL, CD: ll.CD, liftN: loads.lift * nW, dragN: loads.drag * nW, thrustN: loads.thrust * nW, sideN: loads.side * nW, rollMomentN: (loads.roll + loads.side * p.zRoot) * nW, twistTip_deg: tipTw, tipDefl_m: tipW, rootMoment_Nm: rootM, rootTorque_Nm: rootT, rootShear_N: ll.L, flutterSpeed: FL.Vflutter, divergenceSpeed: VD, f1Hz: fb.f, fTorsionHz: ft.f, wingMass, safeWind: Number.isFinite(Usafe) ? Usafe : 25, rootStrengthRatio: rootR, zRoot: p.zRoot, span, setAngle: W.setAngle, awa: W.app(0.05 * span).awa };
     out.headline = `Thrust ${fmt(loads.thrust * nW, 3)} N, side force ${fmt(loads.side * nW, 3)} N, tip twist ${fmt(tipTw, 3)}°, divergence ${fmt(VD, 3)} m/s, flutter ${fmt(FL.Vflutter, 3)} m/s, safe up to ${UsafeTxt} m/s true wind.`;
     out.headlineKind = Usafe >= 8 && loads.thrust > 0 ? 'ok' : 'warn';
     return out;
@@ -250,4 +367,75 @@ async function wing3D(el, W, p, S, stressRows) {
   const vals = []; for (let k = 2; k < def.p.length; k += 3) vals.push(Math.abs(interp1(stressRows.map(r => r.z), stressRows.map(r => r.sx / 1e6), def.p[k])));
   V.add(ref); V.add(def, { field: { name: 'Spar-cover axial stress', unit: 'MPa', values: vals, cmap: 'turbo' } }); V.fit();
   el.append(h('p', { class: 'small muted' }, `Grey: reference geometry. Coloured: solved loaded shape (bending displayed ×${fmt(amp, 2)}; twist true scale), colour = spar-cover axial stress magnitude. Hover for values.`));
+}
+
+// ---------------- 3-D dynamic wing: solved gust response, normal modes and the flutter mode ----------------
+// Solved: static aeroelastic deflection/twist, modal basis (beam FE), Newmark-β gust response q_k(t),
+// typical-section flutter speed/frequency and its eigenvector. Displayed: those fields mapped onto the
+// lofted wing surface (bending magnified by the slider; twist at true scale).
+async function wingDynamic3D(el, o) {
+  const { W, p, S, stressRows, G, modes, FL, P75, b, rootM } = o;
+  const [{ viewer }, { wing }, { playback, hud, legend3d }] = await Promise.all([import('../core/viz3d.js'), import('../core/cad.js'), import('../core/sim3d.js')]);
+  const span = W.span, Z = W.model.z, N = Z.length;
+  const sel = h('select', {}, h('option', { value: 'gust' }, `Gust response (1-cos ${p.gustAmp} m/s, ${p.gustDur} s) — Newmark-β solution`), ...modes.map((m, k) => h('option', { value: 'm' + k }, `Mode ${k + 1}: ${m.type} ${fmt(m.f, 3)} Hz`)), Number.isFinite(FL.Vflutter) ? h('option', { value: 'flutter' }, `Flutter mode at V_F = ${fmt(FL.Vflutter, 3)} m/s, ${fmt(FL.fFlutter, 3)} Hz`) : null);
+  const ampIn = h('input', { type: 'range', min: 1, max: 1000, value: 1, step: 1 }), ampLab = h('span', { class: 'small mono' }, '×1');
+  el.append(h('p', { class: 'small muted' }, 'All motion comes from the solved structural dynamics of this wing: static aeroelastic shape + modal response q(t) for the gust, eigenvectors for the modes, and the typical-section flutter eigenvector (plunge/pitch ratio and phase) distributed with the first bending and torsion modes. Bending is magnified by the slider; twist is drawn at true scale. Colour: gust stress increment Δσx (solved root-moment history over the static spanwise distribution; fixed range over the whole gust) or modal amplitude (modes). The static shape and the much smaller gust increment are magnified separately; both factors and the true-scale peaks are shown.'), h('div', { class: 'row gap wrap' }, h('label', {}, 'Case ', sel), h('label', {}, 'Deformation magnification ', ampIn, ampLab)));
+  const box = h('div'); el.append(box);
+  const V = await viewer(box, { height: 480 });
+  const m = wing('Wing (solved dynamics)', { airfoil: W.af, span, rootChord: W.cr, tipChord: W.ct, twistTip: p.twistBuilt, nSpan: 24, opts: { color: '#e5e7eb' } });
+  const obj = V.add(m, { field: { name: 'stress', values: new Array(m.p.length / 3).fill(0) } });
+  const plate = V.THREE ? new V.THREE.Mesh(new V.THREE.BoxGeometry(W.cr * 1.6, W.cr * 0.9, 0.04), new V.THREE.MeshStandardMaterial({ color: 0x334155 })) : null; if (plate) { plate.position.set(W.cr * 0.4, 0, -0.02); V.root.add(plate); }
+  const base = Float32Array.from(m.p), nv = base.length / 3, wIdx = new Int32Array(nv), wT = new Float32Array(nv), xea = new Float32Array(nv);
+  for (let k = 0; k < nv; k++) { const z = base[k * 3 + 2]; let i = 0; while (i < N - 2 && Z[i + 1] < z) i++; wIdx[k] = i; wT[k] = Math.min(1, Math.max(0, (z - Z[i]) / ((Z[i + 1] - Z[i]) || 1))); xea[k] = W.props(Math.min(span, Math.max(0, z))).xEA * W.chord(Math.min(span, Math.max(0, z))); }
+  const at = (arr, k) => arr[wIdx[k]] * (1 - wT[k]) + arr[wIdx[k] + 1] * wT[k];
+  const sZ = stressRows.map(r => r.z), sX = stressRows.map(r => Math.abs(r.sx) / 1e6), stressAt = (z) => interp1(sZ, sX, z);
+  const lift = V.addArrow([W.cr * 0.3, 0, span * 0.45], [0, 1, 0], 0.5, 0x22c55e);
+  const H = hud(box), leg = legend3d(box, { title: 'Spar-cover |σx| (MPa)', lo: 0, hi: 1 });
+  const fb = modes.find(q => q.type === 'bending') || modes[0], ft = modes.find(q => q.type === 'torsion') || modes[1] || modes[0];
+  let fm = null; if (Number.isFinite(FL.Vflutter)) { const k = 2 * Math.PI * FL.fFlutter * b / FL.Vflutter; const UO2 = uncoupledOmegas(W); fm = flutterModeShape({ m: P75.m, Ia: P75.Ip, xa: P75.xa / b, a: (P75.xEA - 0.5) * 2, b, wh: UO2.wh, wa: UO2.wa, rho: p.rho }, k, FL.fFlutter); }
+  const wTipStatic = S.sol.w[N - 1];
+  const apply = (wArr, phArr, colorFn, range, cmapName = 'turbo') => {
+    const P = obj.geometry.attributes.position.array, vals = new Float32Array(nv);
+    for (let k = 0; k < nv; k++) { const x = base[k * 3], y = base[k * 3 + 1], z = base[k * 3 + 2], ph = Math.max(-0.45, Math.min(0.45, at(phArr, k))), w = at(wArr, k), c = Math.cos(ph), s2 = Math.sin(ph), dx = x - xea[k]; P[k * 3] = xea[k] + c * dx - s2 * y; P[k * 3 + 1] = s2 * dx + c * y + w; P[k * 3 + 2] = z; vals[k] = colorFn(z, k); }
+    obj.geometry.attributes.position.needsUpdate = true; obj.geometry.computeVertexNormals(); V.updateField(obj, { name: 'value', values: Array.from(vals), min: range[0], max: range[1], cmap: cmapName });
+  };
+  const dMax = Math.max(...sX) * Math.max(...G.Mroot.map(Math.abs)) / Math.max(1e-9, Math.abs(rootM)) || 1;
+  const legTitle = (t2) => { const e = box.querySelector('.sim-legend .small'); if (e) e.textContent = t2; };
+  let pb = null;
+  const start = () => {
+    pb?.dispose(); box.querySelector('.sim-bar')?.remove();
+    const mode = sel.value;
+    if (mode === 'gust') {
+      const T = G.t[G.t.length - 1]; leg.set(-dMax, dMax); legTitle('Gust stress increment Δσx (MPa)');
+      pb = playback(box, { duration: T, rate: 0.25, label: 'Gust time', onFrame: (t) => {
+        const i = Math.min(G.t.length - 1, Math.max(0, Math.round(t / (G.t[1] - G.t[0])))), q = G.q[i] || [];
+        const nd = +ampIn.value, wArr = Z.map((_, j) => S.sol.w[j] * ampS + nd * q.reduce((acc, qk, k) => acc + qk * G.modes[k].w[j], 0)), phArr = Z.map((_, j) => S.sol.phi[j] * ampS + nd * q.reduce((acc, qk, k) => acc + qk * G.modes[k].phi[j], 0));
+        const dfac = G.Mroot[i] / Math.max(1e-9, Math.abs(rootM));
+        apply(wArr, phArr, (z) => stressAt(z) * dfac, [-dMax, dMax], 'coolwarm');
+        lift.setLength(Math.max(0.05, Math.min(3, Math.abs(G.lift[i]) / 300)), 0.15, 0.08);
+        H.set([['Gust ΔU', fmt(oneMinusCosGust(0.3, p.gustDur, p.gustAmp)(G.t[i]), 3) + ' m/s'], ['Gust lift increment (solved)', fmt(G.lift[i], 3) + ' N'], ['ΔM root', fmt(G.Mroot[i], 3) + ' N·m'], ['Tip deflection', fmt((G.wTip[i] + wTipStatic) * 1000, 3) + ' mm'], ['Tip twist', fmt(G.twistTip[i] + deg(S.sol.phi[N - 1]), 3) + '°']]);
+      } });
+    } else {
+      const isF = mode === 'flutter', mk = isF ? null : modes[+mode.slice(1)], f = isF ? FL.fFlutter : mk.f;
+      const wn = Math.max(...(isF ? fb.w : mk.w).map(Math.abs)) || 1, pn = Math.max(...(isF ? ft.phi : mk.phi).map(Math.abs)) || 1;
+      const wShape = isF ? fb.w.map(v => v / wn) : mk.w.map(v => v / wn), pShape = isF ? ft.phi.map(v => v / pn) : mk.phi.map(v => v / pn);
+      // modal amplitudes: tip bending 5 % span (before magnification) and pitch ±3° for display; flutter uses the eigenvector ratio
+      const W0 = 0.1 * span * Math.max(0.1, +ampIn.value / autoAmp) / 10, A0 = isF ? W0 / Math.max(1e-6, (fm?.hb || 1) * b) : rad(3), phase = isF ? (fm?.phase || Math.PI / 2) : 0;
+      const hasW = isF || mk.type === 'bending', hasP = isF || mk.type === 'torsion' || true;
+      leg.set(0, 1); legTitle('Modal amplitude (normalised)');
+      pb = playback(box, { duration: 3 / f, rate: Math.min(1, 0.6 / f), label: isF ? 'Flutter cycle time' : `Mode ${mode.slice(1) * 1 + 1} time`, onFrame: (t) => {
+        const s1 = Math.sin(2 * Math.PI * f * t), s2 = Math.sin(2 * Math.PI * f * t + phase);
+        const wArr = wShape.map(v => (hasW ? v : 0) * (isF ? W0 * s2 : W0 * s1)), phArr = pShape.map(v => (hasP ? v : 0) * (isF ? rad(3) * Math.min(1, A0 / rad(3)) * s1 : (mk.type === 'torsion' ? A0 : A0 * 0.2) * s1));
+        apply(wArr.map(v => v * 10), phArr, (z, k) => Math.min(1, Math.abs(at(wShape, k) * s1) * 0.6 + Math.abs(at(pShape, k) * s1) * 0.6), [0, 1]);
+        H.set(isF ? [['Flutter speed', fmt(FL.Vflutter, 3) + ' m/s'], ['Frequency', fmt(f, 3) + ' Hz'], ['Plunge/pitch (h/b per rad)', fmt(fm?.hb ?? NaN, 3)], ['Phase plunge vs pitch', fmt(deg(phase), 3) + '°']] : [['Mode', `${mode.slice(1) * 1 + 1} (${mk.type})`], ['Frequency', fmt(f, 3) + ' Hz'], ['Displayed amplitude', 'normalised mode shape (×' + fmt(Math.max(1, +ampIn.value / autoAmp), 3) + ')']]);
+      } });
+    }
+  };
+  sel.onchange = start;
+  const dynPeak = Math.max(1e-12, ...G.wTip.map(Math.abs)), autoAmp = Math.max(1, Math.round(0.1 * span / dynPeak)), ampS = Math.max(1, Math.round(0.05 * span / Math.max(1e-12, Math.abs(wTipStatic))));
+  ampIn.max = String(Math.max(1000, autoAmp * 3));
+  const label = () => { ampLab.textContent = sel.value === 'gust' ? `Gust increment ×${ampIn.value} (auto ×${autoAmp}; true-scale peak Δ tip deflection = ${fmt(dynPeak * 1000, 4)} mm, Δ twist ${fmt(Math.max(...G.twistTip.map(Math.abs)), 3)}°) · static shape ×${ampS} (true tip ${fmt(wTipStatic * 1000, 4)} mm)` : `Mode shape normalised: tip ≈ ${fmt(10 * Math.max(0.1, +ampIn.value / autoAmp), 3)} % of span (slider scales it)`; };
+  ampIn.value = String(autoAmp); label(); ampIn.oninput = label; sel.addEventListener('change', label);
+  V.fit(); V.viewDir(1.15, -0.3, 0.42); start();
+  return { dispose: () => pb?.dispose() };
 }

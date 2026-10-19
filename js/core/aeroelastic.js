@@ -92,6 +92,26 @@ export function divergenceQ(model, chord, e, a0) {
 const cx = (re, im = 0) => ({ re, im }), cadd = (a, b) => cx(a.re + b.re, a.im + b.im), cmul = (a, b) => cx(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re), cdiv = (a, b) => { const d = b.re * b.re + b.im * b.im; return cx((a.re * b.re + a.im * b.im) / d, (a.im * b.re - a.re * b.im) / d); }, csqrt = (a) => { const r = Math.hypot(a.re, a.im), re = Math.sqrt((r + a.re) / 2), im = Math.sign(a.im || 1) * Math.sqrt(Math.max(0, (r - a.re) / 2)); return cx(re, im); }, cs = (s, a) => cx(s * a.re, s * a.im);
 // Theodorsen function via R. T. Jones' exponential approximation of the Wagner function
 export const theodorsen = (k) => { const ik = cx(0, k); return cadd(cx(1), cadd(cs(-0.165, cdiv(ik, cadd(ik, cx(0.0455)))), cs(-0.335, cdiv(ik, cadd(ik, cx(0.3)))))); };
+// Flutter eigenvector of the typical section at reduced frequency k (same Theodorsen operator as flutterVg):
+// returns the plunge/pitch amplitude ratio (h/b per radian of pitch) and the phase of plunge relative to pitch.
+export function flutterModeShape(sec, k, fTarget) {
+  const { m, Ia, xa, a, b, wh, wa, rho } = sec, Sa = m * xa * b, Kh = m * wh * wh, Ka = Ia * wa * wa;
+  const C = theodorsen(k), i = cx(0, 1), P = Math.PI * rho;
+  const Lh = cs(P * b * b, cadd(cx(-1), cmul(cs(2 / k, C), i)));
+  const La = cs(P * b ** 3, cadd(cadd(cx(a), cmul(i, cx(1 / k))), cadd(cs(2 / (k * k), C), cmul(cs(2 * (0.5 - a) / k, C), i))));
+  const Mh = cs(P * b ** 3, cadd(cx(-a), cmul(cs(2 * (a + 0.5) / k, C), i)));
+  const Ma = cs(P * b ** 4, cadd(cadd(cx(0.125 + a * a), cmul(i, cx(-(0.5 - a) / k))), cadd(cs(2 * (a + 0.5) / (k * k), C), cmul(cs(2 * (a + 0.5) * (0.5 - a) / k, C), i))));
+  const Z11 = cs(1 / Kh, cadd(cx(m), cs(-1, Lh))), Z12 = cs(1 / Kh, cadd(cx(Sa), cs(-1, La))), Z21 = cs(1 / Ka, cadd(cx(Sa), Mh)), Z22 = cs(1 / Ka, cadd(cx(Ia), Ma));
+  const tr = cadd(Z11, Z22), dt = cadd(cmul(Z11, Z22), cs(-1, cmul(Z12, Z21))), disc = csqrt(cadd(cmul(tr, tr), cs(-4, dt)));
+  const lams = [cs(0.5, cadd(tr, disc)), cs(0.5, cadd(tr, cs(-1, disc)))].filter(L => L.re > 0);
+  const f = (L) => 1 / Math.sqrt(L.re) / (2 * Math.PI); const lam = lams.sort((p, q) => Math.abs(f(p) - fTarget) - Math.abs(f(q) - fTarget))[0];
+  if (!lam) return { hb: 0, phase: 0 };
+  // eigenvector of (Z − λI)v = 0 → v = [Z12, λ − Z11] (h/b scaled by b because Z12 multiplies α with moment-arm units)
+  const vh = Z12, va = cadd(lam, cs(-1, Z11));
+  const ra = Math.hypot(va.re, va.im) || 1e-12, ratio = { re: (vh.re * va.re + vh.im * va.im) / (ra * ra), im: (vh.im * va.re - vh.re * va.im) / (ra * ra) };
+  return { hb: Math.hypot(ratio.re, ratio.im) / b, phase: Math.atan2(ratio.im, ratio.re), f: f(lam) };
+}
+
 // Typical-section V–g flutter (k-method). sec: {m (kg/m), Ia (kg·m²/m about EA), xa (CG aft of EA, semichords), a (EA position, semichords aft of mid-chord), b (semichord), wh, wa (rad/s), rho, gs}
 export function flutterVg(sec, { kmax = 3, kmin = 0.02, nk = 220 } = {}) {
   const { m, Ia, xa, a, b, wh, wa, rho } = sec, Sa = m * xa * b, Kh = m * wh * wh, Ka = Ia * wa * wa, gs = sec.gs ?? 0.02;
