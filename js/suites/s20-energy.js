@@ -56,6 +56,7 @@ export default {
     { key: 'route', label: 'Route', type: 'select', group: 'Route', default: 'flat', options: [{ value: 'flat', label: 'Flat straight road (heading below)' }, { value: 'imported', label: 'Imported route (Data portal GPX/KML/GeoJSON)' }], auto: (c) => (c.store.project.imports?.route?.length >= 2 ? { value: 'imported', prov: 'user' } : undefined) },
     { key: 'heading', label: 'Initial heading', unit: '°', type: 'number', min: 0, max: 359, step: 1, group: 'Route', default: 0 },
     { key: 'grade', label: 'Road gradient (flat route)', unit: '%', type: 'number', min: -10, max: 10, step: 0.5, group: 'Route', default: 0 },
+    { key: 'safeDepower', label: 'Depower wing to grip/rollover limit', type: 'bool', group: 'Wing', default: true, help: 'Caps wing side force at min(0.7·μmg, 0.8·SSF·mg·h_cg/h_CE) — the safe useful-thrust envelope. Disable only to see the unsafe theoretical maximum.' },
     { key: 'CL', label: 'Wing max trimmed C_L', type: 'number', min: 0.3, max: 2, step: 0.05, group: 'Wing', default: 1.0, auto: (c) => c.upstream('s07')?.CLmax ? { value: +(0.85 * c.upstream('s07').CLmax).toFixed(2), prov: 'coupled' } : undefined },
     { key: 'CD0', label: 'Wing profile drag C_D0', type: 'number', min: 0.005, max: 0.2, step: 0.005, group: 'Wing', default: 0.03 },
     { key: 'kInd', label: 'Induced-drag factor k (C_D = C_D0 + k C_L²)', type: 'number', min: 0.01, max: 0.5, step: 0.01, group: 'Wing', default: 0.15, expert: true, auto: (c) => { const AR = c.vehicle.wingHeight ** 2 / (c.vehicle.wingArea / (c.vehicle.nWings || 2)); return { value: +(1 / (Math.PI * 0.8 * AR)).toFixed(3), prov: 'calc' }; }, help: '1/(π e AR) with e = 0.8 and the wing aspect ratio.' },
@@ -100,13 +101,19 @@ export default {
       return { U, dirFrom, isDay };
     };
     // ---- wing force model: best trim per apparent-wind angle, stalled drag mode downwind ----
-    const CLs = linspace(0, p.CL, 9);
+    const CLs = linspace(0, p.CL, 25);
+    // Safe-depowering limit: wing side force may not exceed the tyre-grip reserve or the static rollover limit
+    // (moment balance Fy·h_ce ≤ SSF·m·g·h_cg with an 0.8 safety factor). This is “maximum safe useful thrust”.
+    const ssf = ctx.upstream('s11')?.ssf ?? ctx.upstream('s01')?.ssf ?? (veh.track / 2) * 0.62 / veh.cgHeight / 2;
+    const hCE = R + veh.height * 0.7 + veh.wingHeight * 0.45, FyRoll = 0.8 * ssf * m * G0 * veh.cgHeight / hCE, FyGrip = 0.7 * mu * m * G0;
+    const FyMax = p.safeDepower === false ? Infinity : Math.min(FyRoll, FyGrip);
     const wing = (Va, beta) => {
       const q = 0.5 * rho * Va * Va, b = rad(Math.abs(beta)); let best = -Infinity, side = 0;
-      if (s07?.thrustVsAWA?.awa?.length && s07.Va) { const T0 = interp1(s07.thrustVsAWA.awa, s07.thrustVsAWA.thrust, Math.abs(beta)) * (Va / s07.Va) ** 2; return { Fx: T0, Fy: q * veh.wingArea * p.CL * Math.cos(b), feather: -q * veh.wingArea * p.CD0 * Math.cos(b) }; }
+      if (s07?.thrustVsAWA?.awa?.length && s07.Va) { let T0 = interp1(s07.thrustVsAWA.awa, s07.thrustVsAWA.thrust, Math.abs(beta)) * (Va / s07.Va) ** 2, Fy = q * veh.wingArea * p.CL * Math.cos(b); if (Fy > FyMax) { T0 *= FyMax / Fy; Fy = FyMax; } return { Fx: T0, Fy, feather: -q * veh.wingArea * p.CD0 * Math.cos(b) }; }
       const luff = clamp((Math.abs(beta) - 12) / 18, 0, 1); // close-hauled limit: no useful lift below ≈ 12–30°
-      for (const cl of CLs) { const CLe = cl * luff, CD = p.CD0 + p.kInd * CLe * CLe, Fx = q * veh.wingArea * (CLe * Math.sin(b) - CD * Math.cos(b)); if (Fx > best) { best = Fx; side = q * veh.wingArea * (CLe * Math.cos(b) + CD * Math.sin(b)); } }
-      const stall = -1.1 * q * veh.wingArea * Math.cos(b); if (stall > best) { best = stall; side = 1.1 * q * veh.wingArea * Math.sin(b); }
+      for (const cl of CLs) { const CLe = cl * luff, CD = p.CD0 + p.kInd * CLe * CLe, Fx = q * veh.wingArea * (CLe * Math.sin(b) - CD * Math.cos(b)), Fy = q * veh.wingArea * (CLe * Math.cos(b) + CD * Math.sin(b)); if (Fy > FyMax && cl > 0) continue; if (Fx > best) { best = Fx; side = Fy; } }
+      const stallFy = 1.1 * q * veh.wingArea * Math.sin(b), stallF = -1.1 * q * veh.wingArea * Math.cos(b) * Math.min(1, FyMax / Math.max(stallFy, 1e-9)); if (stallF > best) { best = stallF; side = Math.min(stallFy, FyMax); }
+      if (best === -Infinity) { best = -q * veh.wingArea * p.CD0 * Math.cos(b); side = q * veh.wingArea * p.CD0 * Math.sin(b); }
       return { Fx: best, Fy: side, feather: -q * veh.wingArea * p.CD0 * Math.cos(b) };
     };
     // hub availability
@@ -193,6 +200,7 @@ export default {
     k('Journey outcome', S.worst ? (success ? 'No fabricated motion ✔' : 'Inconsistent') : success ? 'Success' : 'Failure', '', S.worst ? 'The worst-case test passes when the car only coasts on its initial kinetic energy and stops — no energy is invented.' : travel ? `Success = mean speed ≥ 80 % of ${p.speed} km/h.` : 'Scenario-specific criterion (self-start, stop).', 'calc', success ? 'ok' : 'bad');
     k('Distance travelled', dist / 1000, 'km', `In ${fmt(T / 60, 3)} min of simulated time.`);
     k('Mean speed', meanV * 3.6, 'km/h', 'Distance ÷ duration.', 'calc', meanV >= 0.8 * vt ? 'ok' : 'warn');
+    k('Safe side-force limit', FyMax, 'N', `Wing side force allowed by tyre grip (${fmt(FyGrip, 3)} N) and rollover (${fmt(FyRoll, 3)} N, SSF ${fmt(ssf, 3)}, centre of effort ${fmt(hCE, 3)} m). The wing is depowered to stay inside it.`, 'calc');
     k('Max sustainable speed — wind only', vWind * 3.6, 'km/h', `Steady force balance at U = ${fmt(Ubar, 3)} m/s, TWA ${rel}°.`);
     k('Max sustainable speed — wind + backup', vAll * 3.6, 'km/h', 'Including the continuous hub power available under this scenario.');
     k('Wheel power required at target', Preq, 'W', `Level road, ${p.speed} km/h (spec: 124 W at 20 km/h, 406 W at 40 km/h).`);

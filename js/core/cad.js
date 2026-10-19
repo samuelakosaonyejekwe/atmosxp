@@ -124,8 +124,9 @@ export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence = 10, air
     for (let sp = 0; sp < 6; sp++) { const b = box(`Spoke ${k + 1}.${sp + 1}`, R * 0.5, 0.012, 0.03, { color: color('wheel', '#c0c6cf'), group: 'Wheels', component: 'wheel' }); b.translate(R * 0.5, 0, 0); b.rotY(sp * Math.PI / 3 + wheelAngle); if (steerable && steer) b.rotZ(rad(steer)); b.translate(x, y, R); parts.push(b); }
   });
   // twin vertical wings in tandem on the body spine, roots embedded in the monocoque; incidence about the vertical axis
-  const af = airfoil || naca4('0018', 61), nW = veh.nWings || 2, span = veh.wingHeight, area1 = veh.wingArea / nW, cMean = area1 / span, cr = cMean * 1.2, ct = cMean * 0.8;
-  const wingX = nW === 1 ? [L * 0.08] : [-L * 0.42 + 0.22 * L + 0.25 * cr, -L * 0.42 + 0.58 * L + 0.25 * cr].slice(0, nW);
+  const af = airfoil || naca4('0018', 61), nW = veh.nWings || 2, span = veh.wingHeight, area1 = veh.wingArea / nW, cMean = area1 / span, cr = cMean * 1.1, ct = cMean * 0.9;
+  const x1 = -L * 0.42 + 0.10 * L + 0.25 * cr, gap = Math.max(0.36 * L, 1.12 * cr);
+  const wingX = nW === 1 ? [L * 0.08] : [x1, x1 + gap].slice(0, nW);
   wingX.forEach((wx, k) => {
     const zr = topZ(wx) - 0.02;
     const w = wing(`Wing ${k + 1} (skin + lattice)`, { airfoil: af, span, rootChord: cr, tipChord: ct, twistTip, twistFn: morph?.twist, cambDelta: morph?.camber, opts: { color: color('wingSkin', '#e5e7eb'), group: 'Wings', component: 'wingSkin' } });

@@ -69,8 +69,10 @@ export function beamModel(L, n, props) {
     for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) { K[ib[i]][ib[j]] += kb[i][j]; M[ib[i]][ib[j]] += mb[i][j]; }
     for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) { K[it[i]][it[j]] += kt[i][j]; M[it[i]][it[j]] += mt[i][j]; }
     for (let i = 0; i < 4; i++) for (let j = 0; j < 2; j++) { const v = Kc * bk[i] * bp[j]; K[ib[i]][it[j]] += v; K[it[j]][ib[i]] += v; }
-    // static unbalance (CG aft of elastic axis): couples translational and torsional inertia (lumped)
-    const sx = (p.xa || 0) * p.m * l / 2; for (const nd of [e, e + 1]) { M[3 * nd][3 * nd + 2] += sx; M[3 * nd + 2][3 * nd] += sx; }
+    // static unbalance (CG offset xa from elastic axis): consistent coupling ∫ m·xa·N_w N_φ dx (4-point Gauss)
+    if (p.xa) { const gp = [-0.861136311594053, -0.339981043584856, 0.339981043584856, 0.861136311594053], gw = [0.347854845137454, 0.652145154862546, 0.652145154862546, 0.347854845137454];
+      for (let g = 0; g < 4; g++) { const xi = (gp[g] + 1) / 2, wq = gw[g] / 2 * l, Nw = [1 - 3 * xi * xi + 2 * xi ** 3, l * (xi - 2 * xi * xi + xi ** 3), 3 * xi * xi - 2 * xi ** 3, l * (-xi * xi + xi ** 3)], Np = [1 - xi, xi];
+        for (let i = 0; i < 4; i++) for (let j = 0; j < 2; j++) { const v = p.m * p.xa * Nw[i] * Np[j] * wq; M[ib[i]][it[j]] += v; M[it[j]][ib[i]] += v; } } }
   }
   const free = range(ndof).filter(d => d >= 3); // clamped root: w = w' = φ = 0
   const red = (A) => free.map(i => free.map(j => A[i][j]));
@@ -108,7 +110,7 @@ export function frameK(E, A, I, x1, y1, x2, y2) {
 // Displacement = macroscopic affine field ε·x + periodic fluctuation; Hill–Mandel energy equivalence gives C.
 export function homogenize(cell, Es, t, depth = 1) {
   const nn = cell.nodes.length, nd = 3 * nn, A = t * depth, I = depth * t ** 3 / 12;
-  const els = cell.struts.map(s => { const p1 = cell.nodes[s.i], sh = s.shift || [0, 0], p2 = [cell.nodes[s.j][0] + sh[0] * cell.a1[0] + sh[1] * cell.a2[0], cell.nodes[s.j][1] + sh[0] * cell.a1[1] + sh[1] * cell.a2[1]]; return { ...s, p1, p2, ...frameK(Es, A, I, p1[0], p1[1], p2[0], p2[1]) }; });
+  const els = cell.struts.map(s => { const p1 = cell.nodes[s.i], sh = s.shift || [0, 0], p2 = [cell.nodes[s.j][0] + sh[0] * cell.a1[0] + sh[1] * cell.a2[0], cell.nodes[s.j][1] + sh[0] * cell.a1[1] + sh[1] * cell.a2[1]]; const tf = s.tf || 1; return { ...s, p1, p2, tt: t * tf, ...frameK(Es, A * tf, I * tf ** 3, p1[0], p1[1], p2[0], p2[1]) }; });
   const area = Math.abs(cell.a1[0] * cell.a2[1] - cell.a1[1] * cell.a2[0]);
   const Kf = zeros(nd, nd).map(r => Array.from(r));
   for (const e of els) { const map = [3 * e.i, 3 * e.i + 1, 3 * e.i + 2, 3 * e.j, 3 * e.j + 1, 3 * e.j + 2]; for (let a = 0; a < 6; a++) for (let b = 0; b < 6; b++) Kf[map[a]][map[b]] += e.K[a][b]; }
@@ -126,7 +128,7 @@ export function homogenize(cell, Es, t, depth = 1) {
       let ue = 0; const f = new Array(6).fill(0); for (let a = 0; a < 6; a++) { for (let b = 0; b < 6; b++) f[a] += e.K[a][b] * d[b]; ue += 0.5 * d[a] * f[a]; }
       U += ue; const fl = e.T.map(r => r.reduce((s, v, k) => s + v * f[k], 0)); // local end forces
       const Mmax = Math.max(Math.abs(fl[2]), Math.abs(fl[5])), axial = -fl[0];
-      forces.push({ axial, Mmax, sigmaMax: Math.abs(axial) / A + Mmax * (t / 2) / I, U: ue, d, energyFrac: 0 });
+      forces.push({ axial, Mmax, sigmaMax: Math.abs(axial) / (depth * e.tt) + Mmax * (e.tt / 2) / (depth * e.tt ** 3 / 12), U: ue, d, energyFrac: 0 });
     }
     return { U, uf, forces };
   };
@@ -135,7 +137,7 @@ export function homogenize(cell, Es, t, depth = 1) {
   const C12 = (2 * c12.U / (area * depth) / s - C11 - C22) / 2, C16 = (2 * c13.U / (area * depth) / s - C11 - C66) / 2, C26 = (2 * c23.U / (area * depth) / s - C22 - C66) / 2;
   const C = [[C11, C12, C16], [C12, C22, C26], [C16, C26, C66]];
   let S; try { S = invert(C).map(r => Array.from(r)); } catch { S = [[Infinity, 0, 0], [0, Infinity, 0], [0, 0, Infinity]]; }
-  const strutLen = els.reduce((a, e) => a + e.L, 0), relDensity = strutLen * t / area;
+  const relDensity = els.reduce((a, e) => a + e.L * e.tt, 0) / area;
   const ev = eigSym(C).values;
   const energyAt = (eps) => solveCase(eps.map(v => v * 1e-3)).U / (area * depth) / 1e-6; // J/m³ per unit strain² scale
   return { C, S, energyAt, Ex: 1 / S[0][0], Ey: 1 / S[1][1], Gxy: 1 / S[2][2], nuxy: -S[0][1] / S[0][0], nuyx: -S[0][1] / S[1][1], relDensity, area, els, caseX: c1, caseY: c2, caseS: c3, eigC: ev, positiveDefinite: ev.every(v => v > -1e-6 * Math.abs(ev[ev.length - 1])) };
@@ -195,11 +197,11 @@ export function planeStress(mesh, { E, nu, t, rho = 0, fixed = {}, springs = {},
   return { u, els: res, Kfull: full, Kr, freeList, freeIdx, isFixed, Mdiag, F, solver: sol, work, Ustrain, sumF, sumR };
 }
 // Lowest modes of a constrained CSR system (K_r, lumped M) by subspace iteration with Rayleigh–Ritz
-export function lowestModes(Kr, Mr, nModes = 3, iters = 25) {
-  const n = Kr.n, p = Math.min(n, nModes + 4), R = rng(3);
+export function lowestModes(Kr, Mr, nModes = 3, iters = 25, solver = null) {
+  const n = Kr.n, p = Math.min(n, nModes + 4), R = rng(3); const fac = solver || (() => { try { return bandCholesky(Kr); } catch { return null; } })();
   let X = range(p).map(() => Float64Array.from({ length: n }, () => R() - 0.5)), vals = [];
   for (let it = 0; it < iters; it++) {
-    const Y = X.map(x => pcg(Kr, Float64Array.from(x, (v, i) => v * Mr[i]), { tol: 1e-9, maxIt: 8000 }).x);
+    const Y = X.map(x => { const rhs = Float64Array.from(x, (v, i) => v * Mr[i]); return fac ? fac.solve(rhs) : pcg(Kr, rhs, { tol: 1e-9, maxIt: 8000 }).x; });
     const KY = Y.map(y => csrMul(Kr, y)), Kp = Y.map((yi) => KY.map(kyj => dot(yi, kyj))), Mp = Y.map(yi => Y.map(yj => { let s = 0; for (let k = 0; k < n; k++) s += yi[k] * Mr[k] * yj[k]; return s; }));
     for (let i = 0; i < p; i++) for (let j = i + 1; j < p; j++) { Kp[i][j] = Kp[j][i] = 0.5 * (Kp[i][j] + Kp[j][i]); Mp[i][j] = Mp[j][i] = 0.5 * (Mp[i][j] + Mp[j][i]); }
     let eg; try { eg = eigGen(Kp, Mp); } catch { break; }
@@ -241,5 +243,18 @@ export function bistableBeam({ L, h, t, b, E, allowAsym = true, nq = 240, nSteps
   let i2 = -1; if (iNeg > 0) for (let i = iNeg; i < F.length - 1; i++) if (F[i] < 0 && F[i + 1] >= 0) { i2 = i + 1; break; }
   const Fmin = iNeg > 0 ? Math.min(...F.slice(iNeg, i2 > 0 ? i2 : F.length)) : Math.min(...F.slice(1)); let iMax = 0; for (let i = 0; i < (i2 > 0 ? i2 : Us.length); i++) if (Us[i] > Us[iMax]) iMax = i;
   return { d: ds, F, U: Us, Ub, Us: Usx, coeffs: Ys, maxCurvature: curv, Ftop: F[iTop], dTop: ds[iTop], Fmin, bistable: i2 > 0 && Fmin < 0, d2: i2 > 0 ? ds[i2] : NaN, Ustored: i2 > 0 ? Us[i2] : NaN, Ubarrier: Us[iMax], dBarrier: ds[iMax], I, A, Q: h / t, maxStrain: Math.max(...curv.slice(0, i2 > 0 ? i2 + 1 : curv.length)) * t / 2, modesUsed: allowAsym ? 4 : 3 };
+}
+// Banded Cholesky factorisation of an SPD CSR matrix (structured meshes have small bandwidth) — direct, robust to ill-conditioning
+export function bandCholesky(A) {
+  const n = A.n; let bw = 0; for (let i = 0; i < n; i++) for (let k = A.ptr[i]; k < A.ptr[i + 1]; k++) bw = Math.max(bw, Math.abs(A.col[k] - i));
+  const w = bw + 1, L = new Float64Array(n * w); // L[i*w + (i-j)] for j in [i-bw, i]
+  for (let i = 0; i < n; i++) for (let k = A.ptr[i]; k < A.ptr[i + 1]; k++) { const j = A.col[k]; if (j <= i) L[i * w + (i - j)] = A.val[k]; }
+  for (let j = 0; j < n; j++) {
+    let d = L[j * w]; for (let k = Math.max(0, j - bw); k < j; k++) { const v = L[j * w + (j - k)]; d -= v * v; }
+    if (d <= 0) throw new Error('Stiffness matrix not positive definite (mechanism or missing support)'); d = Math.sqrt(d); L[j * w] = d;
+    for (let i = j + 1; i <= Math.min(n - 1, j + bw); i++) { let s2 = L[i * w + (i - j)]; for (let k = Math.max(0, i - bw); k < j; k++) s2 -= L[i * w + (i - k)] * L[j * w + (j - k)]; L[i * w + (i - j)] = s2 / d; }
+  }
+  const solve = (b) => { const y = Float64Array.from(b); for (let i = 0; i < n; i++) { let s2 = y[i]; for (let k = Math.max(0, i - bw); k < i; k++) s2 -= L[i * w + (i - k)] * y[k]; y[i] = s2 / L[i * w]; } for (let i = n - 1; i >= 0; i--) { let s2 = y[i]; for (let k = i + 1; k <= Math.min(n - 1, i + bw); k++) s2 -= L[k * w + (k - i)] * y[k]; y[i] = s2 / L[i * w]; } return y; };
+  return { solve, bandwidth: bw };
 }
 export { invert, matmul, transpose };

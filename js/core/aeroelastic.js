@@ -79,10 +79,12 @@ export function staticAeroelastic(model, aeroFn, { method = 'aitken', tol = 1e-6
 
 // Static divergence: smallest dynamic pressure q where K − q·A loses positive definiteness (strip theory)
 export function divergenceQ(model, chord, e, a0) {
-  const N = model.N, A = model.K.map(r => r.map(() => 0));
-  for (let i = 0; i < N; i++) { const z = model.z[i], tw = (i === 0 || i === N - 1 ? 0.5 : 1) * model.le, c = chord(z), ei = e(z); A[3 * i][3 * i + 2] += c * a0 * tw; A[3 * i + 2][3 * i + 2] += c * a0 * ei * tw; }
-  const Ar = model.free.map(i => model.free.map(j => A[i][j])), Ki = invert(model.Kr), Z = Ki.map(r => model.free.map((_, j) => Ar.reduce((s, row, k) => s + r[k] * row[j], 0)));
-  const ev = eigGeneral(Z.map(r => Array.from(r))).filter(v => Math.abs(v.im) < 1e-9 * (Math.abs(v.re) + 1e-30) && v.re > 0).map(v => v.re);
+  const N = model.N, nf = model.free.length, pos = new Map(model.free.map((d, k) => [d, k]));
+  // aerodynamic stiffness acting through twist DOFs (strip theory): lift on w_i and torque on φ_i per unit q and φ_i
+  const cols = range(N - 1).map(k => k + 1).map(i => { const z = model.z[i], tw = (i === N - 1 ? 0.5 : 1) * model.le, c = chord(z); const col = new Array(nf).fill(0); col[pos.get(3 * i)] = c * a0 * tw; col[pos.get(3 * i + 2)] = c * a0 * e(z) * tw; return col; });
+  const sol = cols.map(col => luSolve(model.Kr, col)); // K⁻¹ A, columns for each φ_i
+  const B = range(N - 1).map(k => k + 1).map(i => sol.map(x => x[pos.get(3 * i + 2)])); // rows: φ_i response
+  const ev = eigGeneral(B.map(r => Array.from(r))).filter(v => v.re > 0 && Math.abs(v.im) <= 1e-6 * Math.abs(v.re)).map(v => v.re);
   const lam = ev.length ? Math.max(...ev) : 0; return lam > 0 ? 1 / lam : Infinity;
 }
 
@@ -123,22 +125,25 @@ export function gustResponse(o) {
   const nm = modes.length, q = new Array(nm).fill(0), qd = new Array(nm).fill(0), qdd = new Array(nm).fill(0);
   const XM = z.map(() => [0, 0]), XG = z.map(() => [0, 0]), prevAm = z.map(() => 0), prevAg = z.map(() => 0);
   const W = [0.165, 0.335], Wb = [0.0455, 0.3], Kq = [0.5, 0.5], Kb = [0.13, 1.0];
-  const out = { t: [], lift: [], Mroot: [], twistTip: [], wTip: [], gust: [], Paero: [], Estr: [], Wnet: 0, energyErr: 0 };
+  const out = { t: [], lift: [], Mroot: [], twistTip: [], wTip: [], gust: [], Paero: [], Estr: [], q: [], Wnet: 0, energyErr: 0 };
   const beta = 0.25, gam = 0.5; let Waero = 0, Wdamp = 0; let E0 = 0;
   const loads = (qq, qqd, commit, t) => {
     const phi = z.map((_, i) => modes.reduce((s, m, j) => s + m.full[3 * i + 2] * qq[j], 0)), wdot = z.map((_, i) => modes.reduce((s, m, j) => s + m.full[3 * i] * qqd[j], 0));
-    const wg = gust(t), Fw = [], Ft = [];
+    const Fw = [], Ft = []; let wgRef = 0;
     for (let i = 0; i < N; i++) {
       const Vi = Math.max(V(z[i]), 0.3), c = chord(z[i]), ds = 2 * Vi * dt / c;
+      const wg = gust(t, z[i]); if (i === Math.floor(N * 0.75)) wgRef = o.gustRef ? o.gustRef(t) : wg;
       const am = phi[i] - wdot[i] / Vi, ag = wg / Vi;
       let xm = XM[i].map((x, j) => x * Math.exp(-Wb[j] * ds) + (am - prevAm[i]) * Math.exp(-Wb[j] * ds / 2)), xg = XG[i].map((x, j) => x * Math.exp(-Kb[j] * ds) + (ag - prevAg[i]) * Math.exp(-Kb[j] * ds / 2));
       // Wagner: circulatory lift lags motion; Küssner: gust penetration lag
       const aEff = am - W[0] * xm[0] - W[1] * xm[1] + ag - Kq[0] * xg[0] - Kq[1] * xg[1];
       if (commit) { XM[i] = xm; XG[i] = xg; prevAm[i] = am; prevAg[i] = ag; }
-      const l = 0.5 * rho * Vi * Vi * c * a0 * aEff; Fw.push(l * tw[i]); Ft.push(l * e(z[i]) * tw[i]);
+      const qc = 0.5 * rho * Vi * Vi * c; let l = qc * a0 * aEff + (o.extraLoad ? o.extraLoad(t, z[i]) : 0);
+      if (o.clStatic && o.clmax) { const cs0 = o.clStatic(z[i]), ct = Math.max(-o.clmax, Math.min(o.clmax, cs0 + l / qc)); l = qc * (ct - cs0); } // stall-limited lift increment
+      Fw.push(l * tw[i]); Ft.push(l * e(z[i]) * tw[i]);
     }
     const Q = modes.map(m => z.reduce((s, _, i) => s + m.full[3 * i] * Fw[i] + m.full[3 * i + 2] * Ft[i], 0));
-    return { Q, Fw, Ft, phi, wg };
+    return { Q, Fw, Ft, phi, wg: wgRef };
   };
   // initialise memory with zero motion (perturbation about static equilibrium)
   let L0 = loads(q, qd, true, 0); for (let j = 0; j < nm; j++) qdd[j] = L0.Q[j] - 2 * zeta * modes[j].omega * qd[j] - modes[j].omega ** 2 * q[j];
@@ -157,11 +162,12 @@ export function gustResponse(o) {
     const Lc = loads(qn, qdn, true, t + dt);
     for (let j = 0; j < nm; j++) { Waero += 0.5 * (Lc.Q[j] + (L0.Q[j] || 0)) * (qn[j] - q[j]); const vm = 0.5 * (qdn[j] + qd[j]); Wdamp += 2 * zeta * modes[j].omega * vm * vm * dt; }
     L0 = Lc; for (let j = 0; j < nm; j++) { q[j] = qn[j]; qd[j] = qdn[j]; qdd[j] = qddn[j]; }
+    { let k1 = 0, k2 = 0; for (let j = 0; j < nm; j++) { k1 += (modes[j].full[4] - modes[j].full[1]) * q[j]; k2 += (modes[j].full[5] - modes[j].full[2]) * q[j]; } const p0 = o.props(model.le / 2), Mr = (p0.EI * k1 + (p0.K || 0) * k2) / model.le; if (Math.abs(Mr) > Math.abs(out.peakMroot || 0)) out.peakMroot = Mr; }
     if (s % Math.max(1, Math.round(0.02 / dt)) === 0) {
       const u = new Array(model.ndof).fill(0); for (let j = 0; j < nm; j++) for (let d = 0; d < model.ndof; d++) u[d] += modes[j].full[d] * q[j];
       const kap = (u[4] - u[1]) / model.le, dph = (u[5] - u[2]) / model.le, p0 = o.props(model.le / 2);
       const Estr = 0.5 * modes.reduce((s2, m, j) => s2 + qd[j] ** 2 + (m.omega * q[j]) ** 2, 0);
-      out.t.push(t); out.lift.push(Lc.Fw.reduce((a, b) => a + b, 0)); out.Mroot.push(p0.EI * kap + (p0.K || 0) * dph); out.twistTip.push(u[3 * (N - 1) + 2] * 180 / Math.PI); out.wTip.push(u[3 * (N - 1)]); out.gust.push(Lc.wg); out.Estr.push(Estr);
+      out.t.push(t); out.lift.push(Lc.Fw.reduce((a, b) => a + b, 0)); out.Mroot.push(p0.EI * kap + (p0.K || 0) * dph); out.twistTip.push(u[3 * (N - 1) + 2] * 180 / Math.PI); out.wTip.push(u[3 * (N - 1)]); out.gust.push(Lc.wg); out.Estr.push(Estr); out.q.push(q.slice());
     }
   }
   const Ef = 0.5 * modes.reduce((s2, m, j) => s2 + qd[j] ** 2 + (m.omega * q[j]) ** 2, 0) - E0;

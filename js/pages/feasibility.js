@@ -24,7 +24,8 @@ export async function render(root) {
     const chosen = [...pick.querySelectorAll('input:checked')].map(i => i.value), vT = kmh(+speed.value), rows = [];
     for (const [si, sc] of chosen.entries()) {
       status.textContent = `Scenario ${si + 1}/${chosen.length}: ${SCENARIOS[sc].label}`;
-      const out = await runChain(FEASIBILITY_CHAIN, { s05: { scenario: sc } }, { onStep: (id, f, msg) => { prog.set((si + f) / chosen.length); status.textContent = `${SCENARIOS[sc].label} · suite ${id}: ${msg}`; } });
+      const S20 = { favorable: 's2', acceleration: 's2', crosswind: 's3', gust: 's4', reversal: 's5', sunnyCalm: 's6', clearNight: 's7', cloudyNight: 's8', worstCase: 's18', live: 's17' };
+      const out = await runChain(FEASIBILITY_CHAIN, { s05: { scenario: sc }, s20: { scenario: S20[sc] || 's2', speed: +speed.value } }, { onStep: (id, f, msg) => { prog.set((si + f) / chosen.length); status.textContent = `${SCENARIOS[sc].label} · suite ${id}: ${msg}`; } });
       rows.push({ sc, label: SCENARIOS[sc].label, ...evaluate(out, vT) });
     }
     store.setParam('s05', 'scenario', prevScenario ?? 'live', 'user');

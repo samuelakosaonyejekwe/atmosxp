@@ -61,6 +61,12 @@ export function panelSolver(points) {
       const perim = pan.reduce((s, p) => s + p.l, 0), Gamma = g * perim;
       return { alpha: alphaDeg, CL, CDp, CM: Cm, Vt, Cp, q, gamma: g, Gamma, CLkj: -2 * Gamma / chord, srcSum, panels: pan };
     },
+    // non-lifting (source-only, no Kutta condition) solution — reference for potential-flow mesh studies
+    solveNonLifting(alphaDeg) {
+      const a = rad(alphaDeg), ca = Math.cos(a), sa = Math.sin(a), M = I.An.map(r => Float64Array.from(r)), b = pan.map(p => -(ca * p.nx + sa * p.ny)), q = luSolve(M, b);
+      const Vt = pan.map((p, i) => { let v = ca * p.tx + sa * p.ty; for (let j = 0; j < n; j++) v += q[j] * I.At[i][j]; return v; });
+      return { q, Vt, VmaxSurface: Math.max(...Vt.map(Math.abs)) };
+    },
     // velocity at arbitrary field point (for flow-field contours)
     velocity(sol, x, y, alphaDeg) {
       const a = rad(alphaDeg); let u = Math.cos(a), v = Math.sin(a);

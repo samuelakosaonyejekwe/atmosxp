@@ -7,7 +7,7 @@ export const G0 = 9.80665, R_AIR = 287.058, R_V = 461.495, SIGMA = 5.670374419e-
 // ---------- array helpers ----------
 export const linspace = (a, b, n) => { const o = new Array(n); if (n === 1) { o[0] = a; return o; } for (let i = 0; i < n; i++) o[i] = a + (b - a) * i / (n - 1); return o; };
 export const logspace = (a, b, n) => linspace(a, b, n).map(v => 10 ** v);
-export const range = (n) => Array.from({ length: n }, (_, i) => i);
+export const range = (a, b) => b === undefined ? Array.from({ length: Math.max(0, a | 0) }, (_, i) => i) : Array.from({ length: Math.max(0, (b - a) | 0) }, (_, i) => a + i);
 export const sum = (a) => { let s = 0; for (const v of a) s += v; return s; };
 export const mean = (a) => a.length ? sum(a) / a.length : NaN;
 export const std = (a) => { const m = mean(a); return Math.sqrt(sum(a.map(v => (v - m) ** 2)) / Math.max(1, a.length - 1)); };

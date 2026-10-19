@@ -49,17 +49,18 @@ export function ogrid(airfoil, { ni = 96, nj = 40, R = 12, h1 = 2e-3, smooth = 6
   // hyperbolic-type marching: each layer advances along the smoothed normals of the previous layer, then the
   // marched family is blended (in position) with straight rays to the far-field circle so the outer row is exact.
   for (let i = 0; i < ni; i++) { X[0][i] = W[i][0]; Y[0][i] = W[i][1]; }
-  let prev = W.map(p => p.slice());
+  let prev = W.map(p => p.slice()); const march = [prev];
   for (let j = 1; j < nj; j++) {
     let N = prev.map((_, i) => { const a = prev[(i - 1 + ni) % ni], b = prev[(i + 1) % ni], tx = b[0] - a[0], ty = b[1] - a[1], l = Math.hypot(tx, ty) || 1; return [ty / l, -tx / l]; });
     const passes = Math.min(smooth, 2 + j);
     for (let k = 0; k < passes; k++) N = N.map((n, i) => { const a = N[(i - 1 + ni) % ni], b = N[(i + 1) % ni], x = 0.5 * n[0] + 0.25 * (a[0] + b[0]), y = 0.5 * n[1] + 0.25 * (a[1] + b[1]), l = Math.hypot(x, y) || 1; return [x / l, y / l]; });
     const step = d[j] - d[j - 1];
-    const next = prev.map((p, i) => [p[0] + N[i][0] * step, p[1] + N[i][1] * step]);
-    const sj = d[j] / dmax, w = sj * sj;
-    for (let i = 0; i < ni; i++) { const rx = W[i][0] + (Q[i][0] - W[i][0]) * sj, ry = W[i][1] + (Q[i][1] - W[i][1]) * sj; X[j][i] = (1 - w) * next[i][0] + w * rx; Y[j][i] = (1 - w) * next[i][1] + w * ry; }
-    prev = next;
+    prev = prev.map((p, i) => [p[0] + N[i][0] * step, p[1] + N[i][1] * step]); march.push(prev);
   }
+  // project the final marched layer radially onto the far-field circle; distribute the correction smoothly
+  const last = march[nj - 1], QQ = last.map(([x, y]) => { const a = Math.atan2(y, x - cx); return [cx + R * Math.cos(a), R * Math.sin(a)]; });
+  for (let j = 1; j < nj; j++) { const w = (d[j] / dmax) ** 2; for (let i = 0; i < ni; i++) { X[j][i] = march[j][i][0] + w * (QQ[i][0] - last[i][0]); Y[j][i] = march[j][i][1] + w * (QQ[i][1] - last[i][1]); } }
+  void Q;
   const nodes = [], id = (i, j) => j * ni + (i % ni);
   for (let j = 0; j < nj; j++) for (let i = 0; i < ni; i++) nodes.push([X[j][i], Y[j][i]]);
   const elems = []; for (let j = 0; j < nj - 1; j++) for (let i = 0; i < ni; i++) elems.push([id(i, j), id(i + 1, j), id(i + 1, j + 1), id(i, j + 1)]);
