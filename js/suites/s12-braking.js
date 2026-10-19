@@ -5,7 +5,7 @@ import { kmh } from '../core/physics.js';
 import { ROADS, wheelLayout, threeWheelLoads, discStep, brakeConvH } from '../core/vehicle.js';
 
 const UNLOAD = { release: { label: 'Feathering release linked to brake pedal (Revision 2: C_L ≈ 0, residual ≈ 0)', f: 0.0 }, feathered: { label: 'Wing feathered / unloaded (10 % residual)', f: 0.1 }, partial: { label: 'Partially unloaded (50 %)', f: 0.5 }, stuck: { label: 'Wing fails to unload (100 %)', f: 1.0 } };
-const FAIL = { none: 'No fault', front: 'Front circuit failed', rear: 'Rear circuit failed', lock: 'No modulation (wheels may lock)' };
+const FAIL = { none: 'No fault', front: 'Circuit A failed (front circuit / diagonal A)', rear: 'Circuit B failed (rear circuit / diagonal B)', lock: 'No modulation (wheels may lock)' };
 
 export default {
   description: 'Stopping performance of the mechanically braked trike with concurrent wing thrust (including a wing that fails to unload), adhesion-limited load transfer, wheel lock, wet roads and single-circuit failure; brake disc heating and fade over repeated stops from the library brake materials; and parking-brake holding on slopes with gust loading.',
@@ -23,6 +23,7 @@ export default {
     { key: 'slope', label: 'Road gradient (downhill +)', unit: '%', type: 'number', min: -20, max: 20, step: 0.5, group: 'Stop', default: 0 },
     { key: 'thrust', label: 'Wing forward thrust at brake onset', unit: 'N', type: 'number', min: 0, max: 2000, step: 5, group: 'Wing', default: 50, auto: (c) => { const o = c.upstream('s07') || c.upstream('s06'); return o?.thrustN !== undefined ? { value: +Math.max(0, o.thrustN).toFixed(1), prov: 'coupled' } : undefined; } },
     { key: 'unload', label: 'Wing unloading state', type: 'select', group: 'Wing', default: 'release', auto: (c) => ({ value: ['feathering', 'ring'].includes(c.upstream('s01')?.wingRoot ?? 'feathering') ? 'release' : 'feathered', prov: 'coupled' }), options: Object.entries(UNLOAD).map(([value, o]) => ({ value, label: o.label })) },
+    { key: 'circuit', label: 'Brake circuit layout', type: 'select', group: 'Faults', default: 'diagonal', options: [{ value: 'diagonal', label: 'Diagonal split (each circuit: one front wheel + one rear caliper)' }, { value: 'axle', label: 'Axle split (front circuit / rear circuit)' }], help: 'With 75 % of the weight on the front wheels, an axle split leaves only the lightly loaded rear wheel after a front-circuit failure; the diagonal split keeps braking on both axles.' },
     { key: 'fault', label: 'Fault case', type: 'select', group: 'Faults', default: 'none', options: Object.entries(FAIL).map(([value, label]) => ({ value, label })) },
     { key: 'pedal', label: 'Pedal force', unit: 'N', type: 'number', min: 50, max: 800, step: 10, group: 'Actuation', default: 250 },
     { key: 'pedalRatio', label: 'Pedal lever ratio', type: 'number', min: 2, max: 8, step: 0.1, group: 'Actuation', default: 4 },
@@ -61,8 +62,13 @@ export default {
             const loads = threeWheelLoads(lay.pts, m * G0 * Math.cos(th), 0, [{ Fx: mEff * a, z: veh.cgHeight }]);
             Fb = loads.map((Fz, i) => {
               const share = isFront[i] ? p.bias / 100 / nF : (1 - p.bias / 100) / nR;
-              const failed = (fault === 'front' && isFront[i]) || (fault === 'rear' && !isFront[i]);
-              const demand = failed ? 0 : 2 * muPad * clamp0 * share * 3 * rEff / R; // ×3 normalises shares to per-wheel clamp
+              // circuit layouts: 'axle' = front/rear circuits; 'diagonal' (default) = circuit A: first front wheel + one rear caliper,
+              // circuit B: second front wheel + the other rear caliper (twin-caliper rear disc) — a single failure keeps half the brakes on both axles
+              const fi = isFront.slice(0, i + 1).filter(Boolean).length - 1;
+              const keep = (p.circuit || 'diagonal') === 'diagonal'
+                ? (fault === 'front' ? (isFront[i] ? (fi === 0 ? 0 : 1) : 0.5) : fault === 'rear' ? (isFront[i] ? (fi === 1 ? 0 : 1) : 0.5) : 1)
+                : ((fault === 'front' && isFront[i]) || (fault === 'rear' && !isFront[i]) ? 0 : 1);
+              const demand = keep * 2 * muPad * clamp0 * share * 3 * rEff / R; // ×3 normalises shares to per-wheel clamp
               const lim = R_.mu * Math.max(0, Fz); locked[i] = demand > lim; return demand > lim ? (fault === 'lock' ? R_.muLock * Math.max(0, Fz) : lim) : demand;
             });
             const Fr = m * G0 * Math.cos(th) * veh.Crr, Fa = 0.5 * rho * veh.CdA * v * v, an = (sum(Fb) + Fr + Fa - Fth - m * G0 * Math.sin(th)) / mEff;

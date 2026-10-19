@@ -71,9 +71,10 @@ export default {
     const rUse = Math.max(0.005, rReal), fx = p.currency === 'USD' ? 1 : (live?.fx?.[p.currency] ?? null), fxOK = fx !== null, X = (v) => fxOK ? v * fx : v, cur = fxOK ? p.currency : 'USD';
     const B = bom(ctx.store, { grid, labourRate: p.labourRate });
     const mass = B.reduce((s, r) => s + r.mass, 0), proto = B.reduce((s, r) => s + r.fabCost, 0), co2Cradle = B.reduce((s, r) => s + r.co2, 0), energy = B.reduce((s, r) => s + r.energy, 0), credit = B.reduce((s, r) => s + r.eolCredit, 0);
-    // replacements over the vehicle life
+    // replacements over the vehicle life (priced at the learning-curve unit cost of the production programme)
+    const seriesFactor = Math.min(1, avgCost(proto, p.learning, Math.max(1, p.quantity * p.years)) / Math.max(1, proto));
     const reps = B.map(r => ({ ...r, n: Math.max(0, Math.ceil(p.life / r.life) - 1) }));
-    const repCO2 = reps.reduce((s, r) => s + r.n * r.co2, 0), repCostYr = reps.filter(r => r.n).map(r => ({ interval: r.life, cost: r.fabCost * p.repMarkup }));
+    const repCO2 = reps.reduce((s, r) => s + r.n * r.co2, 0), repCostYr = reps.filter(r => r.n).map(r => ({ interval: r.life, cost: r.fabCost * seriesFactor * p.repMarkup })); // spares at series-production cost, not one-off prototype cost
     // production business case
     const flows = [-p.capex - proto * 3]; let cum = 0; const unitHist = [];
     for (let y = 1; y <= p.years; y++) { const n0 = cum + 1, n1 = cum + p.quantity; const avg = (avgCost(proto, p.learning, n1) * n1 - (cum ? avgCost(proto, p.learning, cum) * cum : 0)) / p.quantity; unitHist.push(avg); flows.push(p.quantity * (p.price - avg) - p.overhead); cum = n1; void n0; }

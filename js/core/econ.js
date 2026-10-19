@@ -39,11 +39,12 @@ export const COMPONENT_REF = {
 export function bom(store, { grid = 450, labourRate = 35 } = {}) {
   return Object.entries(COMPONENTS).map(([key, c]) => {
     const m = componentMaterial(store, key), ref = COMPONENT_REF[key] || { vol: 0.001, kWhPerKg: 5, laborH: 2, factor: 2, life: 10, process: '—' };
-    const mass = (m?.rho || 1000) * ref.vol, matCost = mass * (m?.cost || 5), procKWh = mass * ref.kWhPerKg;
+    // masses come from the Suite 01 mass budget of the design actually configured; the reference volume is only a fallback
+    const mb = store.output('s01')?.massByComponent, massRef = (m?.rho || 1000) * ref.vol, mass = mb ? (mb[key] ?? (key in mb ? 0 : massRef)) : massRef, matCost = mass * (m?.cost || 5), procKWh = mass * ref.kWhPerKg;
     const fabCost = matCost * ref.factor + ref.laborH * labourRate;
     const co2Mat = mass * (m?.co2 || 5), co2Proc = procKWh * grid / 1000, energyMat = mass * (m?.energy || 80);
     const recyc = m?.recyclable ?? 0.3, eolCredit = recyc * co2Mat * 0.6;
-    return { key, name: c.name, material: m?.name || '—', matId: m?.id, family: m?.family, mass, matCost, fabCost, laborH: ref.laborH, procKWh, co2Mat, co2Proc, co2: co2Mat + co2Proc, energyMat, energy: energyMat + procKWh * 3.6, recyc, eolCredit, life: ref.life, process: ref.process, unc: m?.unc ?? 20 };
+    return { key, name: c.name, material: m?.name || '—', matId: m?.id, family: m?.family, mass, massSource: mb?.[key] !== undefined ? 'Suite 01 mass budget' : 'reference volume', matCost, fabCost, laborH: ref.laborH, procKWh, co2Mat, co2Proc, co2: co2Mat + co2Proc, energyMat, energy: energyMat + procKWh * 3.6, recyc, eolCredit, life: ref.life, process: ref.process, unc: m?.unc ?? 20 };
   }).concat(reefMechanismRow(store, { grid, labourRate }), aeroFairingRows(store, { grid, labourRate }));
 }
 // Revision 2.2: telescoping reef joints + torque-limited breakaway locks for both wings (≈ 3.5 kg per vehicle):
