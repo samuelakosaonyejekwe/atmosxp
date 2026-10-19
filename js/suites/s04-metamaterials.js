@@ -41,14 +41,14 @@ export default {
   cvv: { calibration: ['Unit-cell force–displacement tests (tension/compression/shear)', 'Digital-image-correlation Poisson ratio', 'Snap-through load and second stable position of printed bistable cells'], verification: ['FE vs Gibson–Ashby for a regular honeycomb (bending-dominated limit)', 'Square-grid axial modulus E = E_s t/l (exact)', 'Symmetry and positive-definiteness of C; Hill–Mandel energy check on a mixed strain state', 'Bistable: work ∫F dd equals stored energy; snap force vs Qiu–Lang–Slocum 740 EIh/L³ (symmetric mode)'], validation: ['Independent printed specimens (reserved) under quasi-static and cyclic loading', 'Fatigue of bistable cells over repeated snap cycles'] },
   formats: { import: ['CSV force–displacement data', 'STL/OBJ cell geometry (inspection)', 'JSON cell definitions'], export: ['JSON effective constitutive law (C, S)', 'CSV sweeps & F–d curves', 'SVG lattice drawing', 'STL / OBJ / glTF extruded lattice (3D view)'] },
   params: [
-    { key: 'cell', label: 'Unit-cell topology', type: 'select', group: 'Unit cell', default: 'reentrant', options: Object.entries(CELLS).map(([value, label]) => ({ value, label })) },
-    { key: 'l', label: 'Strut length l', unit: 'mm', type: 'number', min: 1, max: 50, step: 0.5, group: 'Unit cell', default: 10 },
+    { key: 'cell', label: 'Unit-cell topology', type: 'select', group: 'Unit cell', default: 'tetrachiral', help: 'Revision 2 (D2): PA12 tetrachiral core at ≈ 3 % relative density for the morphing trailing region.', options: Object.entries(CELLS).map(([value, label]) => ({ value, label })) },
+    { key: 'l', label: 'Strut length l', unit: 'mm', type: 'number', min: 1, max: 120, step: 0.5, group: 'Unit cell', default: 75 },
     { key: 'hr', label: 'Vertical wall ratio h/l', type: 'range', min: 0.5, max: 3, step: 0.05, group: 'Unit cell', default: 2 },
     { key: 'theta', label: 'Cell angle |θ|', unit: '°', type: 'range', min: 5, max: 45, step: 1, group: 'Unit cell', default: 20 },
-    { key: 'tr', label: 'Strut slenderness t/l', type: 'range', min: 0.02, max: 0.25, step: 0.005, group: 'Unit cell', default: 0.08 },
+    { key: 'tr', label: 'Strut slenderness t/l', type: 'range', min: 0.004, max: 0.25, step: 0.0005, group: 'Unit cell', default: 0.0055, help: 't = 0.41 mm at the default 75 mm cell — the powder-bed-fusion minimum for PA12; 3 % relative density.' },
     { key: 'rr', label: 'Chiral ring radius r/L', type: 'range', min: 0.1, max: 0.4, step: 0.01, group: 'Unit cell', default: 0.25 },
-    { key: 'depth', label: 'Out-of-plane depth b', unit: 'mm', type: 'number', min: 1, max: 100, step: 1, group: 'Unit cell', default: 10 },
-    { key: 'mat', label: 'Constituent material', type: 'select', group: 'Constituent', default: 'ti-6al4v', options: latticeMats.map(m => ({ value: m.id, label: m.name })), auto: (c) => ({ value: c.material('lattice')?.id || 'ti-6al4v', prov: 'library' }) },
+    { key: 'depth', label: 'Out-of-plane depth b', unit: 'mm', type: 'number', min: 1, max: 100, step: 1, group: 'Unit cell', default: 60 },
+    { key: 'mat', label: 'Constituent material', type: 'select', group: 'Constituent', default: 'pa12', options: latticeMats.map(m => ({ value: m.id, label: m.name })), auto: (c) => ({ value: c.material('lattice')?.id || 'pa12', prov: 'library' }) },
     { key: 'strainViz', label: 'Visualised macroscopic strain εxx', unit: '%', type: 'range', min: 0.1, max: 10, step: 0.1, group: 'Visualisation', default: 4 },
     { key: 'bL', label: 'Bistable beam span L', unit: 'mm', type: 'number', min: 10, max: 200, step: 1, group: 'Bistable cell', default: 80 },
     { key: 'bh', label: 'Bistable apex height h', unit: 'mm', type: 'number', min: 0.5, max: 20, step: 0.1, group: 'Bistable cell', default: 3 },
@@ -120,6 +120,9 @@ export default {
     out.tables.push({ title: 'FE vs closed-form theory', cols: ['Property', 'Periodic FE', A.model, 'Ratio'], rows: [['E_x [MPa]', H.Ex / 1e6, A.Ex / 1e6, H.Ex / A.Ex], ['E_y [MPa]', H.Ey / 1e6, A.Ey / 1e6, H.Ey / A.Ey], ['ν_xy', H.nuxy, A.nuxy, H.nuxy / A.nuxy], ['G_xy [MPa]', H.Gxy / 1e6, A.Gxy / 1e6, H.Gxy / A.Gxy]] });
     out.tables.push({ title: 'Strut-level results for ε_xx loading', cols: ['Strut', 'Length [mm]', 'Axial force [N]', 'Max moment [N·mm]', 'Peak stress [MPa]', 'Energy share'], rows: H.els.map((e, i) => [i + 1, e.L * 1000, H.caseX.forces[i].axial, H.caseX.forces[i].Mmax * 1000, H.caseX.forces[i].sigmaMax / 1e6, H.caseX.forces[i].U / H.caseX.U]) });
     out.views.push({ label: 'Unit cell & lattice', icon: '⬡', render: (el) => el.append(latticeSVG(cell, H, p.strainViz / 100, t)) });
+    out.views.unshift({ label: '3D lattice under load sweep (solved homogenisation)', icon: '🎞', render: (el) => latticeDynamic3D(el, cell, H, t, depth, p, M) });
+    out.views.splice(1, 0, { label: '3D bistable snap-through (solved path)', icon: '🎞', render: (el) => bistable3D(el, B, bL, bh, bt, bb) });
+    out.views.push({ label: '2D animation: unit-cell deformation & snap-through trace', icon: '🎞', render: (el) => meta2D(el, cell, H, t, B, p) });
     out.views.push({ label: '3D lattice', icon: '🧊', render: (el) => lattice3D(el, cell, H, t, depth) });
     out.views.push({ label: 'Bistable snap animation', icon: '🎞', render: (el) => bistableAnim(el, B, bL, bh, bt) });
     // recommendations
@@ -182,4 +185,96 @@ function bistableAnim(el, B, L, hgt, t) {
   slider.oninput = () => draw(+slider.value); draw(0);
   let playing = true, i = 0; const tick = () => { if (!el.isConnected) return; if (playing) { i = (i + 1) % B.d.length; slider.value = i; draw(i); } setTimeout(tick, 60); }; tick();
   el.append(svg, slider, h('button', { class: 'btn sm', onclick: (e) => { playing = !playing; e.target.textContent = playing ? 'Pause' : 'Play'; } }, 'Pause'), h('p', { class: 'small muted' }, `Solved equilibrium shapes along the displacement-controlled path (not an interpolated cartoon). Apex ${fmt(hgt * 1000, 3)} mm, thickness ${fmt(t * 1000, 3)} mm.`));
+}
+
+// ---------------- 3-D lattice under a macroscopic load sweep ----------------
+// Solved: periodic frame-FE unit-cell responses to three independent macroscopic strains (affine + periodic
+// fluctuation displacements and strut end forces) and the homogenised compliance S. Displayed: the 4 × 4
+// tessellation deformed by the linear superposition for uniaxial σxx, σyy and shear τxy paths (ε = S·σ), so the
+// Poisson (auxetic) response is the solved one. Deformation magnified for visibility; colour = solved axial stress.
+async function latticeDynamic3D(el, cell, H, t, depth, p, M) {
+  const [{ viewer }, { playback, hud, legend3d }, { cmap }] = await Promise.all([import('../core/viz3d.js'), import('../core/sim3d.js'), import('../core/chart.js')]);
+  const epsIn = h('input', { type: 'range', min: 0.2, max: 10, step: 0.1, value: Math.min(10, p.strainViz || 4) }), epsL = h('span', { class: 'small mono' }, '');
+  el.append(h('p', { class: 'small muted' }, 'Sequence: uniaxial stress σxx → σyy → shear τxy, each loaded and unloaded. Macroscopic strains follow ε = S·σ from the solved homogenised compliance, so lateral contraction (or expansion for auxetic cells) is the computed Poisson response. Node displacements = affine strain field + solved periodic fluctuation; colour = solved strut axial stress (linear superposition). Displacements are drawn at the selected macroscopic strain amplitude (the linear solution scaled to it — no extra magnification); colour range is fixed over the whole load path.'), h('label', {}, 'Peak macroscopic strain (display) ', epsIn, epsL));
+  const box = h('div'); el.append(box);
+  const V = await viewer(box, { height: 460, grid: false }), THREE = V.THREE, n = 4;
+  const cases = [H.caseX, H.caseY, H.caseS], unit = 1e-3; // solved for 1e-3 strain each
+  const struts = [], geo = new THREE.BoxGeometry(1, 1, 1);
+  for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) { const off = [a * cell.a1[0] + b * cell.a2[0], a * cell.a1[1] + b * cell.a2[1]]; H.els.forEach((e, k) => { const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.5, roughness: 0.4 })); V.root.add(mesh); struts.push({ e, k, off, mesh }); }); }
+  // node spheres at joints (visual continuity)
+  const sgeo = new THREE.SphereGeometry(t * 0.6, 10, 8), joints = []; for (const st of struts) for (const end of [1, 2]) { const m = new THREE.Mesh(sgeo, new THREE.MeshStandardMaterial({ color: 0xcbd5e1, metalness: 0.5, roughness: 0.4 })); V.root.add(m); joints.push({ st, end, m }); }
+  const H2 = hud(box), sAll = []; for (const c of cases) for (const f of c.forces) sAll.push(Math.abs(f.axial)); const leg = legend3d(box, { title: 'Strut axial stress (MPa)', lo: 0, hi: 1, cmapName: 'coolwarm' });
+  const T = 18;
+  // fixed colour range: peak strut axial stress over the whole load path at the chosen amplitude (solved, linear)
+  const sRange = (Amp) => { let m = 1e-12; for (let ph = 0; ph < 3; ph++) { const e = [0, 1, 2].map(i => H.S[i][ph]), mx = Math.max(...e.map(Math.abs)) || 1, coef = e.map(v => v / mx * Amp / unit); for (const st of struts.slice(0, H.els.length)) m = Math.max(m, Math.abs(coef.reduce((s2, c, i) => s2 + c * cases[i].forces[st.k].axial, 0) / (depth * st.e.tt))); } return m; };
+  const pathAt = (tt) => { const ph = Math.floor((tt % T) / (T / 3)), u = ((tt % T) % (T / 3)) / (T / 3), lam = Math.sin(Math.PI * u), sig = [0, 0, 0]; sig[ph] = 1; const e = [0, 1, 2].map(i => H.S[i][ph]); const mx = Math.max(...e.map(Math.abs)) || 1; return { ph, lam, eps: e.map(v => v / mx) }; };
+  const pb = playback(box, { duration: T, label: 'Load path time', onFrame: (tt) => {
+    const { ph, lam, eps } = pathAt(tt), A = (+epsIn.value / 100) * lam, coef = eps.map(v => v * A / unit);
+    const E = [[eps[0] * A, eps[2] * A / 2], [eps[2] * A / 2, eps[1] * A]], aff = (q) => [E[0][0] * q[0] + E[0][1] * q[1], E[1][0] * q[0] + E[1][1] * q[1]];
+    const fl = (node) => [0, 1].map(d => coef.reduce((s2, c, i) => s2 + c * cases[i].uf[3 * node + d], 0));
+    let smax = 1e-12; const sig = struts.map(st => { const ax = coef.reduce((s2, c, i) => s2 + c * cases[i].forces[st.k].axial, 0) / (depth * st.e.tt); smax = Math.max(smax, Math.abs(ax)); return ax; }); const sFix = sRange(+epsIn.value / 100);
+    struts.forEach((st, i) => {
+      const p1 = [st.e.p1[0] + st.off[0], st.e.p1[1] + st.off[1]], p2 = [st.e.p2[0] + st.off[0], st.e.p2[1] + st.off[1]], a1 = aff(p1), a2 = aff(p2), f1 = fl(st.e.i), f2 = fl(st.e.j);
+      const q1 = [p1[0] + a1[0] + f1[0], p1[1] + a1[1] + f1[1]], q2 = [p2[0] + a2[0] + f2[0], p2[1] + a2[1] + f2[1]], L = Math.hypot(q2[0] - q1[0], q2[1] - q1[1]);
+      st.mesh.position.set((q1[0] + q2[0]) / 2, (q1[1] + q2[1]) / 2, 0); st.mesh.rotation.set(0, 0, Math.atan2(q2[1] - q1[1], q2[0] - q1[0])); st.mesh.scale.set(L + t * 0.2, st.e.tt, depth);
+      const c = cmap(0.5 + 0.5 * sig[i] / sFix, 'coolwarm'); st.mesh.material.color.setRGB(c[0] / 255, c[1] / 255, c[2] / 255); st.q1 = q1; st.q2 = q2;
+    });
+    joints.forEach(j => { const q = j.end === 1 ? j.st.q1 : j.st.q2; j.m.position.set(q[0], q[1], 0); });
+    leg.set(-sFix / 1e6, sFix / 1e6);
+    H2.set([['Load path', ['uniaxial σxx', 'uniaxial σyy', 'shear τxy'][ph]], ['ε_xx', fmt(eps[0] * A * 100, 3) + ' %'], ['ε_yy', fmt(eps[1] * A * 100, 3) + ' %'], ['γ_xy', fmt(eps[2] * A * 100, 3) + ' %'], ['Effective ν_xy (solved)', fmt(H.nuxy, 3)], ['Peak |σ_axial|', fmt(smax / 1e6, 3) + ' MPa']]);
+  } });
+  epsIn.oninput = () => { epsL.textContent = epsIn.value + ' %'; }; epsIn.oninput();
+  V.fit(); V.viewDir(0, -0.001, 1.4);
+  void M;
+  return { dispose: () => pb.dispose() };
+}
+
+// ---------------- 3-D bistable cell: solved snap-through path ----------------
+async function bistable3D(el, B, L, hgt, t, b) {
+  const [{ viewer }, { playback, hud, legend3d }, { cmap }] = await Promise.all([import('../core/viz3d.js'), import('../core/sim3d.js'), import('../core/chart.js')]);
+  el.append(h('p', { class: 'small muted' }, 'Clamped–clamped pre-curved beam animated through the solved displacement-controlled equilibrium path (Rayleigh–Ritz coefficients at each step) — including the snap-through to the second stable state. Colour = bending surface strain t/2·|w″| from the same solution. True scale.'));
+  const box = h('div'); el.append(box);
+  const V = await viewer(box, { height: 420, grid: false }), THREE = V.THREE, n = 120, k = 2 * Math.PI / L, xs = range(n + 1).map(i => L * i / n);
+  const shape = (a, x) => a[0] * (1 - Math.cos(k * x)) + a[1] * (1 - Math.cos(2 * k * x)) + a[2] * (1 - Math.cos(3 * k * x)) + a[3] * Math.sin(k * x) * (1 - Math.cos(k * x));
+  const curv = (a, x) => a[0] * k * k * Math.cos(k * x) + a[1] * 4 * k * k * Math.cos(2 * k * x) + a[2] * 9 * k * k * Math.cos(3 * k * x) + a[3] * k * k * (-Math.sin(k * x) + 2 * Math.sin(2 * k * x));
+  const pos = new Float32Array((n + 1) * 4 * 3), col = new Float32Array((n + 1) * 4 * 3), idx = [];
+  for (let i = 0; i < n; i++) for (let f = 0; f < 4; f++) { const a = i * 4 + f, bq = i * 4 + (f + 1) % 4, c = (i + 1) * 4 + (f + 1) % 4, d = (i + 1) * 4 + f; idx.push(a, bq, c, a, c, d); }
+  const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.BufferAttribute(col, 3)); g.setIndex(idx);
+  const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, metalness: 0.5, roughness: 0.35 })); V.root.add(mesh);
+  const clampM = new THREE.MeshStandardMaterial({ color: 0x475569 }); for (const x0 of [0, L]) { const c = new THREE.Mesh(new THREE.BoxGeometry(L * 0.06, b * 1.4, hgt * 2.5 + t * 4), clampM); c.position.set(x0 + (x0 ? L * 0.03 : -L * 0.03), 0, 0); V.root.add(c); }
+  const ref = new THREE.Line(new THREE.BufferGeometry().setFromPoints(xs.map(x => new THREE.Vector3(x, b / 2 + 1e-4, shape(B.coeffs[0], x)))), new THREE.LineDashedMaterial({ color: 0x94a3b8 })); V.root.add(ref);
+  const H2 = hud(box), epsMax = Math.max(...B.coeffs.map(a => Math.max(...xs.map(x => Math.abs(curv(a, x))))) ) * t / 2, leg = legend3d(box, { title: 'Bending strain (%)', lo: 0, hi: epsMax * 100 });
+  const steps = B.d.length, T = 8;
+  const pb = playback(box, { duration: T, label: 'Path time', onFrame: (tt) => {
+    const u = tt / T, si = Math.min(steps - 1, Math.floor((u < 0.5 ? 2 * u : 2 - 2 * u) * (steps - 1))), a = B.coeffs[si];
+    xs.forEach((x, i) => { const w = shape(a, x), e = Math.abs(curv(a, x)) * t / 2, c = cmap(e / (epsMax || 1), 'turbo'); const corners = [[-b / 2, -t / 2], [b / 2, -t / 2], [b / 2, t / 2], [-b / 2, t / 2]]; corners.forEach(([y, dz], f) => { pos.set([x, y, w + dz], (i * 4 + f) * 3); col.set([c[0] / 255, c[1] / 255, c[2] / 255], (i * 4 + f) * 3); }); });
+    g.attributes.position.needsUpdate = true; g.attributes.color.needsUpdate = true; g.computeVertexNormals();
+    H2.set([['Apex travel', fmt(B.d[si] * 1000, 3) + ' mm'], ['Force (solved)', fmt(B.F[si], 3) + ' N', B.F[si] < 0 ? '#ef4444' : undefined], ['Stored energy', fmt(B.U[si] * 1000, 3) + ' mJ'], ['State', B.bistable && B.d[si] >= B.d2 ? 'second stable state' : B.F[si] < 0 ? 'snap-through (negative stiffness)' : 'loading']]);
+  } });
+  V.fit(); V.viewDir(0.2, -1.1, 0.35);
+  void hgt;
+  return { dispose: () => pb.dispose() };
+}
+
+// ---------------- 2-D animation: 3 × 3 lattice under the solved load path + bistable force–displacement trace ----------------
+async function meta2D(el, cell, H, t, B, p) {
+  const { anim2d, axes2d, polyline } = await import('../core/sim3d.js');
+  el.append(h('p', { class: 'small muted' }, 'Left: 3 × 3 cells deformed by the solved homogenisation fields along uniaxial σxx → σyy → shear (ε = S·σ, affine + periodic fluctuation), at the visualised strain amplitude; struts coloured by solved axial force sign. Right: the bistable cell’s solved force–displacement path with a tracing marker and the current beam shape.'));
+  const cases = [H.caseX, H.caseY, H.caseS], T = 12, n = 3, epsA = (p.strainViz || 4) / 100;
+  const pts = []; for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) pts.push([a * cell.a1[0] + b * cell.a2[0], a * cell.a1[1] + b * cell.a2[1]]);
+  const all = pts.flatMap(o => H.els.flatMap(e => [[e.p1[0] + o[0], e.p1[1] + o[1]], [e.p2[0] + o[0], e.p2[1] + o[1]]])), xs = all.map(q => q[0]), ys = all.map(q => q[1]), bx = [Math.min(...xs), Math.max(...xs)], by = [Math.min(...ys), Math.max(...ys)];
+  const Lb = (B.d && B.d.length) ? B.d : [0], kk = 2 * Math.PI / (p.bL / 1000), shape = (a, x) => a[0] * (1 - Math.cos(kk * x)) + a[1] * (1 - Math.cos(2 * kk * x)) + a[2] * (1 - Math.cos(3 * kk * x)) + a[3] * Math.sin(kk * x) * (1 - Math.cos(kk * x));
+  return anim2d(el, { duration: T, label: 'Time', height: 400, draw: (g, tt, W, Hh, c) => {
+    const ph = Math.floor((tt % T) / (T / 3)), u = ((tt % T) % (T / 3)) / (T / 3), lam = Math.sin(Math.PI * u), e = [0, 1, 2].map(i => H.S[i][ph]), mx = Math.max(...e.map(Math.abs)) || 1, coef = e.map(v => v / mx * epsA * lam / 1e-3);
+    const E = [[e[0] / mx * epsA * lam, e[2] / mx * epsA * lam / 2], [e[2] / mx * epsA * lam / 2, e[1] / mx * epsA * lam]], aff = (q) => [q[0] + E[0][0] * q[0] + E[0][1] * q[1], q[1] + E[1][0] * q[0] + E[1][1] * q[1]];
+    const fl = (node) => [0, 1].map(d => coef.reduce((acc, cf, i) => acc + cf * cases[i].uf[3 * node + d], 0));
+    const hw = W / 2 - 20, sc = Math.min((hw - 40) / ((bx[1] - bx[0]) * 1.3), (Hh - 80) / ((by[1] - by[0]) * 1.3)), X = (x) => 30 + (x - bx[0] + 0.15 * (bx[1] - bx[0])) * sc, Y = (y) => Hh - 50 - (y - by[0] + 0.15 * (by[1] - by[0])) * sc;
+    for (const o of pts) H.els.forEach((el2, k) => { const p1 = [el2.p1[0] + o[0], el2.p1[1] + o[1]], p2 = [el2.p2[0] + o[0], el2.p2[1] + o[1]], f1 = fl(el2.i), f2 = fl(el2.j), q1 = aff(p1), q2 = aff(p2); const ax = coef.reduce((acc, cf, i) => acc + cf * cases[i].forces[k].axial, 0); g.strokeStyle = ax > 0 ? '#ef4444' : ax < 0 ? '#3b82f6' : c.mute; g.lineWidth = 2; g.beginPath(); g.moveTo(X(q1[0] + f1[0]), Y(q1[1] + f1[1])); g.lineTo(X(q2[0] + f2[0]), Y(q2[1] + f2[1])); g.stroke(); });
+    g.fillStyle = c.fg; g.fillText(`${['uniaxial σxx', 'uniaxial σyy', 'shear τxy'][ph]} · εxx ${fmt(E[0][0] * 100, 3)} % · εyy ${fmt(E[1][1] * 100, 3)} % (ν_xy = ${fmt(H.nuxy, 3)})`, 30, 18);
+    if (!B.F) return; const si = Math.min(Lb.length - 1, Math.floor(((tt % T) / T) * Lb.length * 2) % (2 * Lb.length - 1)), idx = si < Lb.length ? si : 2 * Lb.length - 2 - si;
+    const A2 = axes2d(g, { x0: hw + 70, y0: 30, w: hw - 60, h: Hh * 0.55 - 30, xr: [0, Math.max(...Lb) * 1e3], yr: [Math.min(...B.F) * 1.1, Math.max(...B.F) * 1.1], xl: 'Apex travel (mm)', yl: 'Force (N)', fg: c.fg, mute: c.mute });
+    polyline(g, Lb.map((d, i) => [A2.X(d * 1e3), A2.Y(B.F[i])]), '#22c55e', 2); g.fillStyle = '#facc15'; g.beginPath(); g.arc(A2.X(Lb[idx] * 1e3), A2.Y(B.F[idx]), 5, 0, 7); g.fill();
+    const L = p.bL / 1000, bx0 = hw + 70, bw = hw - 60, by0 = Hh * 0.82, sY = bw / L * 1.5; polyline(g, range(81).map(i => { const x = L * i / 80; return [bx0 + x / L * bw, by0 - shape(B.coeffs[idx], x) * sY]; }), '#38bdf8', 3);
+    g.fillStyle = c.fg; g.fillText(`F = ${fmt(B.F[idx], 3)} N · d = ${fmt(Lb[idx] * 1000, 3)} mm${B.F[idx] < 0 ? ' · snap-through' : ''}`, hw + 70, Hh - 12);
+  } });
 }

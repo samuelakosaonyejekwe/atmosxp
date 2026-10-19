@@ -183,6 +183,8 @@ export default {
     out.recs.push({ level: 'good', text: 'Escalate only Pareto designs to high-fidelity Suites 06–08 and 13–17 (multifidelity), then build and test the selected candidate; record surrogate-vs-hardware discrepancies in Suite 24.', basis: 'Specification Module 25 & Part B §28' });
     out.recs.push({ level: 'sustain', text: 'Include embodied carbon of extra collector area and NiTi mass (Suite 26) as a third objective before committing — closing the gap with very large collectors may worsen life-cycle impact.', basis: 'Sustainability-aware optimisation' });
     out.explain.push({ title: 'Why a reduced model?', text: 'Global sensitivity and evolutionary optimisation need tens of thousands of evaluations. The reduced model keeps the governing physics (aerodynamic force resolution, road load, second-law limit, thermal time constants) at millisecond cost; promising designs are then verified with the detailed solvers.' });
+    out.views.push({ label: '2D animation: NSGA-II population evolving to the Pareto front', icon: '🎞', render: (el) => nsga2D(el, { ob, dvB, p }) });
+    out.views.unshift({ label: '3D response surface: closure over the two most influential inputs', icon: '🏔', render: (el) => surface3D(el, { model, c, base, keys, bounds, sob, front, toXd, p }) });
     out.outputs = { sobol: Object.fromEntries(VARS.map((r, i) => [r[0], { S1: sob.S1[i], ST: sob.ST[i] }])), paretoFront: front.map(q => ({ closure: -q.f[0], mass: q.f[1], x: toXd(q.x) })), baselineClosure: B.closure, pClose, bottleneck: B.limit, hypervolume: hv, required: { w_J_g: wReq, Ac_m2: AcReq, dT_K: dTreq } };
     out.headline = `Baseline backup closes ${fmt(B.closure, 3)} % of the ${fmt(B.Preq, 3)} W need at ${p.vTarget_kmh} km/h (limit: ${B.limit}); best constrained Pareto design ${bestClose ? fmt(-bestClose.f[0], 3) : '—'} %. P(full closure) under uncertainty ${fmt(pClose * 100, 3)} %.`;
     out.headlineKind = B.closure >= 100 ? 'ok' : 'warn';
@@ -190,3 +192,61 @@ export default {
     return out;
   },
 };
+
+// ---------------- 3-D response surface ----------------
+// Solved: the reduced whole-vehicle model evaluated on a 41 × 41 grid over the two inputs with the largest Sobol
+// total-effect indices (all others at baseline); the third-ranked input is swept in time so the surface morphs.
+// Points: baseline design and the constrained NSGA-II Pareto designs (their own values of all variables).
+async function surface3D(el, o) {
+  const { model, c, base, keys, bounds, sob, front, toXd, p } = o;
+  const [{ viewer }, { playback, hud, legend3d, fieldMesh, Mesh }] = await Promise.all([import('../core/viz3d.js'), import('../core/sim3d.js')]);
+  const order = sob.ST.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]).map(q => q[1]), [i1, i2] = order;
+  // sweep variable: the highest-ranked remaining input that measurably changes the surface (others are inactive constraints here)
+  const effect = (i) => { const k = keys[i]; let d = 0; for (let a = 0; a <= 4; a++) for (let b = 0; b <= 4; b++) { const x = { ...base, [keys[i1]]: bounds[i1][0] + (bounds[i1][1] - bounds[i1][0]) * a / 4, [keys[i2]]: bounds[i2][0] + (bounds[i2][1] - bounds[i2][0]) * b / 4 }; d += (Math.abs(Math.min(300, model({ ...x, [k]: bounds[i][1] }, c).closure) - Math.min(300, model({ ...x, [k]: bounds[i][0] }, c).closure))); } return d / 25; };
+  const i3 = order.slice(2).map(i => [effect(i), i]).sort((a, b) => b[0] - a[0])[0][1];
+  const k1 = keys[i1], k2 = keys[i2], k3 = keys[i3], lab = (i) => `${VARS[i][1]}${VARS[i][2] ? ' [' + VARS[i][2] + ']' : ''}`;
+  el.append(h('p', { class: 'small muted' }, `Closure (%) of the reduced whole-vehicle model over ${lab(i1)} (x) and ${lab(i2)} (y) — the two largest Sobol total-effect indices — with all other inputs at baseline. ${lab(i3)} (next most influential input that changes the surface) sweeps its range in time, so the surface morphs. Vertical axis auto-scaled to the largest closure reached; translucent red plane = 100 % closure (shown only when reachable within the bounds); white = baseline; green = constrained Pareto designs. Values are clipped at 300 %.`));
+  const box = h('div'); el.append(box);
+  const V = await viewer(box, { height: 480, grid: false }), THREE = V.THREE, N = 40, size = 6, H = 3.2;
+  const [a1, b1] = bounds[i1], [a2, b2] = bounds[i2], [a3, b3] = bounds[i3];
+  const X = (v) => -size / 2 + size * (v - a1) / (b1 - a1), Y = (v) => -size / 2 + size * (v - a2) / (b2 - a2), cl = (x) => Math.min(300, Math.max(0, model(x, c).closure));
+  const Zobs = Math.max(1e-6, ...Array.from({ length: 64 }, (_, i) => cl({ ...base, [k1]: a1 + (b1 - a1) * (i % 8) / 7, [k2]: a2 + (b2 - a2) * Math.floor(i / 8) / 7, [k3]: b3 })), ...Array.from({ length: 64 }, (_, i) => cl({ ...base, [k1]: a1 + (b1 - a1) * (i % 8) / 7, [k2]: a2 + (b2 - a2) * Math.floor(i / 8) / 7, [k3]: a3 }))), Zmax = Zobs >= 100 ? Zobs * 1.05 : Zobs * 1.15;
+  const Z = (cv) => H * cv / Zmax;
+  const m = new Mesh('Response surface'), id = []; for (let j = 0; j <= N; j++) { id.push([]); for (let i = 0; i <= N; i++) id[j].push(m.v(-size / 2 + size * i / N, -size / 2 + size * j / N, 0)); } for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) m.q(id[j][i], id[j][i + 1], id[j + 1][i + 1], id[j + 1][i]);
+  const surf = fieldMesh(V, m, () => 0, { range: [0, Zmax], cmapName: 'viridis' });
+  const plane = new THREE.Mesh(new THREE.PlaneGeometry(size, size), new THREE.MeshBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false })); plane.position.z = Z(100); plane.visible = Zmax >= 100; V.root.add(plane);
+  const axes = new THREE.Group(); V.root.add(axes); const line = (a, b2_, col = 0x94a3b8) => axes.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...a), new THREE.Vector3(...b2_)]), new THREE.LineBasicMaterial({ color: col })));
+  line([-size / 2, -size / 2, 0], [size / 2, -size / 2, 0], 0xf97316); line([-size / 2, -size / 2, 0], [-size / 2, size / 2, 0], 0x22c55e); line([-size / 2, -size / 2, 0], [-size / 2, -size / 2, H], 0x38bdf8);
+  const dot = (col, r = 0.09) => { const s2 = new THREE.Mesh(new THREE.SphereGeometry(r, 16, 12), new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.3 })); V.root.add(s2); return s2; };
+  const bdot = dot(0xffffff, 0.13); bdot.position.set(X(base[k1]), Y(base[k2]), Z(cl(base)) + 0.05);
+  front.forEach(q => { const xd = toXd(q.x), d = dot(0x22c55e); d.position.set(X(xd[k1] ?? base[k1]), Y(xd[k2] ?? base[k2]), Z(Math.min(300, -q.f[0]))); });
+  const Hd = hud(box); legend3d(box, { title: 'Power-gap closure (%)', lo: 0, hi: Zmax, cmapName: 'viridis' });
+  const T = 12;
+  const pb = playback(box, { duration: T, label: 'Sweep time', onFrame: (t) => {
+    const u = t / T, v3 = a3 + (b3 - a3) * (u < 0.5 ? 2 * u : 2 - 2 * u), P = surf.o.geometry.attributes.position.array; let mx = 0, best = null;
+    const vals = []; for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) { const x1 = a1 + (b1 - a1) * i / N, x2 = a2 + (b2 - a2) * j / N, cv = cl({ ...base, [k1]: x1, [k2]: x2, [k3]: v3 }); vals.push(cv); const k = (j * (N + 1) + i) * 3; P[k + 2] = Z(cv); if (cv > mx) { mx = cv; best = [x1, x2]; } }
+    surf.o.geometry.attributes.position.needsUpdate = true; surf.o.geometry.computeVertexNormals(); surf.update((x, y, z, k) => vals[k], [0, Zmax]);
+    V.root.rotation.z = 0.25 * Math.sin(2 * Math.PI * t / T);
+    Hd.set([[VARS[i3][1], `${fmt(v3, 3)} ${VARS[i3][2]}`], ['Max closure on surface', fmt(mx, 3) + ' %', mx >= 100 ? '#22c55e' : '#ef4444'], ['…at ' + VARS[i1][1], fmt(best?.[0], 3)], ['…at ' + VARS[i2][1], fmt(best?.[1], 3)], ['Baseline closure', fmt(cl(base), 3) + ' %'], ['100 % target', Zmax >= 100 ? 'reachable (plane shown)' : `not reached — max ${fmt(Zobs, 3)} % over the sweep`, Zmax >= 100 ? '#22c55e' : '#ef4444'], ['Sobol S_T (x, y, sweep)', [i1, i2, i3].map(i => fmt(sob.ST[i], 2)).join(', ')]]);
+  } });
+  V.fit(); V.viewDir(0.9, -1.3, 0.9); void p;
+  return { dispose: () => pb.dispose() };
+}
+
+// ---------------- 2-D animation: NSGA-II generations (re-run deterministically with the same seed, snapshots) ----------------
+async function nsga2D(el, o) {
+  const { ob, dvB, p } = o;
+  const { anim2d, axes2d } = await import('../core/sim3d.js');
+  el.append(h('p', { class: 'small muted' }, 'Each frame is the population after g generations of the same constrained NSGA-II run (identical seed and settings as the analysis, re-solved to snapshot the generations): grey = infeasible (violates rollover, wind-speed or stress constraints), blue = feasible, green = current non-dominated front. Objectives: maximise power-gap closure, minimise mass.'));
+  const G = Math.max(2, +p.gens | 0), gens = [...new Set([1, 2, 3, 5, 8, 12, 17, 23, 30, 40, 50, 60, 80, 100].filter(g => g <= G).concat([G]))].sort((a, b) => a - b);
+  const snaps = []; for (const g of gens) { const r = nsga2(ob, dvB, { pop: +p.pop || 60, gens: g, seed: p.seed }); snaps.push({ g, pop: r.population.map(q => ({ c: -q.f[0], m: q.f[1], cv: q.cv, rank: q.rank })) }); await new Promise(r2 => setTimeout(r2, 0)); }
+  const allC = snaps.flatMap(sn => sn.pop.map(q => q.c)), allM = snaps.flatMap(sn => sn.pop.map(q => q.m)), cr = [Math.min(0, ...allC), Math.max(1, ...allC) * 1.05], mr = [Math.min(...allM) * 0.95, Math.max(...allM) * 1.05];
+  const T = snaps.length * 1.2;
+  return anim2d(el, { duration: T, label: 'Animation time', height: 420, draw: (g, t, W, H, c) => {
+    const i = Math.min(snaps.length - 1, Math.floor(t / 1.2)), sn = snaps[i], A = axes2d(g, { x0: 70, y0: 30, w: W - 100, h: H - 90, xr: mr, yr: cr, xl: 'Vehicle mass (kg)', yl: 'Power-gap closure (%)', fg: c.fg, mute: c.mute });
+    for (const q of sn.pop) { g.fillStyle = q.cv > 0 ? 'rgba(148,163,184,.55)' : q.rank === 0 ? '#22c55e' : '#3b82f6'; g.beginPath(); g.arc(A.X(q.m), A.Y(q.c), q.rank === 0 && q.cv === 0 ? 5 : 3.5, 0, 7); g.fill(); }
+    const fr = sn.pop.filter(q => q.rank === 0 && q.cv === 0).sort((a, b) => a.m - b.m); g.strokeStyle = '#22c55e'; g.lineWidth = 2; g.beginPath(); fr.forEach((q, k) => k ? g.lineTo(A.X(q.m), A.Y(q.c)) : g.moveTo(A.X(q.m), A.Y(q.c))); g.stroke();
+    if (cr[1] >= 100) { g.strokeStyle = '#ef4444'; g.setLineDash([5, 4]); g.beginPath(); g.moveTo(A.X(mr[0]), A.Y(100)); g.lineTo(A.X(mr[1]), A.Y(100)); g.stroke(); g.setLineDash([]); }
+    g.fillStyle = c.fg; g.fillText(`Generation ${sn.g} of ${G} · feasible ${sn.pop.filter(q => q.cv === 0).length}/${sn.pop.length} · front ${fr.length} · best closure ${fmt(Math.max(0, ...fr.map(q => q.c)), 3)} %`, 70, 18);
+  } });
+}

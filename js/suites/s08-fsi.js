@@ -84,6 +84,7 @@ export default {
     out.charts.push({ title: 'V–g flutter boundary', type: 'line', x: { label: 'Apparent wind', unit: 'm/s', min: 0, max: Math.min(400, (Number.isFinite(FL.Vflutter) ? FL.Vflutter : 80) * 1.3) }, y: { label: 'g', min: -1, max: 0.4 }, series: FL.branches.map((B, j) => ({ name: 'Branch ' + (j + 1), x: B.map(q => q.V), y: B.map(q => q.g) })), annotations: [{ type: 'vline', x: Vmax, label: 'V_max' }], explain: 'Flutter onset where a branch crosses the structural damping level.' });
     out.tables.push({ title: 'Coupling algorithms', cols: ['Algorithm', 'Converged', 'Iterations', 'Final residual', 'Tip twist [°]', 'Wall time [ms]'], rows: ['fixed', 'aitken', 'iqn'].map(m => [m, runs[m].converged ? 'yes' : 'no', runs[m].iterations, runs[m].history[runs[m].history.length - 1], deg(runs[m].sol.phi[N - 1]), runs[m].ms]) });
     out.tables.push({ title: 'Time-step study (peak dynamic root moment)', cols: ['Δt [s]', 'Peak ΔM [N·m]'], rows: [[dt, pk(Gi)], [dt / 2, pk(G2)], [dt / 4, pk(G4)], ['Richardson extrapolated', g.fext], ['Observed order', g.p]] });
+    out.views.push({ label: '2D animation: interface-residual convergence & section deformation', icon: '🎞', render: (el) => fsi2D(el, W, p, S, Gi) });
     out.views.unshift({ label: '3D FSI: evolving wing & gust flow (timeline)', icon: '🎞', render: (el) => fsi3D(el, W, p, S, Gi) });
     if (!runs.fixed.converged) out.recs.push({ level: 'info', text: `Fixed-point coupling with ω = ${p.omega0} did not converge in 150 exchanges; use Aitken (${runs.aitken.iterations}) or IQN-ILS (${runs.iqn.iterations}) for high-fidelity CFD–FEA coupling.`, basis: 'Algorithm comparison' });
     if (looseErr >= 0.02 || mu < 5) out.recs.push({ level: 'warn', text: 'Use strongly coupled (sub-iterated) partitioned FSI for transient gusts on this wing; the added-mass ratio and loose-coupling error indicate staggered schemes are not accurate enough.', basis: 'Added-mass ratio & loose/strong comparison' });
@@ -169,3 +170,23 @@ async function fsi3D(el, W, p, S, G) {
   return { dispose: () => pb.dispose() };
 }
 function oneMinus(p) { return (t) => (t < 0.3 || t > 0.3 + p.gustDur) ? 0 : 0.5 * p.gustAmp * (1 - Math.cos(2 * Math.PI * (t - 0.3) / p.gustDur)); }
+
+// ---------------- 2-D animation: coupling convergence then the 75 %-span section moving through the gust ----------------
+async function fsi2D(el, W, p, S, G) {
+  const { anim2d, axes2d, polyline } = await import('../core/sim3d.js');
+  el.append(h('p', { class: 'small muted' }, 'Left: the solved interface residual of the partitioned (Aitken) static coupling, drawn iteration by iteration. Right: the wing section at 75 % span translating (bending) and rotating (twist) through the solved gust response; grey = static equilibrium, deformation magnified (factor shown).'));
+  const Hst = S.history, Z = W.model.z, N = Z.length, z75 = 0.75 * W.span, af = W.af.points, c75 = W.chord(z75), T = G.t[G.t.length - 1];
+  const wS = interp1(Z, S.sol.w, z75), phS = interp1(Z, S.sol.phi, z75);
+  const dyn = G.t.map((_, k) => { const q = G.q[k] || []; return { w: interp1(Z, Z.map((_, j) => q.reduce((a, qk, m) => a + qk * G.modes[m].w[j], 0)), z75), ph: interp1(Z, Z.map((_, j) => q.reduce((a, qk, m) => a + qk * G.modes[m].phi[j], 0)), z75) }; });
+  const dMax = Math.max(1e-12, ...dyn.map(d => Math.abs(d.w))), amp = Math.max(1, Math.round(0.25 * c75 / dMax)), aAmp = Math.max(1, Math.min(200, Math.round(0.15 / Math.max(1e-9, ...dyn.map(d => Math.abs(d.ph))))));
+  return anim2d(el, { duration: T, rate: 0.5, label: 'Time', height: 380, draw: (g, t, Wd, H, c) => {
+    const hw = Wd / 2 - 20, nIt = Math.min(Hst.length, Math.max(1, Math.round(t / Math.min(2, T) * Hst.length)));
+    const A = axes2d(g, { x0: 60, y0: 30, w: hw - 70, h: H - 90, xr: [0, Math.max(2, Hst.length)], yr: [-12, 1], xl: 'Coupling iteration', yl: 'log₁₀ residual', fg: c.fg, mute: c.mute });
+    polyline(g, Hst.slice(0, nIt).map((r, i) => [A.X(i + 1), A.Y(Math.log10(Math.max(1e-12, r)))]), '#22c55e', 2.5); g.fillStyle = '#facc15'; const rl = Hst[nIt - 1]; g.beginPath(); g.arc(A.X(nIt), A.Y(Math.log10(Math.max(1e-12, rl))), 5, 0, 7); g.fill();
+    g.fillStyle = c.fg; g.fillText(`iteration ${nIt}/${Hst.length} · residual ${fmt(rl, 3)}`, 60, 18);
+    const tt = t % T, k = Math.min(G.t.length - 1, Math.round(tt / (G.t[1] - G.t[0]))), d = dyn[k], cx = hw + 60 + hw * 0.3, cy = H / 2 - 10, sc = Math.min(hw * 0.55, H * 0.7) / c75;
+    const draw = (w, ph, col, fill) => { g.beginPath(); af.forEach(([x, y], i) => { const xr = (x - 0.25) * c75, yr = y * c75, X = cx + sc * (xr * Math.cos(ph) - yr * Math.sin(ph)), Y = cy - sc * (xr * Math.sin(ph) + yr * Math.cos(ph) + w); i ? g.lineTo(X, Y) : g.moveTo(X, Y); }); g.closePath(); if (fill) { g.fillStyle = col; g.fill(); } else { g.strokeStyle = col; g.lineWidth = 1.5; g.stroke(); } };
+    draw(0, phS, c.mute, false); draw(d.w * amp, phS + d.ph * aAmp, '#38bdf8cc', true);
+    g.fillStyle = c.fg; g.fillText(`75 % span · t = ${fmt(G.t[k], 3)} s · Δw ${fmt(d.w * 1000, 3)} mm (×${amp}) · Δθ ${fmt(deg(d.ph), 3)}° (×${aAmp})`, hw + 40, 18);
+  } });
+}

@@ -293,8 +293,9 @@ export default {
     out.verdicts.push({ test: 'Flutter margin', status: FL.Vflutter > 1.5 * Vop ? 'pass' : FL.Vflutter > 1.15 * Vop ? 'warn' : 'fail', detail: `V_F = ${fmt(FL.Vflutter, 3)} m/s (${fmt(FL.fFlutter, 3)} Hz) vs ${fmt(Vop, 3)} m/s.`, fix: 'Separate bending and torsion frequencies (stiffer torsion), move the section CG forward of the elastic axis (lighter trailing core), add damping.' });
     out.verdicts.push({ test: 'Passive gust-load alleviation direction', status: tipTw < 0 ? 'pass' : 'warn', detail: tipTw < 0 ? `Loaded wing washes out (tip ${fmt(tipTw, 3)}°), reducing peak loads.` : `Loaded wing washes in (tip +${fmt(tipTw, 3)}°): coupling amplifies load and lowers divergence speed.`, fix: 'Reverse the sign of off-axis cover plies (e.g. 20° → −20°) so bending induces nose-down twist.' });
     out.verdicts.push({ test: 'Fatigue durability ≥ 15 years', status: lifeYears >= 15 ? 'pass' : lifeYears >= 5 ? 'warn' : 'fail', detail: lifeYears > 1000 ? 'Stress amplitudes are below the endurance range of the laminate (> 1000 years).' : `Estimated ${fmt(lifeYears, 3)} years (N_f = ${fmt(Nf, 3)} gust cycles).` });
-    const morphEff = Math.abs(tipTw) >= 0.5 || Math.abs(loads.thrust - loadsR.thrust) / Math.abs(loadsR.thrust || 1) > 0.02;
-    out.verdicts.push({ test: 'Passive morphing effectiveness', status: morphEff ? 'pass' : 'warn', detail: morphEff ? `Passive deformation changes thrust by ${fmt((loads.thrust - loadsR.thrust) / Math.abs(loadsR.thrust || 1) * 100, 3)} % and tip twist is ${fmt(tipTw, 3)}°.` : `Deformation is negligible at this load (tip twist ${fmt(tipTw, 3)}°): the skeleton is too stiff for passive adaptation at this wind.`, fix: 'Reduce spar cover plies/box depth (strength ratio is very high), increase off-axis coupling plies, or evaluate at the design gust wind speed.' });
+    // twist is designed to scale with dynamic pressure, so judge it against the sized reference (D4) rather than an absolute threshold
+    const refOK = SZ.sized && SZ.check && SZ.check.tip <= -2 && SZ.check.tip >= -4, morphEff = refOK || Math.abs(tipTw) >= 0.5 || Math.abs(loads.thrust - loadsR.thrust) / Math.abs(loadsR.thrust || 1) > 0.02;
+    out.verdicts.push({ test: 'Passive morphing effectiveness', status: morphEff ? 'pass' : 'warn', detail: morphEff ? `Tip twist ${fmt(tipTw, 3)}° at this load (thrust change ${fmt((loads.thrust - loadsR.thrust) / Math.abs(loadsR.thrust || 1) * 100, 3)} %)${refOK ? `; washout scales with dynamic pressure and reaches ${fmt(SZ.check.tip, 3)}° at the ${p.refVa} m/s sizing reference` : ''}.` : `Deformation is negligible at this load (tip twist ${fmt(tipTw, 3)}°): the skeleton is too stiff for passive adaptation at this wind.`, fix: 'Reduce spar cover plies/box depth (strength ratio is very high), increase off-axis coupling plies, or evaluate at the design gust wind speed.' });
     out.verdicts.push({ test: 'Coupled solution converged', status: S.converged ? 'pass' : 'fail', detail: `${S.iterations} iterations, residual ${fmt(S.history[S.history.length - 1], 2)}.` });
     // charts
     const zc = ll.z, zs = model.z;
@@ -311,6 +312,7 @@ export default {
     out.tables.push({ title: 'Section properties (root / mid / tip)', cols: ['Station', 'Chord [m]', 'EI [N·m²]', 'GJ [N·m²]', 'K_bt [N·m²]', 'Mass [kg/m]', 'CG−EA [mm]'], rows: [0, 0.5, 1].map(f => { const P = props(f * span); return [`${f * 100}% span`, P.c, P.EI, P.GJ, P.K, P.m, P.xa * 1000]; }), explain: 'Box-spar stiffnesses from CLT; K_bt ≠ 0 only for unbalanced (CAS) cover layups.' });
     out.tables.push({ title: 'Root cover ply stresses (static)', cols: ['Ply angle [°]', 'σ₁ [MPa]', 'σ₂ [MPa]', 'τ₁₂ [MPa]', 'Tsai–Wu index', 'Strength ratio', 'Hashin fibre', 'Hashin matrix'], rows: stressRows[0].ps.map(q => [q.theta, q.s1 / 1e6, q.s2 / 1e6, q.t12 / 1e6, q.tsaiWu, q.R, q.hashinFiber, q.hashinMatrix]) });
     out.views.unshift({ label: '3D dynamic wing: gust, modes & flutter', icon: '🎞', render: (el) => wingDynamic3D(el, { W, p, S, stressRows, G, modes, FL, P75, b, rootM, ctx }) });
+    out.views.push({ label: '2D animation: spanwise twist & bending + V–g tracing', icon: '🎞', render: (el) => wing2D(el, { W, S, G, FL, p }) });
     out.views.push({ label: '3D deformed wing (static)', icon: '🪽', render: (el) => wing3D(el, W, p, S, stressRows) });
     // recommendations
     if (loads.thrust <= 0) out.recs.push({ level: 'critical', text: 'The wing produces no net forward thrust at this operating point. Increase the apparent wind angle (steer toward a beam reach), reduce vehicle speed, or raise the root angle of attack below stall.', basis: 'Body-axis force resolution' });
@@ -438,4 +440,26 @@ async function wingDynamic3D(el, o) {
   ampIn.value = String(autoAmp); label(); ampIn.oninput = label; sel.addEventListener('change', label);
   V.fit(); V.viewDir(1.15, -0.3, 0.42); start();
   return { dispose: () => pb?.dispose() };
+}
+
+// ---------------- 2-D animation: spanwise distributions during the gust + V–g flutter tracing ----------------
+async function wing2D(el, o) {
+  const { W, S, G, FL } = o, Z = W.model.z, N = Z.length;
+  const { anim2d, axes2d, polyline } = await import('../core/sim3d.js');
+  el.append(h('p', { class: 'small muted' }, 'Left: solved spanwise twist and bending deflection (static equilibrium + modal gust response q(t)) at each instant, with the static shape dashed. Right: the V–g diagram of both typical-section branches with a marker sweeping the apparent-wind speed; flutter is where a branch crosses the structural damping line.'));
+  const field = (k) => { const q = G.q[k] || [], w = Z.map((_, j) => S.sol.w[j] + q.reduce((a, qk, m) => a + qk * G.modes[m].w[j], 0)), ph = Z.map((_, j) => S.sol.phi[j] + q.reduce((a, qk, m) => a + qk * G.modes[m].phi[j], 0)); return { w, ph }; };
+  const all = G.t.map((_, k) => field(k)), twMax = Math.max(1e-9, ...all.flatMap(f => f.ph.map(v => Math.abs(deg(v))))), wMax = Math.max(1e-12, ...all.flatMap(f => f.w.map(Math.abs)));
+  const T = G.t[G.t.length - 1], Vmax = Number.isFinite(FL.Vflutter) ? FL.Vflutter * 1.4 : Math.max(...FL.branches.flat().map(b => b.V));
+  return anim2d(el, { duration: T, rate: 0.5, label: 'Gust time', height: 420, draw: (g, t, Wd, H, c) => {
+    const k = Math.min(G.t.length - 1, Math.round(t / (G.t[1] - G.t[0]))), f = all[k], hw = (Wd - 90) / 2;
+    const A1 = axes2d(g, { x0: 50, y0: 30, w: hw - 20, h: (H - 100) / 2, xr: [-twMax * 1.1, twMax * 1.1], yr: [0, W.span], xl: 'Twist (°)', yl: 'z (m)', fg: c.fg, mute: c.mute });
+    polyline(g, Z.map((z, j) => [A1.X(deg(S.sol.phi[j])), A1.Y(z)]), c.mute, 1.5, [5, 4]); polyline(g, Z.map((z, j) => [A1.X(deg(f.ph[j])), A1.Y(z)]), '#a855f7', 2.5);
+    const A2 = axes2d(g, { x0: 50, y0: 30 + (H - 100) / 2 + 40, w: hw - 20, h: (H - 100) / 2 - 10, xr: [-wMax * 1.1e3, wMax * 1.1e3], yr: [0, W.span], xl: 'Deflection (mm)', yl: 'z (m)', fg: c.fg, mute: c.mute });
+    polyline(g, Z.map((z, j) => [A2.X(S.sol.w[j] * 1e3), A2.Y(z)]), c.mute, 1.5, [5, 4]); polyline(g, Z.map((z, j) => [A2.X(f.w[j] * 1e3), A2.Y(z)]), '#38bdf8', 2.5);
+    g.fillStyle = c.fg; g.fillText(`t = ${fmt(G.t[k], 3)} s · ΔM_root ${fmt(G.Mroot[k], 3)} N·m · tip twist ${fmt(deg(f.ph[N - 1]), 3)}°`, 50, 18);
+    const Vs = (u) => (u % 1) * Vmax, Vm = Vs(t / T), gl = FL.branches.flat().map(b => b.g), A3 = axes2d(g, { x0: hw + 90, y0: 30, w: hw - 20, h: H - 90, xr: [0, Vmax], yr: [Math.max(-0.6, Math.min(...gl)), Math.min(0.4, Math.max(0.1, ...gl))], xl: 'Apparent wind V (m/s)', yl: 'damping g', fg: c.fg, mute: c.mute });
+    FL.branches.forEach((B, j) => { polyline(g, B.filter(b => b.V <= Vmax).map(b => [A3.X(b.V), A3.Y(Math.max(-0.6, Math.min(0.4, b.g)))]), j ? '#f97316' : '#22c55e', 2); const bb = B.reduce((a, b) => Math.abs(b.V - Vm) < Math.abs(a.V - Vm) ? b : a, B[0]); if (bb) { g.fillStyle = '#facc15'; g.beginPath(); g.arc(A3.X(bb.V), A3.Y(Math.max(-0.6, Math.min(0.4, bb.g))), 5, 0, 7); g.fill(); } });
+    g.strokeStyle = '#ef4444'; g.setLineDash([5, 4]); g.beginPath(); g.moveTo(A3.X(0), A3.Y(o.p.zeta * 2)); g.lineTo(A3.X(Vmax), A3.Y(o.p.zeta * 2)); g.stroke(); g.setLineDash([]);
+    g.fillStyle = c.fg; g.fillText(`V = ${fmt(Vm, 3)} m/s · V_F = ${fmt(FL.Vflutter, 3)} m/s`, hw + 90, 18);
+  } });
 }

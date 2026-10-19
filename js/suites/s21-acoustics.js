@@ -2,6 +2,7 @@
 import { fmt, linspace, range, max, sum } from '../core/num.js';
 import { kmh, moistAir } from '../core/physics.js';
 import { THIRD_OCT, aWeight, dbSum, massLawTL } from '../core/vehicle.js';
+import { h } from '../core/ui.js';
 
 const SURF = { 'dense asphalt (DAC 0/11)': 0, 'stone-mastic asphalt': -1, 'porous asphalt': -4, 'brushed concrete': 2.5, 'paving / cobbles': 6, 'gravel': 4 };
 // BPM turbulent-boundary-layer trailing-edge spectral shape A_min(a)
@@ -79,7 +80,7 @@ export default {
     k('Level at 2 m, 20 km/h', S2_20, 'dB(A)', 'Quiet-vehicle rules require ≈ 56 dB(A) at 20 km/h, 2 m.', 'calc', S2_20 >= 56 ? 'ok' : 'warn');
     // verdicts
     out.verdicts.push({ test: 'Near-silent objective (pass-by)', status: spectra(50, 7.5).LA.total <= 68 ? 'pass' : 'warn', detail: `${fmt(spectra(50, 7.5).LA.total, 3)} dB(A) at 50 km/h, 7.5 m (passenger-car limit context ≈ 68–72 dB(A)).` });
-    out.verdicts.push({ test: 'Completely noiseless?', status: 'fail', detail: 'Tyre–road and airflow noise cannot be eliminated; the objective is minimisation, as the specification states.' });
+    out.verdicts.push({ test: 'Completely noiseless? (requirement statement)', status: 'info', detail: 'Information: tyre–road and airflow noise cannot be eliminated in any moving vehicle; the specification’s objective is near-silent operation by minimisation, which the other checks assess.' });
     out.verdicts.push({ test: 'Pedestrian audibility at low speed', status: S2_20 >= 56 && S2_10 >= 50 ? 'pass' : 'warn', detail: `${fmt(S2_10, 3)} / ${fmt(S2_20, 3)} dB(A) at 10 / 20 km/h (2 m). Quiet vehicles must emit a minimum sound under current rules (e.g. UN R138 in many markets).`, fix: 'A non-electric, speed-proportional acoustic alert (e.g. tuned mechanical or aeroacoustic sounder) would be needed because powered sound generators conflict with the no-electricity rule.' });
     if (p.hubOn) out.verdicts.push({ test: 'Hub tonal annoyance', status: S.LA.hub < S.LA.tyre - 3 ? 'pass' : 'warn', detail: `Hub tones ${fmt(S.LA.hub, 3)} dB(A) vs tyre ${fmt(S.LA.tyre, 3)} dB(A). Tones are perceived as more annoying than broadband noise of equal level.` });
     // charts
@@ -97,9 +98,77 @@ export default {
     out.recs.push({ level: 'warn', text: 'Consider pedestrian safety: at walking-pace speeds the car is near-silent. Provide a passive, speed-proportional acoustic alert compatible with the no-electricity design and check applicable minimum-sound rules.', basis: 'Quiet-vehicle regulations (indicative)' });
     out.recs.push({ level: 'sustain', text: 'Low-noise porous or stone-mastic surfaces and narrow low-hysteresis tyres reduce both noise and rolling energy; serrated or porous wing trailing edges reduce trailing-edge noise by several dB.', basis: 'Source mechanisms modelled here' });
     out.explain.push({ title: 'Why “near-silent” is not “silent”', text: 'Without an engine the remaining noise comes from the tyres rolling on the road, from turbulent air flowing off the wing and body edges, and from contact impacts inside the hub drive. The suite quantifies each, so design effort can be aimed at the dominant one.' });
+    out.views.push({ label: '2D animation: SPL map with moving vehicle & wavefronts', icon: '🎞', render: (el) => acoustic2D(el, { p, ctx, S1, S }) });
+    out.views.unshift({ label: '3D acoustic field: pass-by, wavefronts & listeners', icon: '🔊', render: (el) => acoustic3D(el, { p, ctx, S1, S, dbSum }) });
     out.outputs = { SPLext_dBA: S.LA.total, SPLcabin_dBA: LAcab, sources: S.LA, minSound10_dBA: S2_10, minSound20_dBA: S2_20 };
     out.headline = `${fmt(S.LA.total, 3)} dB(A) at ${p.dist} m and ${p.speed} km/h (dominant: ${rank[0]}); cabin ${fmt(LAcab, 3)} dB(A).`;
     void range; void max; void sum;
     return out;
   },
 };
+
+// ---------------- 3-D acoustic field around the moving vehicle ----------------
+// Solved: A-weighted source levels per mechanism referenced to 1 m (tyre/road, wing trailing edge, body, hub
+// tones) from this suite's spectra; hub tone frequency from cartridge passing. Displayed: point sources at their
+// physical locations with spherical spreading L(r) = L(1 m) − 20 log10 r, energy-summed on the ground plane and at
+// listener probes while the vehicle drives past; wavefront rings are drawn at the true hub-tone wavelength
+// (propagation slowed for display).
+async function acoustic3D(el, o) {
+  const { p, ctx, S1, S } = o;
+  const [{ vehicleScene, playback, hud, legend3d, fieldMesh, Mesh }, mats] = await Promise.all([import('../core/sim3d.js'), import('../core/materials.js')]);
+  el.append(h('p', { class: 'small muted' }, 'Pass-by at the selected speed. Source strengths are this suite’s solved 1 m A-weighted levels (tyre–road at the contact patches, wing trailing-edge noise at the wing centres, body flow noise, hub contact tones at the wheel hubs); propagation uses spherical spreading over a reflecting ground (+3 dB). The ground colour is the instantaneous total L_A; probes record the pass-by. Wavefront rings show the true hub-tone wavelength λ = c/f, with propagation slowed for display.'));
+  const box = h('div'); el.append(box);
+  const veh = ctx.vehicle, materials = Object.fromEntries(Object.keys(mats.COMPONENTS).map(k => [k, ctx.material(k)]));
+  const SC = await vehicleScene(box, { vehicle: veh, materials, follow: false, height: 480, ground: 200 });
+  const { V, THREE } = SC, Hd = hud(box);
+  const L1 = S1.LA, v = p.speed / 3.6, c = 343, f0 = (S.tones && S.tones[0]?.f) || (p.nCart * v / (2 * Math.PI * veh.wheelRadius)), lam = c / Math.max(f0, 1);
+  const wp = SC.asm.meta.wheelPos, zCE = SC.asm.meta.height - SC.asm.meta.span * 0.5;
+  const nW = wp.length, dbAdd = (Ls) => 10 * Math.log10(Ls.reduce((a, L) => a + 10 ** (L / 10), 0) || 1e-12);
+  const srcs = () => { const x0 = SC.car.position.x; const list = []; wp.forEach(([x, y]) => { list.push({ x: x0 + x, y, z: 0.05, L: L1.tyre - 10 * Math.log10(nW) }); if (p.hubOn) list.push({ x: x0 + x, y, z: veh.wheelRadius, L: L1.hub - 10 * Math.log10(nW) }); }); SC.asm.meta.wingX.forEach(x => list.push({ x: x0 + x, y: 0, z: zCE, L: L1.aero - 10 * Math.log10(SC.asm.meta.wingX.length) })); list.push({ x: x0, y: 0, z: veh.wheelRadius + veh.height * 0.5, L: L1.body }); return list; };
+  const LA = (x, y, z) => dbAdd(srcs().map(s2 => s2.L + 3 - 20 * Math.log10(Math.max(0.5, Math.hypot(x - s2.x, y - s2.y, z - s2.z)))));
+  // ground field mesh
+  const gm = new Mesh('SPL ground'), NX = 96, NY = 64, X0 = -60, X1 = 60, Y0 = -30, Y1 = 30, id = [];
+  for (let j = 0; j <= NY; j++) { id.push([]); for (let i = 0; i <= NX; i++) id[j].push(gm.v(X0 + (X1 - X0) * i / NX, Y0 + (Y1 - Y0) * j / NY, 0.03)); }
+  for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) gm.q(id[j][i], id[j][i + 1], id[j + 1][i + 1], id[j + 1][i]);
+  const Lmax = Math.max(...Object.values(L1).filter(Number.isFinite)) + 3, Lmin = Lmax - 45;
+  const field = fieldMesh(V, gm, () => Lmin, { range: [Lmin, Lmax], cmapName: 'inferno', opacity: 0.88 });
+  legend3d(box, { title: 'L_A at ground (dB(A))', lo: Lmin, hi: Lmax, cmapName: 'inferno' });
+  // probes (standard pass-by microphone 7.5 m, near-side 2 m, far 20 m) at 1.2 m height
+  const probes = [{ n: '7.5 m pass-by mic', x: 0, y: -7.5 }, { n: '2 m kerb listener', x: 0, y: -2 }, { n: '20 m listener', x: 0, y: -20 }];
+  const pmat = new THREE.MeshStandardMaterial({ color: 0x22d3ee, emissive: 0x0e7490 }); probes.forEach(q => { const m = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 1.2, 12), pmat); m.rotation.x = Math.PI / 2; m.position.set(q.x, q.y, 0.6); V.root.add(m); q.max = -Infinity; });
+  // wavefront rings at true wavelength (hub tone)
+  const rings = []; for (let k = 0; k < 14; k++) { const r = new THREE.Mesh(new THREE.TorusGeometry(1, 0.02, 6, 96), new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.6 })); V.root.add(r); rings.push(r); }
+  const xStart = -45, xEnd = 45, T = (xEnd - xStart) / Math.max(v, 0.5);
+  V.camera.position.set(0, -38, 16); V.controls.target.set(0, 0, 1); V.controls.update();
+  const pb = playback(box, { duration: T, label: 'Pass-by time', onFrame: (t) => {
+    const x = xStart + v * t; SC.setPose({ x, y: 0, heading: 0, dist: x - xStart });
+    field.update((gx, gy) => LA(gx, gy, 1.2), [Lmin, Lmax]);
+    const hx = x + wp[0][0], phase = ((t * 0.02 * f0) % 1);
+    rings.forEach((r, k) => { const rad = (k + phase) * lam; r.visible = p.hubOn && rad < 60; r.scale.set(rad, rad, rad); r.position.set(hx, 0, 0.05); r.material.opacity = 0.6 * Math.max(0, 1 - rad / 60); });
+    const vals = probes.map(q => { const L = LA(q.x, q.y, 1.2); q.max = Math.max(q.max, L); return L; });
+    Hd.set([['Vehicle x', fmt(x, 3) + ' m'], ['Speed', fmt(p.speed, 3) + ' km/h'], ...probes.map((q, i) => [q.n, `${fmt(vals[i], 3)} (max ${fmt(q.max, 3)}) dB(A)`]), ['Hub tone f / λ', p.hubOn ? `${fmt(f0, 3)} Hz / ${fmt(lam, 3)} m` : 'off']]);
+  } });
+  return { dispose: () => pb.dispose() };
+}
+
+// ---------------- 2-D animation: top-view SPL map during a pass-by ----------------
+async function acoustic2D(el, o) {
+  const { p, ctx, S1, S } = o;
+  const [{ anim2d }, { cmap }] = await Promise.all([import('../core/sim3d.js'), import('../core/chart.js')]);
+  el.append(h('p', { class: 'small muted' }, 'Top view of the instantaneous A-weighted level at 1.2 m height from this suite’s solved 1 m source levels (tyre/road, wing trailing edges, body, hub tones) with spherical spreading and ground reflection; rings mark the hub-tone wavelength (propagation slowed for display); the 7.5 m pass-by microphone trace builds up underneath.'));
+  const veh = ctx.vehicle, v = p.speed / 3.6, L1 = S1.LA, f0 = (S.tones && S.tones[0]?.f) || 100, lam = 343 / f0, nW = 3;
+  const srcs = (x0) => { const L = []; for (const [dx, dy] of [[0.58 * veh.wheelbase, veh.track / 2], [0.58 * veh.wheelbase, -veh.track / 2], [-0.42 * veh.wheelbase, 0]]) { L.push([x0 + dx, dy, 0.05, L1.tyre - 10 * Math.log10(nW)]); if (p.hubOn) L.push([x0 + dx, dy, veh.wheelRadius, L1.hub - 10 * Math.log10(nW)]); } L.push([x0, 0, 2, L1.aero]); L.push([x0, 0, 0.8, L1.body]); return L; };
+  const LA = (x, y, list) => 10 * Math.log10(list.reduce((a, q) => a + 10 ** ((q[3] + 3 - 20 * Math.log10(Math.max(0.5, Math.hypot(x - q[0], y - q[1], 1.2 - q[2])))) / 10), 0) || 1e-12);
+  const Lmax = Math.max(...Object.values(L1).filter(Number.isFinite)) + 3, Lmin = Lmax - 45, xs = -45, xe = 45, T = (xe - xs) / Math.max(v, 0.5), trace = [];
+  return anim2d(el, { duration: T, label: 'Pass-by time', height: 420, draw: (g, t, W, H, c) => {
+    const x0 = xs + v * t, list = srcs(x0), nx = 90, ny = 40, mapH = H - 120, cw = W / nx, ch = mapH / ny;
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) { const X = -60 + 120 * (i + 0.5) / nx, Y = 25 - 50 * (j + 0.5) / ny, cc = cmap((LA(X, Y, list) - Lmin) / (Lmax - Lmin), 'inferno'); g.fillStyle = `rgb(${cc.map(Math.round).join(',')})`; g.fillRect(i * cw, 20 + j * ch, cw + 1, ch + 1); }
+    const PX = (X) => (X + 60) / 120 * W, PY = (Y) => 20 + (25 - Y) / 50 * mapH;
+    if (p.hubOn) { const ph = (t * 0.02 * f0) % 1; g.strokeStyle = 'rgba(56,189,248,.7)'; for (let k = 0; k < 18; k++) { const r = (k + ph) * lam; if (r > 60) break; g.beginPath(); g.ellipse(PX(x0 + 0.58 * veh.wheelbase), PY(0), r / 120 * W, r / 50 * mapH, 0, 0, 7); g.stroke(); } }
+    g.fillStyle = '#e5e7eb'; g.fillRect(PX(x0 - veh.length * 0.42), PY(veh.width / 2), veh.length / 120 * W, veh.width / 50 * mapH);
+    g.fillStyle = '#22d3ee'; g.beginPath(); g.arc(PX(0), PY(-7.5), 5, 0, 7); g.fill();
+    const Lm = LA(0, -7.5, list); trace.push([t, Lm]); while (trace.length && trace[0][0] > t) trace.shift(); if (trace.length > 1 && trace[trace.length - 2][0] > t) trace.length = 0;
+    const ty = H - 90, th = 80; g.strokeStyle = c.mute; g.strokeRect(0, ty, W, th); g.strokeStyle = '#22d3ee'; g.lineWidth = 2; g.beginPath(); trace.forEach(([tt, L], i) => { const X = tt / T * W, Y = ty + th - (L - Lmin) / (Lmax - Lmin) * th; i ? g.lineTo(X, Y) : g.moveTo(X, Y); }); g.stroke();
+    g.fillStyle = c.fg; g.fillText(`x = ${fmt(x0, 3)} m · L_A at 7.5 m mic = ${fmt(Lm, 3)} dB(A) · max ${fmt(Math.max(...trace.map(q => q[1])), 3)} dB(A) · colour ${fmt(Lmin, 3)}–${fmt(Lmax, 3)} dB(A)`, 8, 14);
+  } });
+}
