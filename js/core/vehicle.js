@@ -87,7 +87,10 @@ export function simulateSwitching(t, thrust, { need, engage, disengage, wn = 6, 
   const modes = [], sensed = [], torqueSrc = [], events = []; let lastSwitch = -Infinity, chatter = 0;
   const eng = engage * thresholdScale, dis = disengage * thresholdScale;
   for (let i = 0; i < t.length; i++) {
-    const F = thrust[i]; const xdd = wn * wn * (F - x) - 2 * zeta * wn * xd; xd += xdd * dt; x += xd * dt; sensed.push(x);
+    // semi-implicit (symplectic) Euler with sub-steps so that ω_n·h ≤ 0.05 — stable for stiff sensor elements
+    const F = thrust[i], nsub = Math.max(1, Math.ceil(wn * dt / 0.05)), hs = dt / nsub;
+    for (let s = 0; s < nsub; s++) { const xdd = wn * wn * (F - x) - 2 * zeta * wn * xd; xd += xdd * hs; x += xd * hs; }
+    sensed.push(x);
     let want = mode;
     if (braking(t[i])) want = 'BRAKING';
     else if (mode === 'WIND' || mode === 'BRAKING') { if (x < eng) want = Pbackup > 0 ? (x > 0.2 * need ? 'ASSIST' : 'BACKUP') : (Ebuf > 0 ? 'BUFFER' : 'DECEL'); else want = 'WIND'; }
