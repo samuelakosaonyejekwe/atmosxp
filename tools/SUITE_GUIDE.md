@@ -69,5 +69,5 @@ and should label coupled values with provenance `coupled`.
 - Real governing physics only; never fabricate success. Show failures with reasons and fixes.
 - Every KPI and chart carries an `explain`. Every suite gives recommendations aligned with best engineering
   practice, economics and sustainability where relevant.
-- Do not name commercial simulation software. Do not reference hygroscopic/moisture-responsive materials.
+- Do not name commercial simulation software. Use only the material families in the materials registry.
 - Keep modules self-contained; heavy shared numerics go in new files under `js/core/` owned by one builder.
