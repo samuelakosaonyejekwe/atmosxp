@@ -5,6 +5,7 @@ import { KELVIN, range } from './num.js';
 // Scenario definitions follow the specification's standard simulation scenarios (input/output register §11)
 export const SCENARIOS = {
   live: { label: 'Live weather at project site', live: true },
+  imported: { label: 'Imported observations (Data portal)', imported: true },
   favorable: { label: 'Stationary, favourable wind (6 m/s crosswind)', T: 24, RH: 55, p: 101325, U: 6, dir: 90, gust: 8, cloud: 30, day: true, ghi: 550 },
   acceleration: { label: 'Wind-powered acceleration (8 m/s beam reach)', T: 22, RH: 55, p: 101325, U: 8, dir: 90, gust: 10.5, cloud: 30, day: true, ghi: 500 },
   crosswind: { label: 'Strong crosswind (14 m/s, gust 20 m/s)', T: 18, RH: 65, p: 100800, U: 14, dir: 90, gust: 20, cloud: 70, day: true, ghi: 250 },

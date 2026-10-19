@@ -91,7 +91,7 @@ function load() {
   try { const raw = localStorage.getItem(KEY); if (raw) return Object.assign(freshProject(), JSON.parse(raw)); } catch { /* storage blocked */ }
   return freshProject();
 }
-function schedule() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { try { localStorage.setItem(KEY, JSON.stringify(store.project)); } catch { /* quota or private mode */ } }, 400); }
+function schedule() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { try { localStorage.setItem(KEY, JSON.stringify(store.project, (k, v) => (k === 'geometry' && v?.positions) ? undefined : v)); } catch { /* quota or private mode */ } }, 400); }
 
 // Simple stable hash for reproducibility records
 export function hashObj(o) { const s = JSON.stringify(o, Object.keys(o || {}).sort()); let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(16).padStart(8, '0'); }

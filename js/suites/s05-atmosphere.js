@@ -62,10 +62,16 @@ export default {
       } catch (e) { warn = 'Live service unreachable (' + e.message + ') — falling back to the favourable-wind scenario.'; }
       Promise.all([nasaPowerClimatology(p.lat, p.lon).then(r => clim = r).catch(() => null), airQuality(p.lat, p.lon).then(r => aq = r).catch(() => null), ctx.site.elevation ? null : elevApi(p.lat, p.lon).then(r => { ctx.store.project.site.elevation = r.data.elevation?.[0]; }).catch(() => null)]);
     }
+    let imported = false;
+    if (p.scenario === 'imported') {
+      const W = ctx.store.project.imports?.weather;
+      if (W?.rows?.length) { imported = true; meta = { name: 'Imported observations: ' + W.name, fetched: new Date().toISOString(), kind: 'observation' }; series = W.rows.map((r, i) => { const t = Date.parse(r.time); const iso = Number.isFinite(t) ? new Date(t).toISOString().slice(0, 16) : new Date(Date.now() + (i - W.rows.length) * 3600e3).toISOString().slice(0, 16); return { time: iso, T: r.T, RH: r.RH, p: r.p, U: r.U, dir: r.dir, gust: r.U * 1.5, cloud: 30, ghi: r.ghi, day: r.ghi > 5, soil: r.T, utcOffset: 0 }; }); }
+      else warn = 'No imported observations found — load a station file in the Data portal. Using the favourable-wind scenario.';
+    }
     ctx.progress(0.4, 'deriving');
-    const isLive = !!series;
-    if (!series) { const S = SCENARIOS[p.scenario === 'live' ? 'favorable' : p.scenario]; const now = new Date(); now.setMinutes(0, 0, 0); series = range(48).map(k => { const t = new Date(now.getTime() + (k - 24) * 3600e3), hr = t.getHours(), sun = Math.max(0, Math.sin(Math.PI * (hr - 6) / 12)); const night = S.day === false; return { time: t.toISOString().slice(0, 16), T: S.T + (night ? -1.2 * Math.cos(Math.PI * hr / 12) : 3 * (sun - 0.4)), RH: S.RH, p: S.p, U: Math.max(0.05, S.U * (0.85 + 0.3 * Math.sin(k * 1.3))), dir: S.reversal ? (k < 24 ? S.dir : (S.dir + 180) % 360) : S.dir, gust: S.gust, cloud: S.cloud, ghi: night ? 0 : S.ghi * (S.ghi ? Math.max(0.15, sun) : 0), day: !night, soil: S.T }; }); }
-    const nowIdx = isLive ? Math.max(0, series.findIndex(r => Date.parse(r.time + 'Z') - (r.utcOffset || 0) * 1000 >= Date.now() - 3600e3)) : 24;
+    const isLive = !!series && !imported, srcProv = isLive ? 'live' : imported ? 'user' : 'hypothetical';
+    if (!series) { const S = SCENARIOS[['live', 'imported'].includes(p.scenario) ? 'favorable' : p.scenario]; const now = new Date(); now.setMinutes(0, 0, 0); series = range(48).map(k => { const t = new Date(now.getTime() + (k - 24) * 3600e3), hr = t.getHours(), sun = Math.max(0, Math.sin(Math.PI * (hr - 6) / 12)); const night = S.day === false; return { time: t.toISOString().slice(0, 16), T: S.T + (night ? -1.2 * Math.cos(Math.PI * hr / 12) : 3 * (sun - 0.4)), RH: S.RH, p: S.p, U: Math.max(0.05, S.U * (0.85 + 0.3 * Math.sin(k * 1.3))), dir: S.reversal ? (k < 24 ? S.dir : (S.dir + 180) % 360) : S.dir, gust: S.gust, cloud: S.cloud, ghi: night ? 0 : S.ghi * (S.ghi ? Math.max(0.15, sun) : 0), day: !night, soil: S.T }; }); }
+    const nowIdx = imported ? series.length - 1 : isLive ? Math.max(0, series.findIndex(r => Date.parse(r.time + 'Z') - (r.utcOffset || 0) * 1000 >= Date.now() - 3600e3)) : 24;
     const idx = Math.min(series.length - 1, Math.max(0, nowIdx + (p.hourOffset | 0)));
     const D = series.map(r => derive(r, { z: p.zWing, z0, skyModel: p.skyModel, TL: p.linke, lat: p.lat, lon: p.lon, date: new Date(Date.parse(r.time + 'Z') - (isLive ? (r.utcOffset || 0) * 1000 : 0)), elevation: elev }));
     const cur = D[idx];
@@ -93,22 +99,22 @@ export default {
     out.checks.push({ name: 'Missing / out-of-range samples', value: D.filter(d => !Number.isFinite(d.T) || !Number.isFinite(d.U)).length, target: '0', pass: D.every(d => Number.isFinite(d.T) && Number.isFinite(d.U)), detail: 'Quality control of provider fields' });
     // KPIs
     const k = (label, value, unit, explain, prov, status) => out.kpis.push({ label, value, unit, explain, prov, status });
-    k('Air temperature', cur.T, '°C', '2 m air temperature at the snapshot hour — the ambient reservoir for convection and the night-time hot side.', isLive ? 'live' : 'hypothetical');
+    k('Air temperature', cur.T, '°C', '2 m air temperature at the snapshot hour — the ambient reservoir for convection and the night-time hot side.', srcProv);
     k('Air density ρ', cur.rho, 'kg/m³', 'Moist-air density from pressure, temperature and humidity (Dalton). Scales every aerodynamic force linearly.', 'calc');
-    k('Wind at 10 m', cur.U, 'm/s', 'Reference-height mean wind from the provider (or scenario).', isLive ? 'live' : 'hypothetical');
+    k('Wind at 10 m', cur.U, 'm/s', 'Reference-height mean wind from the provider (or scenario).', srcProv);
     k('Wind at wing centroid', cur.Uz, 'm/s', `Log-law projection to z = ${p.zWing} m over roughness z₀ = ${z0} m. This is the true wind the wings see before vehicle motion is added.`, 'calc');
-    k('Wind direction (from)', cur.dir, '°', 'Meteorological convention: direction the wind blows from, clockwise from north.', isLive ? 'live' : 'hypothetical');
-    k('Gust', cur.gust, 'm/s', 'Peak gust at 10 m — drives structural gust cases (Suites 06, 08, 23).', isLive ? 'live' : 'hypothetical');
+    k('Wind direction (from)', cur.dir, '°', 'Meteorological convention: direction the wind blows from, clockwise from north.', srcProv);
+    k('Gust', cur.gust, 'm/s', 'Peak gust at 10 m — drives structural gust cases (Suites 06, 08, 23).', srcProv);
     k('Dynamic pressure at wing', cur.qDyn, 'Pa', 'q = ½ρU² at the wing centroid (stationary vehicle).', 'calc');
-    k('Global horizontal irradiance', cur.ghi, 'W/m²', 'Solar input for the photonic collector (Suite 13).', isLive ? 'live' : 'hypothetical');
-    k('Cloud cover', cur.cloud, '%', 'Total cloud fraction — reduces both solar input and night radiative cooling.', isLive ? 'live' : 'hypothetical');
+    k('Global horizontal irradiance', cur.ghi, 'W/m²', 'Solar input for the photonic collector (Suite 13).', srcProv);
+    k('Cloud cover', cur.cloud, '%', 'Total cloud fraction — reduces both solar input and night radiative cooling.', srcProv);
     k('Effective sky emissivity', cur.eps, '', `${p.skyModel} clear-sky emissivity with cloud correction.`, 'calc');
     k('Effective sky temperature', cur.Tsky, '°C', 'Radiative-equivalent sky temperature: a calculated estimate, not a measured reservoir temperature.', 'calc');
     k('Air–sky temperature difference', cur.dTsky, 'K', 'Upper bound on radiative cooling drive; actual collector ΔT is solved in Suites 13–14.', 'calc');
     k('Solar elevation', cur.elevationSun, '°', 'NOAA solar-position algorithm for the snapshot time.', 'calc');
     k('Useful-wind availability', useful, '% of hours', `Fraction of hours in the series with wing-height wind ≥ ${p.Uthreshold} m/s.`, 'calc', useful > 40 ? 'ok' : useful > 15 ? 'warn' : 'bad');
     // verdicts
-    out.verdicts.push({ test: 'Data provenance', status: isLive ? 'pass' : 'warn', detail: isLive ? `Live ${meta.name}; fetched ${meta.fetched.slice(0, 16).replace('T', ' ')} UTC${meta.cached ? ' (cached ' + meta.ageMin + ' min)' : ''}. Forecast-model fields, not station observations.` : (warn || 'Synthetic standard scenario (hypothetical inputs).') });
+    out.verdicts.push({ test: 'Data provenance', status: isLive || imported ? 'pass' : 'warn', detail: imported ? `${meta.name} — user-supplied measured observations (provenance: observation, calibrate instruments before validation use).` : isLive ? `Live ${meta.name}; fetched ${meta.fetched.slice(0, 16).replace('T', ' ')} UTC${meta.cached ? ' (cached ' + meta.ageMin + ' min)' : ''}. Forecast-model fields, not station observations.` : (warn || 'Synthetic standard scenario (hypothetical inputs).') });
     out.verdicts.push({ test: 'Wind resource for primary propulsion', status: cur.Uz >= p.Uthreshold ? 'pass' : cur.Uz >= p.Uthreshold * 0.6 ? 'warn' : 'fail', detail: `Wing-height wind ${fmt(cur.Uz, 3)} m/s vs useful threshold ${p.Uthreshold} m/s.`, fix: 'Wind is an environmental constraint: choose another time window (see availability), site or route rather than expecting the wing to create energy.' });
     out.verdicts.push({ test: 'Night radiative-cooling potential', status: nightGrad.length ? (nightDT > 15 ? 'pass' : nightDT > 8 ? 'warn' : 'fail') : 'info', detail: nightGrad.length ? `Mean air–sky ΔT at night ${fmt(nightDT, 3)} K. Carnot ceiling at a realistic 5 K collector ΔT ≈ 1.7 %.` : 'No night hours in series.' });
     out.verdicts.push({ test: 'Gust load case', status: cur.gust > 20 ? 'fail' : cur.gust > 14 ? 'warn' : 'pass', detail: `Gust ${fmt(cur.gust, 3)} m/s → q ≈ ${fmt(0.5 * cur.rho * cur.gust ** 2, 3)} Pa at 10 m. Verify flutter/overturning margins in Suites 06, 11, 23.` });
