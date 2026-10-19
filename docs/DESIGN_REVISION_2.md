@@ -65,3 +65,11 @@ Leg area 4.0 m² plus the bridge. Overall height ≈ 3.0 m; the arch folds back 
   the sector (sailing practice). The envelope, and any heading penalty, is reported.
 * **Targets.** Length as short as possible toward the original 3.6 m; static stability factor ≥ 1.11 g; safe sustainable
   speed ≥ Revision 3 tandem with the same low-loss tyres and computed drag; overall height ≤ 3.0 m; mass ≤ 260 kg.
+
+### Revision 5 acceptance criterion (owner): equal or better than EVERY previous revision and the original in EVERY measured respect
+Compared respects: overall height (≤ 3.0 m), length (≤ 3.6 m, the original), mass (≤ 258 kg, AeroArch 4.1), static
+stability factor (≥ 1.11 g, Rev 3), tip-over wind loaded (≥ 17 m/s, Rev 3), safe sustainable speed at 2.5/3/4/6/10 m/s
+(≥ the best of all revisions at each wind, computed with identical tyre/drag assumptions), wheel power at 20 km/h
+(≤ 75 W), moving parts (≤ original: none beyond wheels/steering/brakes — flexure deformation only), structural safety
+factors (≥ 2), cost and life-cycle carbon (≤ best previous). If a respect is physically unattainable together with the
+others, the optimiser must report it explicitly with the size of the shortfall and the binding constraint.
