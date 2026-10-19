@@ -50,9 +50,10 @@ export function bom(store, { grid = 450, labourRate = 35 } = {}) {
 // machined Ti-6Al-4V sleeves and latch, PTFE-lined bushings, stainless detent springs.
 function reefMechanismRow(store, { grid, labourRate }) {
   const m = componentMaterial(store, 'rootInsert') || { name: 'Ti-6Al-4V', rho: 4430, cost: 30, co2: 40, energy: 650, recyclable: 0.6, unc: 15 };
-  const mass = 3.5, matCost = mass * (m.cost || 30), procKWh = mass * 35, fabCost = matCost * 4 + 8 * labourRate;
+  const v = store.project.vehicle, nW = v.nWings || 2, reefable = (v.wingReefSpan ?? v.wingHeight) < v.wingHeight - 1e-6;
+  const mass = reefable ? 3.5 : 0.7 * nW, matCost = mass * (m.cost || 30), procKWh = mass * 35, fabCost = matCost * 4 + (reefable ? 8 : 2 * nW) * labourRate;
   const co2Mat = mass * (m.co2 || 40), co2Proc = procKWh * grid / 1000, energyMat = mass * (m.energy || 650), recyc = m.recyclable ?? 0.6;
-  return [{ key: 'reefJoint', name: 'Wing telescoping reef joints & breakaway locks (2 wings)', material: `${m.name} sleeves, PTFE bushings`, matId: m.id, family: m.family, mass, matCost, fabCost, laborH: 8, procKWh, co2Mat, co2Proc, co2: co2Mat + co2Proc, energyMat, energy: energyMat + procKWh * 3.6, recyc, eolCredit: recyc * co2Mat * 0.6, life: 8, process: 'CNC machining, hard anodise / PTFE liner bonding, assembly & proof test', unc: 25 }];
+  return [{ key: 'reefJoint', name: reefable ? `Wing telescoping reef joints & breakaway locks (${nW} wings)` : `Wing feathering pivots & breakaway locks (${nW} wings)`, material: reefable ? `${m.name} sleeves, PTFE bushings` : `${m.name} pivot housings, friction discs`, matId: m.id, family: m.family, mass, matCost, fabCost, laborH: 8, procKWh, co2Mat, co2Proc, co2: co2Mat + co2Proc, energyMat, energy: energyMat + procKWh * 3.6, recyc, eolCredit: recyc * co2Mat * 0.6, life: 8, process: 'CNC machining, hard anodise / PTFE liner bonding, assembly & proof test', unc: 25 }];
 }
 
 // Discounted cash flow

@@ -138,7 +138,8 @@ export default {
     reg.push(['Insert crack growth life / service life (20 y)', Ntot / cycYrGust / 20, '≥ 3 (scatter factor)', Ntot / cycYrGust / 20 >= 3, 'this suite']);
     reg.push(['Rollover wind limit (wings loaded)', Uroll, '≥ design gust', Uroll >= p.gust, 'this suite']);
     const sfVals = reg.filter(r => /SF|safety factor/i.test(r[0])).map(r => r[1]).filter(Number.isFinite), minSF = Math.min(sfWing, ...sfVals);
-    const fm = FMEA.map(r => [...r.slice(0, 6), r[3] * r[4] * r[5], r[6]]).sort((a, b) => b[6] - a[6]);
+    const reefableV = (ctx.vehicle.wingReefSpan ?? ctx.vehicle.wingHeight) < ctx.vehicle.wingHeight - 1e-6;
+    const fm = FMEA.filter(r => reefableV || !/reef/i.test(r[1])).map(r => [...r.slice(0, 6), r[3] * r[4] * r[5], r[6]]).sort((a, b) => b[6] - a[6]);
     // KPIs
     const k = (label, value, unit, explain, prov, status) => out.kpis.push({ label, value, unit, explain, prov, status });
     k('Wing-root bending stress at design gust', sigma(p.gust, p.CLmax), 'MPa', `M = ½ρU²S·C·4b/3π = ${fmt(Mroot(p.gust, p.CLmax), 4)} N·m on a ${fmt(b * 1000, 3)} × ${fmt(hh * 1000, 3)} × ${p.wall} mm box spar.`, 'calc');

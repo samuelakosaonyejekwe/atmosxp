@@ -146,7 +146,7 @@ export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence = 10, air
   // Revision 2.1: tandem wings aft of the cockpit, leading edges forward, pivot at 22 % chord (free-feathering root),
   // chord limited so that wings + 0.3-chord gaps fit between cockpit and tail; mast-step bulkheads + keel beam carry root loads.
   const af = airfoil || naca4('0018', 61), nW = veh.nWings || 2, spanDep = veh.wingHeight, reefSpan = Math.min(spanDep, veh.wingReefSpan || spanDep), span = reefed ? reefSpan : spanDep, cMean = veh.wingArea / nW / spanDep;
-  const xStart = cockX[0] - 0.05, xEnd = -L * 0.42 + 0.04 * L, avail = xStart - xEnd, pivot = 0.22;
+  const xStart = cockX[0] - 0.05, xEnd = -L * 0.42 + 0.09 * L, avail = xStart - xEnd, pivot = 0.22;
   const cr = Math.min(cMean * 1.1, avail / (nW + 0.3 * (nW - 1))), ct = cr * 0.82, areaFitted = nW * span * (cr + ct) / 2;
   const LE = Array.from({ length: nW }, (_, k) => xStart - k * 1.3 * cr), wingX = LE.map(x => x - pivot * cr);
   const frame = (name, x) => { const q = bodySec(uOf(x)), m = new Mesh(name, { color: color('chassis', '#3b4250'), group: 'Chassis', component: 'chassis' }); const N = 36; const ring = (sc, xx) => range(N).map(k => { const t = 2 * Math.PI * k / N, c = Math.cos(t), sn = Math.sin(t); return m.v(xx, q.a * sc * Math.sign(c) * Math.abs(c) ** (2 / 2.6), q.cz + q.b * sc * Math.sign(sn) * Math.abs(sn) ** (2 / 2.6)); }); const o0 = ring(0.97, x - 0.02), o1 = ring(0.97, x + 0.02), i0 = ring(0.8, x - 0.02), i1 = ring(0.8, x + 0.02); for (let k = 0; k < N; k++) { const k1 = (k + 1) % N; m.q(o0[k], o0[k1], o1[k1], o1[k]); m.q(i0[k1], i0[k], i1[k], i1[k1]); m.q(o1[k], o1[k1], i1[k1], i1[k]); m.q(i0[k], i0[k1], o0[k1], o0[k]); } return fixOrientation(m); };

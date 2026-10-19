@@ -93,7 +93,7 @@ function load() {
     if (raw) {
       const p = Object.assign(freshProject(), JSON.parse(raw));
       // Migrate untouched projects from baseline 1 (3 m wings) to the lower, more stable baseline 2
-      const v = p.vehicle || {}; if ((!v.baseline && v.wingHeight === 3 && v.wingArea === 8 && v.track === 1.5) || (v.baseline === 2 && v.wingArea === 6.4 && v.length === 4.2) || (v.baseline === 3 && v.wingArea === 3.3)) { p.vehicle = { ...v, ...DEFAULT_VEHICLE }; p.migratedBaseline = true; for (const o of Object.values(p.outputs || {})) { o.stale = true; o.staleReason = 'baseline geometry updated'; } for (const id of Object.keys(p.params || {})) { const lk = p.locks?.[id] || {}; for (const k of Object.keys(p.params[id])) if (!lk[k]) { delete p.params[id][k]; if (p.prov?.[id]) delete p.prov[id][k]; } } }
+      const v = p.vehicle || {}; if ((!v.baseline && v.wingHeight === 3 && v.wingArea === 8 && v.track === 1.5) || (v.baseline === 2 && v.wingArea === 6.4 && v.length === 4.2) || (v.baseline === 3 && v.wingArea === 3.3) || (v.baseline === 4 && v.wingArea === 5 && v.length === 4.4) || (v.baseline === 5 && v.wingArea === 4.75)) { p.vehicle = { ...v, ...DEFAULT_VEHICLE }; p.migratedBaseline = true; for (const o of Object.values(p.outputs || {})) { o.stale = true; o.staleReason = 'baseline geometry updated'; } for (const id of Object.keys(p.params || {})) { const lk = p.locks?.[id] || {}; for (const k of Object.keys(p.params[id])) if (!lk[k]) { delete p.params[id][k]; if (p.prov?.[id]) delete p.prov[id][k]; } } }
       return p;
     }
   } catch { /* storage blocked */ }

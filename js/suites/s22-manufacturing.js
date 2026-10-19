@@ -202,7 +202,7 @@ export default {
     out.recs.push({ level: 'econ', text: `At ${p.quantity} units the average unit cost is ${fmt(avgUnit, 3)} USD (first unit ${fmt(proto, 3)} USD). Labour-dominated parts (high fabricated/material ratio) are the main targets for tooling investment.`, basis: 'Learning curve & BOM' });
     out.explain.push({ title: 'Why tolerances matter for the hub', text: 'The direct-rim drive transmits actuator work through contact between flexure shoes and a stationary cam. Clearance scatter changes preload and therefore the force–displacement path of every cartridge; too small and the cartridge binds (seizure risk), too large and stroke is lost to free play.' });
     // ---------- Revision 2.2: telescoping reef joint (sliding fit Ø40 H7/g6 with PTFE-lined bushings) ----------
-    { const Dn = 40, hole = [0, 0.025], shaft = [-0.025, -0.009], liner = 0.010, dTmax = 40, aIn = (ctx.material('rootInsert')?.alpha ?? 8.6), aOut = 2.0;
+    if ((ctx.vehicle.wingReefSpan ?? ctx.vehicle.wingHeight) < ctx.vehicle.wingHeight - 1e-6) { const Dn = 40, hole = [0, 0.025], shaft = [-0.025, -0.009], liner = 0.010, dTmax = 40, aIn = (ctx.material('rootInsert')?.alpha ?? 8.6), aOut = 2.0;
       const thermal = Dn * (aIn - aOut) * 1e-6 * dTmax; // mm: hot day closes the gap when the metal inner sleeve grows more than the CFRP outer tube
       const R2 = rng(2202), cl = range(20000).map(() => (R2.normal((hole[0] + hole[1]) / 2, (hole[1] - hole[0]) / 6) - R2.normal((shaft[0] + shaft[1]) / 2, (shaft[1] - shaft[0]) / 6)) - Math.abs(R2.normal(0, liner / 3)) - thermal * R2());
       const jam = cl.filter(c => c < 0.004).length / cl.length, play = cl.filter(c => c > 0.060).length / cl.length;
