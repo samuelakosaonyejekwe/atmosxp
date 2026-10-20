@@ -84,10 +84,10 @@ export const DEFAULT_VEHICLE = {
   // (2 × 3 m wings, 8 m², track 1.5 m) remains available as a preset in Suite 01.
     // Revision 4 — AeroArch: one closed box wing (two swept, tapered 1.75 m airfoil legs leaning into an A, joined by a curved top bridge) on a ring
   // track around the forward cockpit; 3.0 m overall, ≈1.3 m folded. wingArea = both legs; the bridge adds closure.
-  // Revision 5.1 — one streamlined CFRP crossbeam on a centreline titanium flexure pylon (elastic yaw ±15°), 3.6 m long, track 1.85 m
+  // Revision 5.1 — one streamlined CFRP crossbeam on a centreline titanium flexure pylon (elastic yaw ±25°, vehicle.yawLimit), 3.6 m long, track 1.85 m
   // (≤ 2.0 m over the spats), low recumbent seat and the wheel set moved 0.15 m aft so SSF ≥ 1.11 with a 0.75 g front-pressure limiter.
-  baseline: 9, wingConfig: 'arch', archRoot: 'flexure', archCant: -15, maxHeight: 3.095, archSweep: 0, archTaper: 0.6, archIncidence: 0, seatHeight: 0, groundClearance: 0.12, bufferPos: 'underSeat', axleShift: -0.174, floorBallast: 0, ballastAft: 0, directTiller: true, fullBridgeCollector: true, noseCollectorHalfAngle: 1.25, noseFilmGlazing: true, canopyFwdTrim: 0.22, parkLockOnPedal: true, mass: 182, thermalStore: false, deckSeal: 0.5, groundSeal: 0.6, skirtGap: 0.035, diffuserRise: 0.1, rootEndplate: true, Crr: 0.004, CdA: 0.18, wheelRadius: 0.24, wingArea: 3.2, wingHeight: 2.6, wingReefSpan: 2.6, wingReef: 'none', nWings: 2,
-  wheelbase: 2.36, track: 1.85, cgHeight: 0.413, length: 3.5, width: 1.3, height: 0.75, nWheels: 3, layout: 'tadpole',
+  baseline: 9, wingConfig: 'arch', archRoot: 'flexure', archCant: -15, yawLimit: 25, maxHeight: 2.975, archSweep: 0, archTaper: 0.6, archIncidence: 0, seatHeight: 0, groundClearance: 0.12, bufferPos: 'footwell', axleShift: -0.174, floorBallast: 0, ballastAft: 0, directTiller: true, fullBridgeCollector: true, noseCollectorHalfAngle: 0.35, noseFilmGlazing: true, canopyFwdTrim: 0, parkLockOnPedal: true, mass: 182, thermalStore: false, windHarvester: false, spatLip: true, rearWheelEnclosed: true, canopyBlend: true, canopyBulgeH: 0.096, canopyW: 0.702, steerLock: 18, bufferCell: 'ti', deckSeal: 0, brushSeal: false, rootPlateW: 1.94, rootPlateL: 0.82, rootPlateMat: 'gfrp', groundSeal: 0.6, skirtGap: 0.035, diffuserRise: 0.1, rootEndplate: true, Crr: 0.004, CdA: 0.109, wheelRadius: 0.24, wingArea: 2.8, wingHeight: 2.6, wingReefSpan: 2.6, wingReef: 'none', nWings: 2,
+  wheelbase: 2.36, track: 1.79, cgHeight: 0.413, length: 3.5, width: 1.3, height: 0.75, nWheels: 3, layout: 'tadpole',
   frontalArea: 0.9, Cd: 0.28, bearingLoss_W: 3, driveWheels: 2, payload: 90,
 };
 export function roadLoad(v, veh = DEFAULT_VEHICLE, { rho = 1.225, grade = 0, headwind = 0, accel = 0 } = {}) {

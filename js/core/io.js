@@ -4,11 +4,11 @@ import { download } from './chart.js';
 export const IMPORT_FORMATS = [
   { ext: ['csv', 'tsv', 'txt', 'dat', 'prn'], label: 'Delimited text / tabular (CSV, TSV, whitespace)', kind: 'table' },
   { ext: ['json', 'geojson'], label: 'JSON / GeoJSON (incl. ATMOS-XP project files)', kind: 'json' },
-  { ext: ['xlsx', 'xls', 'xlsm', 'ods'], label: 'Spreadsheets (Excel, OpenDocument)', kind: 'sheet' },
+  { ext: ['xlsx', 'xls', 'xlsm', 'ods'], label: 'Spreadsheets (.xlsx, .xls, .xlsm, .ods)', kind: 'sheet' },
   { ext: ['xml', 'kml', 'gpx'], label: 'XML family (KML/GPX routes, XML datasets)', kind: 'xml' },
   { ext: ['stl'], label: 'STL surface mesh (ASCII or binary)', kind: 'stl' },
   { ext: ['obj'], label: 'Wavefront OBJ polygon mesh', kind: 'obj' },
-  { ext: ['msh'], label: 'Gmsh MSH v2 ASCII mesh', kind: 'msh' },
+  { ext: ['msh'], label: '.msh v2.2 ASCII mesh', kind: 'msh' },
   { ext: ['vtk'], label: 'Legacy VTK ASCII (unstructured / polydata)', kind: 'vtk' },
 ];
 export const ACCEPT = IMPORT_FORMATS.flatMap(f => f.ext.map(e => '.' + e)).join(',');
@@ -82,10 +82,10 @@ export function parseOBJ(txt) {
 }
 export function parseMSH(txt) {
   const nodes = txt.match(/\$Nodes\s+(\d+)\s+([\s\S]*?)\$EndNodes/); const els = txt.match(/\$Elements\s+(\d+)\s+([\s\S]*?)\$EndElements/);
-  if (!nodes || !els) throw new Error('Only Gmsh MSH 2.2 ASCII is supported');
+  if (!nodes || !els) throw new Error('Only .msh 2.2 ASCII meshes are supported');
   const P = {}; nodes[2].trim().split(/\r?\n/).forEach(l => { const a = l.trim().split(/\s+/).map(Number); P[a[0]] = [a[1], a[2], a[3]]; });
   const tris = []; els[2].trim().split(/\r?\n/).forEach(l => { const a = l.trim().split(/\s+/).map(Number); const type = a[1], nt = a[2], nd = a.slice(3 + nt); if (type === 2) tris.push(nd); if (type === 3) tris.push([nd[0], nd[1], nd[2]], [nd[0], nd[2], nd[3]]); });
-  const pos = []; for (const t of tris) for (const id of t) pos.push(...P[id]); return { positions: Float32Array.from(pos), triangles: tris.length, nodes: Object.keys(P).length, format: 'Gmsh MSH 2.2' };
+  const pos = []; for (const t of tris) for (const id of t) pos.push(...P[id]); return { positions: Float32Array.from(pos), triangles: tris.length, nodes: Object.keys(P).length, format: '.msh 2.2' };
 }
 export function parseVTK(txt) {
   const pm = txt.match(/POINTS\s+(\d+)\s+\w+\s+([\s\S]*?)(?=POLYGONS|CELLS|$)/); if (!pm) throw new Error('No POINTS section');

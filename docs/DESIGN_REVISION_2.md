@@ -1,4 +1,8 @@
-# PHOENIX-ATMOS-XP — Design Revision 2 (applies to every suite and mechanism)
+# PHOENIX-ATMOS-XP — design revision record
+
+> **Current design: Revision 5.1** (see the last section). Revisions 2–5 below are kept as the historical record; their free-feathering pivots, ring track, reefing and folding mechanisms are **superseded** and are non-compliant with the specification's rule of no rotating mechanical assemblies other than the road wheels. They remain selectable in the suites only for like-for-like comparison.
+
+## Revision 2 (historical)
 
 Revision 1 (the specification's starting model: 2 × 3 m wings, 8 m², 1.5 m track) failed the software's own
 checks: overall height 4.07 m, CG 1.03 m, static stability factor 0.34 g, stationary tip-over at 8.6 m/s,

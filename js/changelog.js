@@ -6,7 +6,7 @@ export const CHANGELOG = [
     'Much more stable: stability factor 1.61, stays upright to 26.5 m/s of side wind (17 m/s even if gust washout failed), nose-over limit 1.6 g with a front-brake limiter.',
     'Lower drag (C_dA 0.127 m²), 53 W at 20 km/h, cheaper to build and run, 20 g CO₂e/km over its life, fewest moving parts (8 mechanisms), 43 wind-free starts per sunny day.',
     'Every part checked: tyres, rims and front axle; pylon, root frame and brush seal; rear fork; crash cone, side sills and harness anchors; buffer containment; collectors and canopy heat gain; passive (non-electric) conspicuity.',
-    'Honest limits shown in the suites: the heat-driven backup cannot give an hour of driving with demonstrated materials (the latent-heat store is an optional research setting), night road use needs a non-electric lamp approval, and the brush-seal light-wind gain needs a wind-tunnel check.',
+    'Honest limits shown in the suites: the heat-driven backup cannot give an hour of driving with demonstrated materials (the latent-heat store is an optional research setting), public-road use is daylight-only with passive retroreflective conspicuity (no lamps, per the specification), and the brush-seal light-wind gain needs a wind-tunnel check.',
   ] },
   { id: 6, date: '2026-10-19', title: 'Visible wing evolution, reset controls & update notices', items: [
     'Suite 08: new 3D fluid–structure playback — the gust-loaded wing visibly bends and twists (labelled magnification with true-scale values), colours change over the gust, flow particles stream past and the HUD shows the solved values live.',

@@ -151,7 +151,9 @@ export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence, airfoil,
     if (!tadpole && !steerable) return; if (tadpole && !steerable) return;
     const secs2 = []; for (let s2 = 0; s2 <= 12; s2++) { const u = s2 / 12, xx = (u - 0.45) * 2.6 * R, wHalf = 0.075 * Math.max(0.05, Math.sin(Math.PI * u) ** 0.6), hHalf = (R + 0.08) * Math.max(0.12, Math.sin(Math.PI * u) ** 0.45); secs2.push(range(20).map(j => { const t = 2 * Math.PI * j / 20; return [xx, wHalf * Math.cos(t), R * 0.95 + hHalf * Math.sin(t) * (Math.sin(t) > 0 ? 1 : 0.35)]; })); }
     const spat = loft(`Wheel spat ${k + 1}`, secs2, { color: color('spat', '#2a2f38'), group: 'Aero fairings', component: 'chassis' });
-    spat.translate(0, 0, -R); spat.transform((px, py, pz) => { const a = steerable ? rad(steer) : 0, c = Math.cos(a), sn = Math.sin(a); return [c * px - sn * py, sn * px + c * py, pz]; }); spat.translate(x, y, R); parts.push(spat);
+    // flexible lower lip closing the tyre cut-out (10 mm running clearance to the tyre)
+    const lips = []; if (veh.spatLip) { const zb = 0.95 * R - 0.35 * (R + 0.08); for (const sd of [1, -1]) { const lip = box(`Spat lower lip ${k + 1}${sd > 0 ? 'a' : 'b'} (flexible olefinic TPE strip, TPV EPDM–PP, 10 mm tyre clearance)`, 1.3 * R, 0.003, 0.03, { color: color('spat', '#2a2f38'), group: 'Aero fairings', component: 'chassis' }); lip.translate(-0.1 * R, sd * 0.036, zb + 0.012); lips.push(lip); } }
+    for (const m of [spat, ...lips]) { m.translate(0, 0, -R); m.transform((px, py, pz) => { const a = steerable ? rad(steer) : 0, c = Math.cos(a), sn = Math.sin(a); return [c * px - sn * py, sn * px + c * py, pz]; }); m.translate(x, y, R); parts.push(m); }
     // Rev 5.1 blended 'shoulder' wheel pod: the lifting body widens locally at the axle station and a streamlined pod
     // (chord shrinking outboard) carries the axle arm out to within 20 mm of the spat inner face — exposed arm ≈ 0.02 m.
     const yb = bodySec(uOf(x)).a * 0.98, ySpatIn = Math.abs(y) - 0.075, yPodEnd = ySpatIn - 0.02, sa = naca4('0030', 25), pod = [];
@@ -161,7 +163,7 @@ export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence, airfoil,
   });
   // AeroArch (Revision 5.1): ONE closed box wing — two airfoil legs joined by a top bridge — whose legs stand on a single
   // streamlined CFRP root crossbeam 20–30 mm above the deck. The crossbeam sits on ONE centreline titanium flexure pylon over a
-  // transverse root frame tied to the keel: the whole arch yaws elastically ±15° about the pylon axis (no bearings, no sliding,
+  // transverse root frame tied to the keel: the whole arch yaws elastically ±25° (vehicle.yawLimit) about the pylon axis (no bearings, no sliding,
   // no drives) and self-trims; the bridge top carries a solar collector.
   const arch = (veh.wingConfig || 'tandem') === 'arch', af = airfoil || naca4(arch ? (veh.archNaca ?? '0012') : '0018', 61), pivot = arch ? 0.30 : 0.22;
   const frame = (name, x) => { const q = bodySec(uOf(x)), m = new Mesh(name, { color: color('chassis', '#3b4250'), group: 'Chassis', component: 'chassis' }); const N = 36; const ring = (sc, xx) => range(N).map(k => { const t = 2 * Math.PI * k / N, c = Math.cos(t), sn = Math.sin(t); return m.v(xx, q.a * sc * Math.sign(c) * Math.abs(c) ** (2 / 2.6), q.cz + q.b * sc * Math.sign(sn) * Math.abs(sn) ** (2 / 2.6)); }); const o0 = ring(0.97, x - 0.02), o1 = ring(0.97, x + 0.02), i0 = ring(0.8, x - 0.02), i1 = ring(0.8, x + 0.02); for (let k = 0; k < N; k++) { const k1 = (k + 1) % N; m.q(o0[k], o0[k1], o1[k1], o1[k]); m.q(i0[k1], i0[k], i1[k], i1[k1]); m.q(o1[k], o1[k1], i1[k1], i1[k]); m.q(i0[k], i0[k1], o0[k1], o0[k]); } return fixOrientation(m); };
@@ -188,17 +190,21 @@ export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence, airfoil,
     // single streamlined CFRP root crossbeam joining both leg roots, 20–30 mm above the deck, and the centreline flexure pylon
     { const bc = c * 0.55, sb = naca4('0018', 31), cbm = []; for (const yy of [-ys - 0.04, ys + 0.04]) cbm.push(sb.points.map(([px, py]) => [xa + pivot * c * 0.6 - px * bc, yy, zBeam - 0.025 + py * bc * 0.6])); A.push(fixOrientation(loft('Arch root crossbeam (streamlined CFRP)', cbm, { color: color('spar', '#1f2937'), group: 'Wings', component: 'spar' })));
       // root endplate (rootEndplate): thin sandwich plate at the leg roots that yaws with the arch; its brush seal (deckSeal) closes the gap to the deck
-      if (veh.rootEndplate) { const ep = box('Arch root endplate (yaws with the arch)', 1.1 * c, 2 * (ys + 0.12), 0.008, { color: color('spar', '#1f2937'), group: 'Wings', component: 'spar' }); ep.translate(xa + pivot * c - 0.55 * c, 0, zBeam - 0.03); A.push(ep); }
+      // elliptical root endplate (rootPlateW × rootPlateL, 8 mm rCF/PET sandwich) at deck + 25 mm, yawing with the arch;
+      // legacy rectangular plate when only rootEndplate is set
+      if ((veh.rootPlateW ?? 0) > 0 && (veh.rootPlateL ?? 0) > 0) { const n = 40, ring = (z) => range(n).map(k => { const t = 2 * Math.PI * k / n; return [xa + pivot * c * 0.6 - 0.5 * bc + 0.5 * veh.rootPlateL * Math.cos(t), 0.5 * veh.rootPlateW * Math.sin(t), z]; }); A.push(fixOrientation(loft('Arch root endplate (elliptical, yaws with the arch)', [ring(zDeck0 + 0.025), ring(zDeck0 + 0.033)], { color: color('spar', '#1f2937'), group: 'Wings', component: 'spar' }))); }
+      else if (veh.rootEndplate) { const ep = box('Arch root endplate (yaws with the arch)', 1.1 * c, 2 * (ys + 0.12), 0.008, { color: color('spar', '#1f2937'), group: 'Wings', component: 'spar' }); ep.translate(xa + pivot * c - 0.55 * c, 0, zBeam - 0.03); A.push(ep); }
       // brush skirt (deckSeal) sealing the crossbeam/endplate-to-deck gap; flexible bristles let the arch yaw
       if ((veh.deckSeal ?? 0) > 0) { const br2 = box('Arch crossbeam brush skirt (deck seal)', bc * 0.7, 2 * (ys + 0.04), 0.022, { color: color('chassis', '#3b4250'), group: 'Wings', component: 'chassis' }); br2.translate(xa + pivot * c * 0.6 - 0.5 * bc, 0, zDeck0 + 0.011); A.push(br2); } }
     // centreline pylon = torsion rod cage (s09 'cage'): 6 × β-21S Ti rods Ø10 × 550 mm on a 105 mm pitch radius, potted into a plate
     // under the crossbeam and hanging down into the body to a base plate on the root frame; a pre-buckled bistable strip pair cancels
     // most of the cage stiffness, and elastomer-faced arc landings under the crossbeam take roll-over moments (1 mm gap)
-    { const zPt = zDeck0 + 0.02, Lr = 0.55, zPb = zPt - Lr, rp = 0.105, fx = { color: color('accent', '#1d4ed8'), group: 'Wings', component: 'flexure' }, fxB = { ...fx, group: 'Chassis' };
+    { const qPy = bodySec(uOf(xa)), zFlr = qPy.cz - qPy.b + 0.02, zPt = zDeck0 + 0.02, Lr = Math.min(veh.pylonRodL ?? 0.55, zPt - (zFlr + 0.03)), zPb = zPt - Lr, /* rods hang from the crossbeam plate to a base flange that must clear the floor */ rp = (veh.pylonRodR ?? 85) / 1000, nRod = veh.pylonRodN ?? 8, dRod = (veh.pylonRodD ?? 9.6) / 1000, fx = { color: color('accent', '#1d4ed8'), group: 'Wings', component: 'flexure' }, fxB = { ...fx, group: 'Chassis' };
       const put = (mesh, x0, y0, z0) => { mesh.transform((px, py, pz) => [px + x0, py + y0, pz + z0]); return mesh; };
       A.push(put(cylinder('Arch pylon top plate (potted under the crossbeam)', 0.14, 0.012, 36, fx), xa, 0, zPt));
-      for (let k = 0; k < 6; k++) { const t = 2 * Math.PI * k / 6; A.push(put(cylinder(`Arch pylon Ti torsion rod ${k + 1} (Ø10 × 550 mm)`, 0.005, Lr, 12, fx), xa + rp * Math.cos(t), rp * Math.sin(t), zPt - Lr / 2)); }
-      parts.push(put(cylinder('Arch pylon base plate (4 Ti inserts on the root frame)', 0.24, 0.015, 36, fxB), xa, 0, zPb));
+      for (let k = 0; k < nRod; k++) { const t = 2 * Math.PI * k / nRod; A.push(put(cylinder(`Arch pylon Ti torsion rod ${k + 1} (Ø${(dRod * 1000).toFixed(1)} × ${Math.round(Lr * 1000)} mm)`, dRod / 2, Lr, 12, fx), xa + rp * Math.cos(t), rp * Math.sin(t), zPt - Lr / 2)); }
+      parts.push(put(cylinder('Arch pylon base flange (demountable bolted joint to the root frame)', 0.24, 0.015, 36, fxB), xa, 0, zPb));
+      for (let k = 0; k < 12; k++) { const t = 2 * Math.PI * (k + 0.5) / 12; parts.push(put(cylinder(`Arch joint bolt ${k + 1} (M6 A4-80, 2.6 N·m)`, 0.003, 0.03, 10, fxB), xa + 0.22 * Math.cos(t), 0.22 * Math.sin(t), zPb)); }
       parts.push(put(box('Arch pylon bistable compensator strips', 0.04, 0.2, 0.3, fxB), xa, 0, zPb + 0.17));
       for (const sd of [1, -1]) parts.push(put(box(`Arch roll-over arc landing ${sd > 0 ? 'port' : 'starboard'} (elastomer-faced)`, 0.14, 0.09, 0.022, { color: color('chassis', '#3b4250'), group: 'Chassis', component: 'chassis' }), xa, sd * 0.38, zDeck0 + 0.011)); }
     // top bridge: horizontal airfoil-section beam with a gentle upward camber line (closes the box wing: no tip vortices)
@@ -247,6 +253,40 @@ export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence, airfoil,
   const uC1 = uOf(canX[1]) + 0.01;
   parts.push(patch('Solar-selective collector (nose deck, unshaded)', Math.min(uC1, 0.9), 0.96, veh.noseCollectorHalfAngle ?? 0.95, 'collector', '#1e3a8a')); // Rev 5.1 wraps further down the nose flanks
   parts.push(patch('Radiative-cooling emitter (rear deck)', 0.03, Math.max(0.06, uOf(cockX[0]) - 0.03), 0.95, 'radiator', '#f8fafc'));
+  // equipment solids from the Suite 01 component list (brakes, controls, seat, buffer, heat pipes, conspicuity, parked-wind harvester)
+  { const zfl = (x) => { const q = bodySec(uOf(x)); return q.cz - q.b + 0.02; }, hw = (x) => bodySec(uOf(x)).a;
+    const zTopAt = (x, y) => { const q = bodySec(uOf(x)); return q.cz + q.b * Math.max(0, 1 - Math.abs(y / q.a) ** 2.6) ** (1 / 2.6); };
+    const put = (m, x, y, z) => { m.translate(x, y, z); parts.push(m); return m; }, o = (comp, col, group) => ({ color: color(comp, col), group, component: comp });
+    const xF = wheelPos[0][0], xOccC = (cockX[0] + cockX[1]) / 2;
+    wheelPos.forEach(([x, y], k) => put(box(`Brake caliper ${k + 1}`, 0.08, 0.03, 0.06, o('brake', '#6b7280', 'Brakes')), x - 0.05, y - Math.sign(y || 1) * 0.03, R + 0.085));
+    put(box('Master cylinder with parking lock valve', 0.12, 0.05, 0.05, o('brake', '#6b7280', 'Brakes')), cockX[1] - 0.12, 0.12, zfl(cockX[1]) + 0.14);
+    put(box('Front-circuit pressure limiter (0.75 g)', 0.05, 0.04, 0.04, o('brake', '#6b7280', 'Brakes')), cockX[1] - 0.12, 0.2, zfl(cockX[1]) + 0.14);
+    put(box('Brake pedal', 0.03, 0.08, 0.18, o('steering', '#9ca3af', 'Controls')), cockX[1] - 0.02, 0.1, zfl(cockX[1]) + 0.12);
+    put(cylinder('Direct tiller', 0.012, 0.35, 16, o('steering', '#9ca3af', 'Controls')), xOccC + 0.3, 0.25, zfl(xOccC) + 0.35);
+    for (const sd of [1, -1]) { const yIn = 0.08, yOut = Math.abs(wheelPos[0][1]) - 0.1, tr2 = cylinder(`Tie rod ${sd > 0 ? 'port' : 'starboard'} (inside the shoulder pod)`, 0.008, yOut - yIn, 12, o('steering', '#9ca3af', 'Controls')); tr2.rotX(Math.PI / 2); put(tr2, xF - 0.02, sd * (yIn + yOut) / 2, R + 0.12); }
+    put(box('Recumbent seat shell (CFRP)', 0.65, 0.46, 0.05, o('cabin', '#334155', 'Cabin')), xOccC, 0, zfl(xOccC) + 0.05);
+    for (const [dx, dy] of [[0.25, 0.2], [0.25, -0.2], [-0.25, 0.2], [-0.25, -0.2]]) put(box('Harness anchor insert', 0.04, 0.04, 0.03, o('cabin', '#334155', 'Cabin')), xOccC + dx, dy, zfl(xOccC) + 0.03);
+    const fw = (veh.bufferPos ?? 'footwell') === 'footwell', xB = fw ? xF - 0.15 : cockX[0] + 0.3, bW = fw ? 0.9 : 0.35, bH = fw ? 0.06 : 0.12;
+    put(box(fw ? ((veh.bufferCell ?? 'ti') === 'elastomer' ? 'Elastomer buffer tray (research option, bands in sleeves)' : 'Bistable β-Ti snap-through cell tray') : 'Elastic buffer pack (bistable cells)', 0.45, bW, bH, o('buffer', '#a855f7', 'Buffer')), xB, 0, zfl(xB) + 0.01 + bH / 2);
+    put(box('Buffer containment enclosure', 0.49, bW + 0.04, 0.004, o('chassis', '#3b4250', 'Buffer')), xB, 0, zfl(xB) + 0.015 + bH);
+    for (const sd of [1, -1]) { const xN = L * 0.58 - 0.45, hp = cylinder(`Heat-pipe run ${sd > 0 ? 'port' : 'starboard'} (nose collector → hub)`, 0.006, Math.max(0.1, xN - xF), 10, o('spreader', '#f97316', 'Thermal')); hp.rotY(Math.PI / 2); put(hp, (xN + xF) / 2, sd * 0.3, zfl(xF) + 0.03);
+      const hq = cylinder(`Heat-pipe hub lead ${sd > 0 ? 'port' : 'starboard'}`, 0.006, Math.max(0.1, Math.abs(wheelPos[0][1]) - 0.3), 10, o('spreader', '#f97316', 'Thermal')); hq.rotX(Math.PI / 2); put(hq, xF, sd * (0.3 + (Math.abs(wheelPos[0][1]) - 0.3) / 2), zfl(xF) + 0.03); }
+    put(box('Retroreflector front (white)', 0.004, 0.1, 0.05, o('collector', '#f8fafc', 'Safety')), L * 0.58 - 0.01, 0, topZ(L * 0.5) - 0.05);
+    put(box('Retroreflector rear (red)', 0.004, 0.12, 0.05, o('radiator', '#dc2626', 'Safety')), -L * 0.42 + 0.03, 0, topZ(-L * 0.38) - 0.04);
+    for (const sd of [1, -1]) { const q0 = bodySec(uOf(0)); put(box(`Retroreflector side ${sd > 0 ? 'port' : 'starboard'} (amber)`, 0.1, 0.004, 0.04, o('collector', '#f59e0b', 'Safety')), 0, sd * (q0.a + 0.002), q0.cz); }
+    // regenerative buffer coupling at each front hub: one-way linear carriage on a short rail (no drum)
+    // regen linear-index coupling (no drum/spool/wheel): stationary flexure pawl + bracket on each front upright, push-pull cable, linear rack & carriage in the buffer box
+    for (const [x, y] of wheelPos.filter(w => w[2])) { put(box(`Regen flexure pawl & bracket ${y > 0 ? 'port' : 'starboard'} (spring steel, 0.8 × 15 × 60 mm)`, 0.06, 0.015, 0.03, o('cartridgeHousing', '#64748b', 'Hub')), x - 0.06, y - Math.sign(y) * 0.07, R + 0.04);
+      const cab = cylinder(`Regen push-pull cable ${y > 0 ? 'port' : 'starboard'}`, 0.003, Math.max(0.2, Math.abs(y) - 0.15), 8, o('cartridgeHousing', '#64748b', 'Hub')); cab.rotX(Math.PI / 2); put(cab, x - 0.1, Math.sign(y) * (0.15 + (Math.abs(y) - 0.15) / 2), zfl(x) + 0.08); }
+    put(box('Regen linear rack & carriage (stamped, in the buffer box)', 0.4, 0.03, 0.015, o('cartridgeHousing', '#64748b', 'Buffer')), wheelPos[0][0] - 0.15, 0, zfl(wheelPos[0][0]) + 0.09);
+    // rear wheel enclosed in the tail: tyre-slot enclosure side plates below the floor (only a narrow tyre slot stays open)
+    if (veh.rearWheelEnclosed && tadpole) { const xr = wheelPos[2][0]; for (const sd of [1, -1]) put(box(`Rear wheel tail spat ${sd > 0 ? 'port' : 'starboard'} (tyre-slot enclosure)`, 2.0 * R, 0.004, Math.max(0.02, zfl(xr) - 0.03), o('chassis', '#2a2f38', 'Aero fairings')), xr, sd * 0.04, 0.03 + Math.max(0.02, zfl(xr) - 0.03) / 2); }
+    // parking-lever-linked compliant yaw limiter: two EPDM shear pads + deck brackets/wedges at the deck/plate interface, under the plate's lateral edges
+    if (archMeta && wingX?.length && (veh.parkYawLimiter ?? true)) { const xP = wingX[0], yP = Math.min(0.6, 0.45 * (veh.rootPlateW || 1.2), 0.85 * hw(xP));
+      // progressive yaw end stops (Suite 09: 6000 N·m/rad, ≈ 3× stiffer — thinner, wider EPDM blocks) at the crossbeam ends
+      for (const sd of [1, -1]) put(box(`Arch yaw end stop ${sd > 0 ? 'port' : 'starboard'} (progressive EPDM, 6000 N·m/rad)`, 0.06, 0.05, 0.012, o('chassis', '#111827', 'Chassis')), xP + 0.12, sd * Math.min(0.5, 0.75 * hw(xP)), zTopAt(xP, Math.min(0.5, 0.75 * hw(xP))) + 0.006);
+      for (const sd of [1, -1]) { const zd = zTopAt(xP, yP); put(box(`Parked yaw limiter EPDM pad ${sd > 0 ? 'port' : 'starboard'}`, 0.045, 0.045, 0.025, o('chassis', '#111827', 'Chassis')), xP, sd * yP, zd + 0.0125); put(box(`Parked yaw limiter bracket & wedge ${sd > 0 ? 'port' : 'starboard'}`, 0.08, 0.03, 0.02, o('chassis', '#3b4250', 'Chassis')), xP, sd * (yP - 0.04), zd + 0.01); } }
+    if (archMeta && wingX?.length && veh.windHarvester) put(box('Parked-wind click harvester (pylon yaw ratchet)', 0.12, 0.08, 0.06, o('flexure', '#1d4ed8', 'Wings')), wingX[0] + 0.15, 0.14, zfl(wingX[0]) + 0.1); }
   // body section under the (first) wing station and the lowest underside point — used by the stacked lifting-line model
   const bodyStation = (() => { const q = bodySec(uOf(wingX[0])); let zb = Infinity, aM = 0, bM = 0, Amax = 0; for (let s3 = 0; s3 <= 40; s3++) { const qq = bodySec(s3 / 40); zb = Math.min(zb, qq.cz - qq.b); if (qq.a * qq.b > Amax) { Amax = qq.a * qq.b; aM = qq.a; bM = qq.b; } } return { zTop: q.cz + q.b, zBot: q.cz - q.b, zBotMin: zb, halfWidth: q.a, aMax: aM, bMax: bM }; })();
   return { parts, meta: { bodyStation, length: L, width: W, height: archMeta ? (folded ? archMeta.foldedHeight : archMeta.zTop) : Math.max(...wingX.map(x => topZ(x))) + span, wheelPos, arch: archMeta, wingConfig: archMeta ? 'arch' : 'tandem', wingX, LE, cr, ct, span, areaFitted, pivotFrac: pivot, cockpitX: cockX, axle: axleInfo[0] ? { ...axleInfo[0], overallWidth: 2 * (Math.max(...wheelPos.map(w => Math.abs(w[1]))) + 0.075) } : null, reefSpan, deployedSpan: spanDep, reefed, collectorArea: null, body: bodyProbe, overallWidthAll: 2 * Math.max(...parts.map(m => { const b = m.bbox(); return Math.max(Math.abs(b[1]), Math.abs(b[4])); })) } };
@@ -270,7 +310,9 @@ export function hubAssembly({ R = 0.30, nCart = 24, hotSector = 150, camAmp = 0.
   for (let k = 0; k < nCart; k++) {
     const ph = theta + 2 * Math.PI * k / nCart, c = box(`NiTi cartridge ${k + 1}`, rc * 0.28, Math.min(0.03, 2 * Math.PI * rc / nCart * 0.55), 0.05, { color: '#c58b4b', group: 'Cartridges', cartridge: k });
     c.translate(rc * 0.78, 0, 0); c.rotZ(ph); parts.push(c);
-    const shoe = box(`Flexure shoe ${k + 1}`, rc * 0.06, 0.008, 0.04, { color: '#a3e635', group: 'Flexures' }); shoe.translate(rc * 0.62, 0, 0); shoe.rotZ(ph); parts.push(shoe);
+    // twin rocking (cycloidal) pads on spring-steel flexure arms: the pads rock ±5° on the cam track, nothing rotates continuously
+    for (const dy of [-0.008, 0.008]) { const pad = box(`Rocking cam pad ${k + 1}${dy < 0 ? 'a' : 'b'}`, rc * 0.05, 0.006, 0.035, { color: '#a3e635', group: 'Flexures' }); pad.translate(rc * 0.6, dy, 0); pad.rotZ(ph); parts.push(pad); }
+    const arm = box(`Pad flexure arm ${k + 1} (0.4 mm spring steel)`, rc * 0.1, 0.0004 * 10, 0.03, { color: '#94a3b8', group: 'Flexures' }); arm.translate(rc * 0.68, 0, 0); arm.rotZ(ph); parts.push(arm);
   }
   return { parts };
 }

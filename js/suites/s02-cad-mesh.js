@@ -1,6 +1,6 @@
 // Suite 02 — Parametric 2D/3D CAD, geometry generation and numerical meshing.
 import { naca4, cst, airfoilStats, vehicleAssembly, hubAssembly, toSTL, toOBJ, toPLY, toSTEP, toVTKPoly, conversionReport, engineeringDrawing, airfoilDAT, airfoilDXF, Mesh } from '../core/cad.js';
-import { ogrid, unstructured, quality, potentialFlow, sensitivityStudy, selectMesh, toGmsh, toVTK, toSU2, toINP, toBDF, toPolyMesh, resampleAirfoil } from '../core/mesh.js';
+import { ogrid, unstructured, quality, potentialFlow, sensitivityStudy, selectMesh, toMSH, toVTK, toSU2, toINP, toBDF, toPolyMesh, resampleAirfoil } from '../core/mesh.js';
 import { panelSolver } from '../core/aero.js';
 import { COMPONENTS, componentMaterial } from '../core/materials.js';
 import { parseSTL } from '../core/io.js';
@@ -28,7 +28,7 @@ export function resolveAirfoilCAD(p, ctx) {
 }
 
 export default {
-  description: 'Generates the complete parametric ATMOS-XP automobile — monocoque, cabin, three wheels with direct-rim hubs, twin vertical morphing wings with spars and root fittings, solar collector and radiative panels — as closed, oriented solids with mass properties; produces dimensioned third-angle engineering drawings; builds structured and unstructured CFD meshes around the selected wing section, assesses element quality, runs a systematic mesh-sensitivity study with the grid-convergence index and selects the mesh by credible criteria; and exports to neutral CAD, mesh and visualisation formats with conversion reports.',
+  description: 'Generates the complete parametric ATMOS-XP automobile — monocoque, cabin, three wheels with direct-rim hubs, the Rev 5.1 closed arch box wing (two canted legs and top bridge with spars, ribs and root plate) on its centreline flexure pylon, solar collector and radiative panels — as closed, oriented solids with mass properties; produces dimensioned third-angle engineering drawings; builds structured and unstructured CFD meshes around the selected wing section, assesses element quality, runs a systematic mesh-sensitivity study with the grid-convergence index and selects the mesh by credible criteria; and exports to neutral CAD, mesh and visualisation formats with conversion reports.',
   literature: 'airfoil mesh generation grid convergence index O-grid quality metrics',
   credibility: 'Numerically verified',
   equations: [
@@ -53,7 +53,7 @@ export default {
     verification: ['Closed/manifold/oriented shells; positive volumes', 'STL export/re-import round trip within 1e-6 relative volume', 'Grid convergence with observed order and GCI; mesh quality thresholds', 'FE potential flow vs panel-method reference'],
     validation: ['Coordinate-measuring-machine inspection of manufactured parts against CAD', 'Weighing of manufactured parts against predicted masses'],
   },
-  formats: { import: ['Airfoil .dat (Selig/Lednicer)', 'STL / OBJ geometry (Data portal)', 'Gmsh MSH, VTK (Import mode)'], export: ['STEP AP214 faceted B-rep', 'STL (binary)', 'OBJ', 'PLY', 'glTF/GLB', 'VTK PolyData', 'DXF & SVG drawings', 'Airfoil DAT/CSV/DXF', 'Gmsh MSH 2.2', 'VTK unstructured', 'SU2', 'polyMesh (open CFD format)', 'INP keyword deck', 'BDF bulk-data deck', 'Project package ZIP'] },
+  formats: { import: ['Airfoil .dat (Selig/Lednicer)', 'STL / OBJ geometry (Data portal)', '.msh 2.2 mesh, VTK (Import mode)'], export: ['STEP AP214 faceted B-rep', '3MF (additive manufacturing)', 'IGES 5.3 (faceted wireframe)', 'STL (binary)', 'OBJ', 'PLY', 'glTF/GLB', 'VTK PolyData', 'DXF & SVG drawings', 'Airfoil DAT/CSV/DXF', '.msh 2.2 mesh', 'VTK unstructured', '.su2 mesh', 'polyMesh (open CFD format)', 'INP keyword deck', 'BDF bulk-data deck', 'Project package ZIP'] },
   params: [
     { key: 'family', label: 'Airfoil family', type: 'select', default: 'naca', options: [{ value: 'naca', label: 'NACA 4-digit' }, { value: 'cst', label: 'CST (Kulfan)' }, { value: 'imported', label: 'Imported (.dat via Data portal)' }], group: 'Wing section' },
     { key: 'naca', label: 'NACA code', type: 'text', default: '0012', group: 'Wing section', help: 'mpxx: max camber m %, position p/10, thickness xx %. Follows the Suite 07 base section (Revision 5.1: NACA 0012 legs).', auto: (c) => { const v = c.store?.params?.('s07')?.naca; return v ? { value: v, prov: 'coupled' } : undefined; } },
@@ -261,14 +261,19 @@ function exportView(el, parts, m, af, Q, p) {
   const txt = (s, n, t = 'text/plain') => download(new Blob([s], { type: t }), n);
   el.append(h('h4', {}, '3D CAD & visualisation'), h('div', { class: 'export-grid' },
     B('STEP AP214 (faceted B-rep)', () => txt(toSTEP(parts, 'ATMOSXP'), name + '.step', 'application/step'), 'STEP'),
+    B('3MF (additive manufacturing)', async () => { const { to3MF } = await import('../core/export2.js'); download(await to3MF(parts, 'ATMOSXP'), name + '.3mf'); }),
+    B('IGES 5.3 (faceted wireframe)', async () => { const { toIGES } = await import('../core/export2.js'); download(toIGES(parts, 'ATMOSXP'), name + '.igs'); }),
     B('STL binary', () => download(toSTL(parts), name + '.stl'), 'STL'), B('OBJ', () => txt(toOBJ(parts), name + '.obj'), 'OBJ'), B('PLY', () => txt(toPLY(parts), name + '.ply'), 'PLY'), B('VTK PolyData', () => txt(toVTKPoly(parts), name + '.vtk'), 'VTK'),
     B('glTF binary (GLB)', async () => { const { viewer } = await import('../core/viz3d.js'); const tmp = h('div', { style: 'position:absolute;left:-9999px;width:400px' }); document.body.append(tmp); const V = await viewer(tmp, { height: 200, grid: false }); for (const q of parts) V.add(q); await V.exportGLB(); setTimeout(() => { V.dispose(); tmp.remove(); }, 1500); }, 'glTF'),
     B('Native parametric project (JSON)', () => txt(JSON.stringify({ format: 'atmosxp-native', version: 1, params: p, airfoil: af, parts: parts.map(q => ({ name: q.name, group: q.group, triangles: q.triangleCount })) }, null, 1), name + '.atmosxp.json', 'application/json'))),
     h('h4', {}, 'Airfoil section'), h('div', { class: 'export-grid' }, B('Selig DAT', () => txt(airfoilDAT(af), 'airfoil.dat')), B('CSV coordinates', () => txt('x,y\n' + af.points.map(q => q.join(',')).join('\n'), 'airfoil.csv', 'text/csv')), B('DXF profile', () => txt(airfoilDXF(af, 1), 'airfoil.dxf', 'application/dxf'), 'DXF')),
-    h('h4', {}, 'Computational mesh (selected level)'), h('div', { class: 'export-grid' }, B('Gmsh MSH 2.2', () => txt(toGmsh(m), 'mesh.msh')), B('VTK unstructured (+quality fields)', () => txt(toVTK(m, { skewness: Q.skew, aspectRatio: Q.ar, scaledJacobian: Q.minJ }), 'mesh.vtk')), B('SU2', () => txt(toSU2(m), 'mesh.su2')), B('INP keyword deck', () => txt(toINP(m), 'mesh.inp')), B('BDF bulk-data deck', () => txt(toBDF(m), 'mesh.bdf')),
+    h('h4', {}, 'Computational mesh (selected level)'), h('div', { class: 'export-grid' }, B('.msh 2.2 mesh', () => txt(toMSH(m), 'mesh.msh')), B('VTK unstructured (+quality fields)', () => txt(toVTK(m, { skewness: Q.skew, aspectRatio: Q.ar, scaledJacobian: Q.minJ }), 'mesh.vtk')), B('.su2 mesh', () => txt(toSU2(m), 'mesh.su2')), B('INP keyword deck', () => txt(toINP(m), 'mesh.inp')), B('BDF bulk-data deck', () => txt(toBDF(m), 'mesh.bdf')),
       B('polyMesh directory (ZIP, open CFD format)', async () => { const of = toPolyMesh(m); download(await zip(Object.entries(of).map(([k, v]) => ({ name: `constant/polyMesh/${k}`, data: v }))), 'polyMesh.zip'); })),
     h('h4', {}, 'Conversion report'), repBox,
-    callout('info', 'Neutral formats cannot carry the full parametric feature tree, constitutive models or solver settings; the native project JSON remains the master record. CGNS, Parasolid, ACIS, JT and DWG require licensed or binary kernels and are provided through STEP/STL/glTF interchange.'));
+    callout('info', 'Neutral formats cannot carry the full parametric feature tree, constitutive models or solver settings; the native project JSON remains the master record. Proprietary CAD kernels and their native formats are not supported; geometry is exchanged through STEP/STL/glTF.'));
+  // honest list of formats this build cannot write, with the nearest supported alternative
+  const unsup = h('div'); el.append(h('h4', {}, 'Not supported in this build — nearest alternative'), unsup);
+  import('../core/export2.js').then(({ UNSUPPORTED_FORMATS }) => unsup.append(table(['Format', 'Why not', 'Nearest alternative'], (UNSUPPORTED_FORMATS || []).map(r => [r.fmt, r.why, r.alt]), { numeric: false }))).catch(() => unsup.append(h('p', { class: 'small muted' }, 'Format list unavailable.')));
   void max; void linspace; void Mesh;
 }
 

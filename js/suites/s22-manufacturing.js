@@ -3,7 +3,7 @@ import { h, table } from '../core/ui.js';
 import { fmt, linspace, range, mean, std, rng, normCdf, histogram, percentile } from '../core/num.js';
 import { bom, avgCost, unitCost } from '../core/econ.js';
 import { cachedSiteContext } from '../core/advisor.js';
-import { COMPONENTS } from '../core/materials.js';
+import { COMPONENTS, MATERIALS } from '../core/materials.js';
 
 const AM = {
   'L-PBF Ti-6Al-4V': { minStrut: 0.30, minHole: 0.8, overhang: 45, Ra: 12, density: 99.7, rate: 12, costCm3: 2.2, fatigueKd: 0.45 },
@@ -204,8 +204,8 @@ export default {
     // ---------- Revision 5.1 AeroArch: closed CFRP arch on ONE centreline pylon flexure (no rotating parts) ----------
     if ((ctx.vehicle.wingConfig || 'tandem') === 'arch' && ctx.vehicle.archRoot !== 'ring') {
       // same geometry as Suite 09: Ti rod cage (n rods Ø d × L at pitch radius R) + pre-buckled negative-stiffness compensator
-      const fx = ctx.material('flexure') || { name: 'Titanium β-21S', E: 105, sy: 1300, su: 1400, fatigue: 600, nu: 0.33 }, P9 = ctx.store?.params?.('s09') || {}, P7 = ctx.store?.params?.('s07') || {};
-      const n = P9.cageN ?? 6, d = P9.cageD ?? 11.0, Lr = P9.cageL ?? 550, R = P9.cageR ?? 105, thA = (P9.flexAmp ?? 8) * Math.PI / 180, thM = (P7.flexMax ?? 25) * Math.PI / 180, kT = P7.flexK ?? 60, tol = (P9.trimTol ?? 0.5) / 100, drift = (P9.driftRes ?? 0.3) / 100;
+      const P9a = ctx.store?.params?.('s09') || {}, fx = (P9a.pylonMat && MATERIALS.find(m => m.id === P9a.pylonMat)) || ctx.material('flexure') || { name: 'Titanium β-21S', E: 105, sy: 1300, su: 1400, fatigue: 600, nu: 0.33 }, P9 = ctx.store?.params?.('s09') || {}, P7 = ctx.store?.params?.('s07') || {};
+      const n = P9.cageN ?? 8, d = P9.cageD ?? 9.6, Lr = P9.cageL ?? 495, R = P9.cageR ?? 85, thA = (P9.flexAmp ?? 8) * Math.PI / 180, thM = (ctx.vehicle.yawLimit ?? P7.flexMax ?? 25) * Math.PI / 180, kT = P7.flexK ?? 60, tol = (P9.trimTol ?? 0.5) / 100, drift = (P9.driftRes ?? 0.3) / 100;
       const E = (fx.E || 105) * 1e3, Gm = E / (2 * (1 + (fx.nu ?? 0.33))), su = fx.su || 1400, endur = (fx.fatigue || 0.45 * su) * 0.8; // MPa; surface factor 0.8 (centreless-ground, shot-peened rods)
       const sb = (th) => 6 * E * (d / 2) * R * th / (Lr * Lr), tt = (th) => Gm * (d / 2) * th / Lr, sa = Math.hypot(sb(thA), Math.sqrt(3) * tt(thA)), smx = Math.hypot(sb(thM), Math.sqrt(3) * tt(thM));
       const SFfat = 1 / (sa / endur + 0.1 * (fx.sy || 1300) / su), SFst = (fx.sy || 1300) / smx; // mean stress ≈ 10 % of yield from the operating axial load

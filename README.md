@@ -26,29 +26,29 @@ and sustainability.
   Our World in Data grid carbon intensity, UK grid carbon, PubChem and Wikidata.
 - **CAD & meshing** — parametric vehicle and hub assemblies, NACA/CST airfoils, dimensioned third-angle
   drawings, mesh generation with quality metrics, mesh-sensitivity studies (GCI) and automatic mesh selection.
-- **Exports** — STEP (faceted B-rep), STL, OBJ, PLY, glTF/GLB, DXF, SVG, airfoil DAT/CSV, Gmsh MSH, VTK, SU2,
+- **Exports** — STEP (faceted B-rep), STL, OBJ, PLY, glTF/GLB, DXF, SVG, airfoil DAT/CSV, .msh 2.2, VTK, .su2,
   INP keyword decks, BDF bulk-data decks, CSV/JSON, PNG/SVG plots, research evidence packages and full project ZIPs.
 - **Data portal** — CSV/TSV/TXT/DAT, JSON/GeoJSON, XLSX/XLS/ODS, XML/GPX/KML, STL, OBJ, MSH, VTK.
 - **Materials library** with datasheets, uncertainty and sources; component-by-component assignment.
 - **Component dossier** — architecture rationale, fabrication, drawings, experiment replication, operation.
 
 ## Installation & offline use
-Open the live app and press **⤓ Install app** (Android/desktop) or **Share → Add to Home Screen** (iOS).
+Open the live app and press **⤓ Install app** or use the browser's **Share → Add to Home Screen**.
 After the first visit everything runs offline, including in airplane mode. The *Install* page also offers a
 self-hostable offline copy (ZIP) of the whole application.
 
 ## Redundancy
 The application is a static, server-less build and can be served from any static host. Ready-made
-configurations are included for Netlify (`netlify.toml`), Vercel (`vercel.json`), Cloudflare Pages
-(`_headers`), GitLab Pages (`.gitlab-ci.yml`) and Codeberg Pages (push the repository to a `pages` branch).
+configurations for several static hosts are included (`netlify.toml`, `vercel.json`, `_headers`,
+`.gitlab-ci.yml`; a `pages` branch also works).
 Installed copies keep working when every host is unavailable.
 
 ## Local development
 ```
 node tools/build.mjs        # regenerate the service-worker precache manifest
-python3 -m http.server 8080 # serve the folder, then open http://localhost:8080
+# serve the folder with any static file server, then open it in a browser
 ```
-No other build step or dependency is required. Vendored libraries: three.js (MIT), SheetJS Community (Apache-2.0).
+No other build step or dependency is required. Vendored 3D and spreadsheet libraries are in `vendor/` with their licences.
 
 ## Scientific rules
 Simulated predictions are not physical validation. The software never fabricates measurements, compares

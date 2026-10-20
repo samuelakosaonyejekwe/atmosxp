@@ -5,20 +5,15 @@
 // opens the collector glazing gap when the store is full, and a driver lever clamps the discharge heat-pipe saddle.
 import { SIGMA, KELVIN } from './num.js';
 
-// Literature property sets (typical values; confirm by DSC / laser-flash on the supplied batch).
+// Literature property sets (typical values; confirm by DSC / laser-flash on the supplied batch). Only polyolefin
+// (paraffin-class) PCMs are offered: inert, insoluble hydrocarbons.
 export const PCMS = [
-  { id: 'mannitol', name: 'D-mannitol (sugar-alcohol PCM, high-melting)', Tm: 167, dTm: 3, L: 252e3, cpS: 1500, cpL: 2600, rhoS: 1490, rhoL: 1350, kS: 0.6, kL: 0.3, Tmax: 175, expand: 0.08, cost: 6, co2: 3.0, energy: 55, recyclable: 0.9,
-    note: 'Pure D-mannitol melts at 166–168 °C with 280–316 kJ/kg; the design uses 280 kJ/kg less 10 % for cycling ageing under nitrogen (≈ 9 % after 500 cycles) = 252 kJ/kg. Polymorphic, and supercools strongly (free crystallisation as low as ≈ 108 °C, which also lowers the released enthalpy), so a retained-crystal seed zone plus a nucleating additive are required and must be proven by test. Degrades in air (enthalpy halves within 50 cycles; caramelisation-type reactions when held molten at 180 °C), so the inner can is filled with dry nitrogen and the store is capped at 175 °C.',
-    src: 'Sugar-alcohol PCM literature: DSC 168 °C / 280 kJ/kg and 167 °C / 316 kJ/kg (cycling in air, vacuum and nitrogen; ≈ 9 % loss over 500 cycles in N₂); comparison tables 279–308 kJ/kg; AIMS Energy 5 (2017) 404 (degradation at 180 °C in air); PMC10533063 (supercooling)' },
-  { id: 'erythritol', name: 'Erythritol (sugar-alcohol PCM)', Tm: 118, dTm: 2, L: 339e3, cpS: 1380, cpL: 2760, rhoS: 1480, rhoL: 1300, kS: 0.73, kL: 0.33, Tmax: 160, expand: 0.10, cost: 5, co2: 2.5, energy: 45, recyclable: 0.9,
-    note: 'High latent heat near 118 °C. Supercools 15–80 K if fully melted, so a retained-crystal seed zone is kept on the cold end wall (never melted) to nucleate solidification. Stable for repeated cycling in a sealed, evacuated vessel below ≈ 160 °C.',
-    src: 'Sugar-alcohol PCM literature (DSC 330–345 kJ/kg, T_m 117–120 °C; thermal-cycling and supercooling studies)' },
   { id: 'pe-wax', name: 'Polyethylene wax (high-melting)', Tm: 108, dTm: 6, L: 210e3, cpS: 2200, cpL: 2600, rhoS: 940, rhoL: 800, kS: 0.35, kL: 0.25, Tmax: 200, expand: 0.15, cost: 3, co2: 1.9, energy: 75, recyclable: 0.8,
     note: 'No supercooling, chemically inert; lower latent heat and conductivity, broad melting range.', src: 'Polyolefin-wax PCM literature (DSC 180–240 kJ/kg, T_m 100–115 °C)' },
   { id: 'hdpe', name: 'High-density polyethylene (form-stable)', Tm: 130, dTm: 5, L: 190e3, cpS: 2100, cpL: 2500, rhoS: 955, rhoL: 790, kS: 0.45, kL: 0.26, Tmax: 220, expand: 0.17, cost: 2, co2: 1.8, energy: 76, recyclable: 0.9,
     note: 'Form-stable (cross-linked) grades keep their shape when molten; melting point above the polycarbonate glazing limit, so collector stagnation must be vented.', src: 'Polyolefin PCM literature (crystallinity-dependent 160–220 kJ/kg)' },
 ];
-export const pcmById = (id) => PCMS.find(m => m.id === id) || PCMS[0];
+export const pcmById = (id) => PCMS.find(m => m.id === id) || PCMS.find(m => m.id === 'hdpe') || PCMS[0];
 
 // Specific enthalpy h(T) (J/kg, zero at 0 °C solid) with a linear mushy zone of width dTm, and its inverse.
 export function enthalpyOf(m) {

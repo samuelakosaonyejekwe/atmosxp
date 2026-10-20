@@ -1,7 +1,7 @@
 // Mesh engine: structured O-grids around airfoils (normal marching + elliptic-type smoothing), 2-D Delaunay
 // (Bowyer–Watson) unstructured meshes with boundary-layer node layers, element-quality metrics, a P1
 // finite-element potential-flow solver used for mesh-sensitivity studies, GCI-based mesh selection and
-// writers for Gmsh MSH 2.2, VTK, SU2, polyMesh, INP keyword deck and BDF bulk-data deck.
+// writers for .msh 2.2, VTK, .su2, polyMesh, INP keyword deck and BDF bulk-data deck.
 import { SparseBuilder, pcg, gci as gciFn, clamp, linspace, range, mean, max, min } from './num.js';
 import { inside } from './lbm-core.js';
 
@@ -180,7 +180,7 @@ export function selectMesh(study, { gciMax = 0.02, maxSkew = 0.85, minJ = 0.05, 
 
 // --- writers ---
 const tri2 = (m) => m.type === 'tri';
-export function toGmsh(m) {
+export function toMSH(m) {
   const L = ['$MeshFormat', '2.2 0 8', '$EndMeshFormat', '$PhysicalNames', '3', '1 1 "wall"', '1 2 "farfield"', '2 3 "fluid"', '$EndPhysicalNames', '$Nodes', String(m.nodes.length)];
   m.nodes.forEach((p, i) => L.push(`${i + 1} ${p[0]} ${p[1]} 0`)); L.push('$EndNodes');
   const el = []; let k = 1; for (const [a, b] of m.bnd.wall) el.push(`${k++} 1 2 1 1 ${a + 1} ${b + 1}`); for (const [a, b] of m.bnd.farfield) el.push(`${k++} 1 2 2 2 ${a + 1} ${b + 1}`);

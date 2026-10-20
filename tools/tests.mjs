@@ -52,12 +52,21 @@ const af = naca4('0012', 101), st = airfoilStats(af.points); t('NACA 0012 t/c', 
 const bx = box('b', 1, 2, 3); t('box volume', bx.volume(), 6, 1e-9); ok('box closed & oriented', bx.checkManifold().closed && bx.checkManifold().oriented);
 const cy = cylinder('c', 0.5, 2, 256); t('cylinder volume', cy.volume(), Math.PI * 0.25 * 2, 2e-3);
 const asm = vehicleAssembly(P.DEFAULT_VEHICLE); const notClosed = asm.parts.filter(m => !m.checkManifold().closed).map(m => m.name); ok('all vehicle parts closed solids', notClosed.length === 0, notClosed.join(', '));
+{ // envelope: no non-wheel part below 0.10 m (except skirts, spats, wheels, brakes, fork, axle arms), none wider than the spats
+  const wheelish = /Tyre|Rim|hub|Hub|Brake disc|Brake caliper|Spoke|spat|Spat|skirt|fork|Fork|axle|Axle|Bearing/;
+  const A2 = vehicleAssembly(P.DEFAULT_VEHICLE), yMax = A2.meta.axle ? A2.meta.axle.overallWidth / 2 + 1e-3 : Infinity;
+  const low = A2.parts.filter(m => !wheelish.test(m.name) && m.bbox()[2] < 0.10).map(m => m.name);
+  const wide = A2.parts.filter(m => { const b = m.bbox(); return Math.max(Math.abs(b[1]), Math.abs(b[4])) > yMax; }).map(m => m.name);
+  ok('no non-wheel part below 0.10 m', low.length === 0, low.join(', ')); ok('no part outside the overall width', wide.length === 0, wide.join(', ')); }
 const negVol = asm.parts.filter(m => m.volume() <= 0).map(m => m.name); ok('all vehicle parts positive volume', negVol.length === 0, negVol.join(', '));
 ok('overall height ≤ 3.10 m (owner cap)', asm.meta.height <= 3.10, asm.meta.height);
 ok('overall width ≤ 2.00 m', (asm.meta.overallWidthAll ?? asm.meta.width) <= 2.005, asm.meta.overallWidthAll);
 ok('length ≤ 3.5 m', asm.meta.length <= 3.5 + 1e-9, asm.meta.length);
 const stl = new Uint8Array(await toSTL([bx]).arrayBuffer()); const back = parseSTL(stl.buffer); ok('STL round-trip triangles', back.triangles === bx.triangleCount, `${back.triangles} vs ${bx.triangleCount}`);
 const step = toSTEP([bx]); ok('STEP header & closed shell', step.startsWith('ISO-10303-21;') && step.includes('CLOSED_SHELL') && step.trim().endsWith('END-ISO-10303-21;'));
+const { to3MF, toIGES } = await import('../js/core/export2.js');
+const igs = (await toIGES([bx]).text()).trim().split('\n'); ok('IGES fixed 80-column records', igs.every(l => l.length === 80) && igs[igs.length - 1].includes('T      1'));
+const m3 = new Uint8Array(await (await to3MF([bx])).arrayBuffer()); ok('3MF package is a ZIP', m3[0] === 0x50 && m3[1] === 0x4b);
 // importers
 const tb = parseDelimited('time,temperature [°C],wind\n1,20,3\n2,21,4\n'); ok('CSV parse', tb.nRows === 2 && tb.units['temperature [°C]'] === '°C');
 const tb2 = parseDelimited('a;b\n1,5;2\n'); ok('semicolon CSV', tb2.header.length === 2);

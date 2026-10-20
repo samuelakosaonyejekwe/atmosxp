@@ -46,7 +46,7 @@ export function archForces(G, pol, veh, bAbs, alpha, VA, rho = 1.225, opts = {})
     return { ...Fo, CL: mix('CL'), CD: mix('CD'), L: mix('L'), D: mix('D'), wingThrust: mix('wingThrust'), wingSide: mix('wingSide'), net: mix('net'), side: mix('side'), sideEq: mix('sideEq'), CLsys: w * Fs.CLsys + (1 - w) * Fo.CLsys, CDsys: w * Fs.CDsys + (1 - w) * Fo.CDsys }; }
   return archForcesRootMirror(G, pol, veh, bAbs, alpha, VA, rho, opts);
 }
-export const stackOpts = (veh) => ({ deckSeal: veh.deckSeal ?? 0, groundSeal: veh.groundSeal ?? 0, bodyEta: veh.bodyEta ?? 0.6, bodyClmax: 0.6, rootBootH: veh.rootBootH ?? 0, skirtGap: veh.skirtGap ?? null, archFill: veh.archFill || 'hollow', fillFrac: veh.fillFrac ?? 0.3 });
+export const stackOpts = (veh) => ({ plateW: veh.rootPlateW ?? 0, plateL: veh.rootPlateL ?? 0, deckSeal: veh.deckSeal ?? 0, groundSeal: veh.groundSeal ?? 0, bodyEta: veh.bodyEta ?? 0.6, bodyClmax: 0.6, rootBootH: veh.rootBootH ?? 0, skirtGap: veh.skirtGap ?? null, archFill: veh.archFill || 'hollow', fillFrac: veh.fillFrac ?? 0.3 });
 // opening-fill geometry: added area, its centroid height above the crossbeam and the torsion-constraint factor on the legs
 export function archFillProps(veh, G) { const AM = G.AM, h = AM.legHeight * Math.cos(rad(AM.cant)), f = veh.fillFrac ?? 0.3, fill = veh.archFill || 'hollow';
   if (fill === 'solid') return { area: h * (AM.rootChord + AM.tipChord) / 2, zc: AM.zRoot + 0.45 * h, torsionFactor: 2.0, parts: 3 };
@@ -75,10 +75,13 @@ const llSys = new Map();
 function luSolve(M, n) { const A = M.map(r => r.slice()), P = Array.from({ length: n }, (_, i) => i);
   for (let k = 0; k < n; k++) { let m = k; for (let i = k + 1; i < n; i++) if (Math.abs(A[i][k]) > Math.abs(A[m][k])) m = i; [A[k], A[m]] = [A[m], A[k]]; [P[k], P[m]] = [P[m], P[k]]; for (let i = k + 1; i < n; i++) { A[i][k] /= A[k][k]; for (let j = k + 1; j < n; j++) A[i][j] -= A[i][k] * A[k][j]; } }
   return (b) => { const y = P.map(i => b[i]); for (let i = 0; i < n; i++) for (let j = 0; j < i; j++) y[i] -= A[i][j] * y[j]; for (let i = n - 1; i >= 0; i--) { for (let j = i + 1; j < n; j++) y[i] -= A[i][j] * y[j]; y[i] /= A[i][i]; } return y; }; }
-export function stackSystem(segs, { ground = true, nPer = 14 } = {}) {
-  const key = JSON.stringify([segs.map(g => [g.z0, g.z1, g.c0, g.c1, g.a].map(v => +(+v).toFixed(4))), ground, nPer]); if (llSys.has(key)) return llSys.get(key);
+export function stackSystem(segs, { ground = true, nPer = 14, plate = null } = {}) {
+  const key = JSON.stringify([segs.map(g => [g.z0, g.z1, g.c0, g.c1, g.a].map(v => +(+v).toFixed(4))), ground, nPer, plate]); if (llSys.has(key)) return llSys.get(key);
   const pn = []; segs.forEach((g, si) => { if (g.z1 - g.z0 < 1e-4) return; const n = Math.max(2, Math.round(nPer * (g.n ?? 1))); for (let i = 0; i < n; i++) { const e0 = g.z0 + (g.z1 - g.z0) * (1 - Math.cos(Math.PI * i / n)) / 2, e1 = g.z0 + (g.z1 - g.z0) * (1 - Math.cos(Math.PI * (i + 1) / n)) / 2, zm = (e0 + e1) / 2, t = (zm - g.z0) / (g.z1 - g.z0); pn.push({ e0, e1, zm, dz: e1 - e0, c: g.c0 + (g.c1 - g.c0) * t, a: g.a, si }); } });
-  const n = pn.length, A = pn.map(p => pn.map(q => { let w = 1 / (p.zm - q.e0) - 1 / (p.zm - q.e1); if (ground) w += 1 / (p.zm + q.e1) - 1 / (p.zm + q.e0); return w / (4 * Math.PI); }));
+  // root endplate: a finite horizontal plate at z_p gives the wing panels a PARTIAL image of strength r about z_p (r = 1 would be an
+  // infinite reflection plane); r from Hoerner's end-plate correlation ΔAR/AR ≈ 1.9 h/b (Fluid-Dynamic Lift, 1985, ch. 3)
+  const isW = (q) => segs[q.si].kind === 'wing' || segs[q.si].kind === 'deckSkirt';
+  const n = pn.length, A = pn.map(p => pn.map(q => { let w = 1 / (p.zm - q.e0) - 1 / (p.zm - q.e1); if (ground) w += 1 / (p.zm + q.e1) - 1 / (p.zm + q.e0); if (plate && plate.r > 0 && isW(p) && isW(q)) { const i0 = 2 * plate.z - q.e1, i1 = 2 * plate.z - q.e0; w += plate.r * (1 / (p.zm - i0) - 1 / (p.zm - i1)); } return w / (4 * Math.PI); }));
   const M = pn.map((p, i) => pn.map((q, j) => (i === j ? 1 : 0) + 0.5 * p.c * p.a * A[i][j])), solve = luSolve(M, n), sys = { pn, A, M, solve, n };
   if (llSys.size > 400) llSys.clear(); llSys.set(key, sys); return sys;
 }
@@ -93,7 +96,7 @@ export function stackSolve(sys, theta, clmax) {
 }
 // vertical stack of a vehicle from its CAD geometry. opts: deckSeal σ (crossbeam brush skirt), groundSeal σ (underbody side
 // skirts), bodyEta (thick-body lift-slope factor), bodyClmax, bodyFill (side-panel chord / body length)
-export function vehicleStack(veh, { deckSeal = 0, groundSeal = 0, bodyEta = 0.6, bodyClmax = 0.6, bodyFill = 0.85, a2D = 2 * Math.PI, cosL = 1, rootBootH = 0, bootEta = 0.7, skirtGap = null, archFill = 'hollow', fillFrac = 0.3 } = {}) {
+export function vehicleStack(veh, { deckSeal = 0, groundSeal = 0, bodyEta = 0.6, bodyClmax = 0.6, bodyFill = 0.85, a2D = 2 * Math.PI, cosL = 1, rootBootH = 0, bootEta = 0.7, skirtGap = null, archFill = 'hollow', fillFrac = 0.3, plateW = 0, plateL = 0, plateGap = 0.025 } = {}) {
   const meta = vehicleAssembly(veh, {}).meta, BS = meta.bodyStation, AM = meta.arch, Lb = veh.length * bodyFill, segs = [];
   const zb = BS.zBot, zt = BS.zTop;
   // physical underbody skirt: a solid compliant skirt from the floor down to skirtGap above the road (only that open gap remains);
@@ -101,11 +104,14 @@ export function vehicleStack(veh, { deckSeal = 0, groundSeal = 0, bodyEta = 0.6,
   if (skirtGap != null && zb > skirtGap + 0.002) segs.push({ kind: 'groundSkirt', z0: Math.max(0.002, skirtGap), z1: zb, c0: Lb, c1: Lb, a: bodyEta * a2D });
   else if (groundSeal > 0 && zb > 0.005) segs.push({ kind: 'groundSkirt', z0: 0.005, z1: zb, c0: groundSeal * Lb, c1: groundSeal * Lb, a: bodyEta * a2D });
   segs.push({ kind: 'body', z0: zb, z1: zt, c0: Lb, c1: Lb, a: bodyEta * a2D, n: 1 });
-  let kBox = 1, zTop;
+  let kBox = 1, zTop, plate = null;
   if (AM) { const zR = AM.zRoot, hv = AM.legHeight * Math.cos(rad(AM.cant)); zTop = zR + hv;
     // physical root boot: a continuous elastomer membrane from the deck to the leg roots (no open gap; membrane lift slope η_m);
     // legacy: deckSeal σ as a fraction of the root chord across the crossbeam gap
-    if (zR > zt + 1e-4) { if (rootBootH > 0) segs.push({ kind: 'deckSkirt', z0: zt, z1: zR, c0: 2 * AM.rootChord, c1: 2 * AM.rootChord, a: a2D * cosL * bootEta }); else segs.push({ kind: 'deckSkirt', z0: zt, z1: zR, c0: deckSeal * 2 * AM.rootChord, c1: deckSeal * 2 * AM.rootChord, a: a2D * cosL }); }
+    // with a root endplate the legs, crossbeam and plate form one solid junction down to the plate's underside; only the plate's
+    // running gap to the deck (plateGap) stays open
+    if (plateW > 0 && zR > zt + plateGap + 1e-4) segs.push({ kind: 'deckSkirt', z0: zt + plateGap, z1: zR, c0: 2 * AM.rootChord, c1: 2 * AM.rootChord, a: a2D * cosL });
+    else if (zR > zt + 1e-4) { if (rootBootH > 0) segs.push({ kind: 'deckSkirt', z0: zt, z1: zR, c0: 2 * AM.rootChord, c1: 2 * AM.rootChord, a: a2D * cosL * bootEta }); else segs.push({ kind: 'deckSkirt', z0: zt, z1: zR, c0: deckSeal * 2 * AM.rootChord, c1: deckSeal * 2 * AM.rootChord, a: a2D * cosL }); }
     // arch opening fill (front view): 'hollow' = two legs; 'solid' = a continuous centreline web/membrane from crossbeam to bridge
     // (a third vertical surface in parallel — Munk: summed chord at each height); 'hybrid' = a root gusset web over the lower
     // fillFrac of the height (chord tapering from the root chord to zero) plus corner fairings (no aerodynamic credit)
@@ -114,14 +120,20 @@ export function vehicleStack(veh, { deckSeal = 0, groundSeal = 0, bodyEta = 0.6,
     else if (archFill === 'hybrid') { const zg = z0w + fillFrac * (zTop - z0w); segs.push({ kind: 'wing', z0: z0w, z1: zg, c0: 3 * AM.rootChord, c1: 2 * cAt(zg), a: aW, n: 0.6 }, { kind: 'wing', z0: zg, z1: zTop, c0: 2 * cAt(zg), c1: 2 * AM.tipChord, a: aW, n: 1.2 }); }
     else segs.push({ kind: 'wing', z0: z0w, z1: zTop, c0: 2 * AM.rootChord, c1: 2 * AM.tipChord, a: aW, n: 1.6 });
     const gM = (AM.gap + AM.bridgeSpan) / 2, b = 2 * zTop; kBox = (1 + 0.45 * gM / b) / (1.04 + 2.81 * gM / b);
+    // root endplate (plate width W across the body, length L fore-aft ≥ root chord for full effect): h = W/2 per leg, b = 2·leg height
+    if (plateW > 0) { const hv2 = AM.legHeight * Math.cos(rad(AM.cant)), lenF = clamp(plateL / Math.max(0.1, AM.rootChord), 0, 1); const gain = clamp(1.9 * (plateW / 2) / (2 * hv2) * lenF, 0, 0.89); plate = { z: zt + plateGap, gain, r: +plateImage(gain).toFixed(4) }; }
   } else { const nW = veh.nWings || 2, zR = zt - 0.02, sp = meta.span; zTop = zR + sp; segs[segs.length - 1].z1 = zR; segs.push({ kind: 'wing', z0: zR, z1: zTop, c0: nW * meta.cr, c1: nW * meta.ct, a: a2D * cosL, n: 1.6 }); }
-  return { segs, kBox, zTop, Lb, meta };
+  return { segs, kBox, zTop, Lb, meta, plate };
 }
+// image strength r that reproduces a target effective-aspect-ratio gain ΔAR/AR in this lifting line (calibrated on a rectangular
+// wing of AR 4: r → gain), so the end-plate credit equals the published correlation rather than an arbitrary image factor
+const PLATE_CAL = [[0, 0], [0.1, 0.0311], [0.2, 0.0662], [0.3, 0.1061], [0.4, 0.1524], [0.5, 0.2073], [0.6, 0.2741], [0.7, 0.3588], [0.8, 0.4717], [0.9, 0.6344], [0.95, 0.7481], [1, 0.8986]];
+export function plateImage(gain) { for (let i = 1; i < PLATE_CAL.length; i++) if (gain <= PLATE_CAL[i][1]) { const [r0, g0] = PLATE_CAL[i - 1], [r1, g1] = PLATE_CAL[i]; return r0 + (r1 - r0) * (gain - g0) / (g1 - g0); } return 1; }
 // forces of the stacked system at apparent-wind angle bAbs (deg) with wing angle of attack alpha (deg); wing section from
 // the polar, body at α = β with leeward side-panel camber; returns the archForces-compatible object (body lift is inside)
 export function stackForces(ST, pol, veh, bAbs, alpha, VA, rho = 1.225, { camberPct = 4, interf = 1, bridgeCdA = 0 } = {}) {
   const c0 = coeffs(pol, 0), c4 = coeffs(pol, 4), a0w = (c4.CL - c0.CL) / rad(4), al0w = -c0.CL / a0w, b = rad(bAbs), q = 0.5 * rho * VA * VA, S = veh.wingArea;
-  const kA = Math.round(a0w * 1e4), sc = ST._sys || (ST._sys = new Map()); let sys = sc.get(kA); if (!sys) { sys = stackSystem(ST.segs.map(g => g.kind === 'wing' || g.kind === 'deckSkirt' ? { ...g, a: g.a / (2 * Math.PI) * a0w } : g)); sc.set(kA, sys); } // memoised per section lift slope
+  const kA = Math.round(a0w * 1e4), sc = ST._sys || (ST._sys = new Map()); let sys = sc.get(kA); if (!sys) { sys = stackSystem(ST.segs.map(g => g.kind === 'wing' || g.kind === 'deckSkirt' ? { ...g, a: g.a / (2 * Math.PI) * a0w } : g), { plate: ST.plate }); sc.set(kA, sys); } // memoised per section lift slope
   const mB = (veh.bodyCamberPct ?? camberPct) / 100 * (veh.bodyCamberWash === false ? 1 : interf), aB = rad(Math.min(bAbs, 180 - bAbs)) + (bAbs <= 90 ? 2 * mB : 0); // the bistable side panels de-camber with the arch skin
   const theta = ST.segs.map(g => g.kind === 'wing' || g.kind === 'deckSkirt' ? rad(alpha) - al0w * interf : aB);
   const clmax = ST.segs.map(g => g.kind === 'wing' || g.kind === 'deckSkirt' ? (pol.CLmax ?? 1.6) * interf : 0.6);
@@ -134,24 +146,8 @@ export function stackForces(ST, pol, veh, bAbs, alpha, VA, rho = 1.225, { camber
   const sideW = F.side * Lw / Math.max(1e-9, L), sideBd = F.side - sideW;
   return { CL: CLw, CD: CDw, CLsys: L / (q * S), CDsys: D / (q * S), eps: 0, L, D, Lw, Lb, Di, Dp, wingThrust: F.thrust, wingSide: F.side, body: { thrust: 0, side: 0, L: Lb }, Db, net: F.thrust - Db * Math.cos(b), side: F.side + sB, sideEq: sideW + (sideBd + sB) * zB / hCE, stack: true };
 }
-// Geometry-based drag-area build-up, identical for every revision (computed from each design's own CAD geometry):
-// body — Hoerner's streamlined-body formula on frontal area, C_D = C_f·(3 l/d + 4.5 (d/l)^½ + 21 (d/l)²) (Hoerner,
-// Fluid-Dynamic Drag, 1965, ch. 6), turbulent C_f = 0.455/(log₁₀Re)^2.58, ground-proximity factor 1 + 0.4·e^(−(h/d)/0.15)
-// (drag rise of streamlined bodies near the ground, cf. Hucho, Aerodynamics of Road Vehicles); wheels in spats / bare,
-// exposed axle arms (C_d 1.0), spat–body junctions, wing-root junctions (Hoerner: ΔC_DA = t²·(0.8 (t/c)³ − 0.0003)),
-// arch crossbeam, canopy/mirrors/lights/leakage, and +15 % mutual interference.
-export function dragBuildup(veh, { V = 8, nu = 1.5e-5 } = {}) {
-  const meta = vehicleAssembly(veh, {}).meta, BS = meta.bodyStation, AM = meta.arch, l = veh.length;
-  const Af = 3.53 * BS.aMax * BS.bMax, d = Math.sqrt(4 * Af / Math.PI), Re = V * l / nu, Cf = 0.455 / Math.log10(Re) ** 2.58, CDb = Cf * (3 * l / d + 4.5 * Math.sqrt(d / l) + 21 * (d / l) ** 2), hd = Math.max(0, BS.zBotMin) / d, kg = 1 + 0.4 * Math.exp(-hd / 0.15);
-  const nWh = veh.nWheels || 3, spats = veh.spats !== false, ax = meta.axle, arm = spats && ax ? ax.exposedArm : Math.max(0, (veh.track || 1.8) / 2 - (ax?.bodyHalfWidth ?? (veh.width || 1.6) / 2));
-  const tc = 0.12, junc = (c) => { const t = tc * c; return Math.max(0, t * t * (0.8 * tc ** 3 - 0.0003)); };
-  const rows = [[`Body (Hoerner, l/d ${(l / d).toFixed(2)}, A_f ${Af.toFixed(3)} m², C_f ${Cf.toFixed(4)}, ground ×${kg.toFixed(2)})`, CDb * Af * kg], [`Wheels ×${nWh} ${spats ? 'in spats' : 'bare'}`, (spats ? 0.012 : 0.03) * nWh], [`Exposed front axle arms (2 × ${(arm * 1000).toFixed(0)} mm × 30 mm, C_d 1.0)`, 2 * arm * 0.03],
-    [spats ? 'Spat–body junctions (2)' : 'Wheel–body interference (open)', spats ? 0.008 : 0.024],
-    ...(AM ? [['Arch root crossbeam fairing (C_d 0.1 on 0.1 m × span)', 0.1 * 0.1 * (AM.gap + 0.08)], ['Arch leg–crossbeam junctions (2, Hoerner)', 2 * junc(AM.rootChord)]] : [[`Wing–body root junctions (${veh.nWings || 2}, Hoerner)`, (veh.nWings || 2) * junc(meta.cr)]]),
-    ['Canopy, mirrors, lights & leakage', 0.02]];
-  const sub = rows.reduce((a, r) => a + r[1], 0), CdA = sub * 1.15;
-  return { rows: [...rows, ['Mutual interference (+15 %)', sub * 0.15]], CdA, body: { Af, d, ld: l / d, Cf, CDb, kg } };
-}
+// drag-area build-up lives in ./dragbuild.js (one function shared by Suites 01 and 07)
+export { dragBuildup } from './dragbuild.js';
 // lift-capped forces: if the side force exceeds the safe limit the bistable skin de-cambers and the flexure stiffens,
 // shedding lift (modelled as the CL scale that brings the side force back to the limit)
 export function cappedForces(G, pol, veh, bAbs, alpha, VA, rho, FyS, opts) {

@@ -1,5 +1,5 @@
-// three.js viewport wrapper: CAD solids, field contours on surfaces, exploded / cut-away / x-ray views,
-// synchronised animation and glTF export. three.js is loaded lazily so the console stays fast.
+// 3D viewport wrapper (vendored WebGL library): CAD solids, field contours on surfaces, exploded / cut-away / x-ray views,
+// synchronised animation and glTF export. the 3D library is loaded lazily so the console stays fast.
 import { cmap } from './chart.js';
 
 let THREE = null, OrbitControls = null;
@@ -46,6 +46,7 @@ export async function viewer(container, { background, up = 'z', grid = true, hei
   const bxr = tool('X-ray', 'Transparent / cut-away view', () => { state.xray = !state.xray; for (const o of state.objects) { o.material.transparent = state.xray || o.userData.baseOpacity < 1; o.material.opacity = state.xray ? 0.28 : o.userData.baseOpacity; o.material.depthWrite = !state.xray; } bxr.classList.toggle('on', state.xray); });
   const bs = tool('Section', 'Section view (cut plane at y = 0)', () => { state.section = !state.section; clipPlane.constant = state.section ? 0 : 100; bs.classList.toggle('on', state.section); });
   tool('PNG', 'Save high-resolution image', () => snapshot(3));
+  tool('4K', 'Save a 3840 × 2160 (4K UHD) image', () => snapshot4K());
   tool('GLB', 'Export glTF binary of the scene', () => exportGLB());
   const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
   renderer.domElement.addEventListener('pointermove', (ev) => {
@@ -74,6 +75,7 @@ export async function viewer(container, { background, up = 'z', grid = true, hei
   function addLine(points, color = 0xffffff, width = 1) { const g = new THREE.BufferGeometry().setFromPoints(points.map(p => new THREE.Vector3(...p))); const l = new THREE.Line(g, new THREE.LineBasicMaterial({ color, linewidth: width })); root.add(l); return l; }
   function addArrow(origin, dir, len, color = 0xfacc15) { const a = new THREE.ArrowHelper(new THREE.Vector3(...dir).normalize(), new THREE.Vector3(...origin), len, color, len * 0.2, len * 0.1); root.add(a); return a; }
   function snapshot(scale = 2) { const w = renderer.domElement.width, hh = renderer.domElement.height; renderer.setSize(W() * scale, H() * scale, false); renderer.render(scene, camera); renderer.domElement.toBlob(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'atmosxp-3d.png'; a.click(); }); renderer.setSize(W(), H(), false); renderer.domElement.style.width = '100%'; void w; void hh; }
+  function snapshot4K() { const pr = renderer.getPixelRatio(), asp = camera.aspect; renderer.setPixelRatio(1); renderer.setSize(3840, 2160, false); camera.aspect = 16 / 9; camera.updateProjectionMatrix(); renderer.render(scene, camera); renderer.domElement.toBlob(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'atmosxp-3d-4k.png'; a.click(); }); renderer.setPixelRatio(pr); renderer.setSize(W(), H(), false); renderer.domElement.style.width = '100%'; camera.aspect = asp; camera.updateProjectionMatrix(); }
   async function exportGLB() { const { GLTFExporter } = await import('../../vendor/GLTFExporter.js'); new GLTFExporter().parse(root, (res) => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([res], { type: 'model/gltf-binary' })); a.download = 'atmosxp-scene.glb'; a.click(); }, (e) => console.error(e), { binary: true }); }
   const ro = new ResizeObserver(() => { renderer.setSize(W(), H()); camera.aspect = W() / H(); camera.updateProjectionMatrix(); }); ro.observe(container);
   let last = performance.now();
