@@ -5,8 +5,8 @@
 //  (2) the driver lever is the EXISTING parking-lock lever with ONE 3-position gate, in order of cable stroke — DRIVE / DEPOWER / PARK
 //      (there is no hub sail position: no design can hold the pads clear of the rotating cartridges, Suite 01). One closed-loop
 //      strand runs through the three panels in series: depower stretches the panels past their pop-up strain so all flaps open at
-//      any load (crosswind, braking, Suite 12); park adds the forked wedge on the strand (yaw end stops) and the strand bead that holds
-//      the brake pedal (parking brake, Suite 12) through a 4:1 park-step profile. Park is reachable only through depower (interlock).
+//      any load (crosswind, braking, Suite 12); park adds the forked wedge on the strand (yaw end stops) and pulls the
+//      parking-brake branch cable to the caliper park levers (mechanical parking brake, Suite 12). Park is reachable only through depower (interlock).
 // Ligament strain ε = t·θ/(2·L_lig); flap opening moment M = Δp·b·a²/2; pop-up work by energy (barrier + ligament bending).
 import { G0 } from './num.js';
 
