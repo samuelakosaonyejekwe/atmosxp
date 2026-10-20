@@ -1,6 +1,6 @@
 // Suite 02 — Parametric 2D/3D CAD, geometry generation and numerical meshing.
 import { naca4, cst, airfoilStats, vehicleAssembly, hubAssembly, toSTL, toOBJ, toPLY, toSTEP, toVTKPoly, conversionReport, engineeringDrawing, airfoilDAT, airfoilDXF, Mesh } from '../core/cad.js';
-import { ogrid, unstructured, quality, potentialFlow, sensitivityStudy, selectMesh, toGmsh, toVTK, toSU2, toAbaqus, toNastran, toOpenFOAM, resampleAirfoil } from '../core/mesh.js';
+import { ogrid, unstructured, quality, potentialFlow, sensitivityStudy, selectMesh, toGmsh, toVTK, toSU2, toINP, toBDF, toPolyMesh, resampleAirfoil } from '../core/mesh.js';
 import { panelSolver } from '../core/aero.js';
 import { COMPONENTS, componentMaterial } from '../core/materials.js';
 import { parseSTL } from '../core/io.js';
@@ -53,7 +53,7 @@ export default {
     verification: ['Closed/manifold/oriented shells; positive volumes', 'STL export/re-import round trip within 1e-6 relative volume', 'Grid convergence with observed order and GCI; mesh quality thresholds', 'FE potential flow vs panel-method reference'],
     validation: ['Coordinate-measuring-machine inspection of manufactured parts against CAD', 'Weighing of manufactured parts against predicted masses'],
   },
-  formats: { import: ['Airfoil .dat (Selig/Lednicer)', 'STL / OBJ geometry (Data portal)', 'Gmsh MSH, VTK (Import mode)'], export: ['STEP AP214 faceted B-rep', 'STL (binary)', 'OBJ', 'PLY', 'glTF/GLB', 'VTK PolyData', 'DXF & SVG drawings', 'Airfoil DAT/CSV/DXF', 'Gmsh MSH 2.2', 'VTK unstructured', 'SU2', 'OpenFOAM polyMesh', 'Abaqus INP', 'Nastran BDF', 'Project package ZIP'] },
+  formats: { import: ['Airfoil .dat (Selig/Lednicer)', 'STL / OBJ geometry (Data portal)', 'Gmsh MSH, VTK (Import mode)'], export: ['STEP AP214 faceted B-rep', 'STL (binary)', 'OBJ', 'PLY', 'glTF/GLB', 'VTK PolyData', 'DXF & SVG drawings', 'Airfoil DAT/CSV/DXF', 'Gmsh MSH 2.2', 'VTK unstructured', 'SU2', 'polyMesh (open CFD format)', 'INP keyword deck', 'BDF bulk-data deck', 'Project package ZIP'] },
   params: [
     { key: 'family', label: 'Airfoil family', type: 'select', default: 'naca', options: [{ value: 'naca', label: 'NACA 4-digit' }, { value: 'cst', label: 'CST (Kulfan)' }, { value: 'imported', label: 'Imported (.dat via Data portal)' }], group: 'Wing section' },
     { key: 'naca', label: 'NACA code', type: 'text', default: '0012', group: 'Wing section', help: 'mpxx: max camber m %, position p/10, thickness xx %. Follows the Suite 07 base section (Revision 5.1: NACA 0012 legs).', auto: (c) => { const v = c.store?.params?.('s07')?.naca; return v ? { value: v, prov: 'coupled' } : undefined; } },
@@ -265,8 +265,8 @@ function exportView(el, parts, m, af, Q, p) {
     B('glTF binary (GLB)', async () => { const { viewer } = await import('../core/viz3d.js'); const tmp = h('div', { style: 'position:absolute;left:-9999px;width:400px' }); document.body.append(tmp); const V = await viewer(tmp, { height: 200, grid: false }); for (const q of parts) V.add(q); await V.exportGLB(); setTimeout(() => { V.dispose(); tmp.remove(); }, 1500); }, 'glTF'),
     B('Native parametric project (JSON)', () => txt(JSON.stringify({ format: 'atmosxp-native', version: 1, params: p, airfoil: af, parts: parts.map(q => ({ name: q.name, group: q.group, triangles: q.triangleCount })) }, null, 1), name + '.atmosxp.json', 'application/json'))),
     h('h4', {}, 'Airfoil section'), h('div', { class: 'export-grid' }, B('Selig DAT', () => txt(airfoilDAT(af), 'airfoil.dat')), B('CSV coordinates', () => txt('x,y\n' + af.points.map(q => q.join(',')).join('\n'), 'airfoil.csv', 'text/csv')), B('DXF profile', () => txt(airfoilDXF(af, 1), 'airfoil.dxf', 'application/dxf'), 'DXF')),
-    h('h4', {}, 'Computational mesh (selected level)'), h('div', { class: 'export-grid' }, B('Gmsh MSH 2.2', () => txt(toGmsh(m), 'mesh.msh')), B('VTK unstructured (+quality fields)', () => txt(toVTK(m, { skewness: Q.skew, aspectRatio: Q.ar, scaledJacobian: Q.minJ }), 'mesh.vtk')), B('SU2', () => txt(toSU2(m), 'mesh.su2')), B('Abaqus INP', () => txt(toAbaqus(m), 'mesh.inp')), B('Nastran BDF', () => txt(toNastran(m), 'mesh.bdf')),
-      B('OpenFOAM polyMesh (ZIP)', async () => { const of = toOpenFOAM(m); download(await zip(Object.entries(of).map(([k, v]) => ({ name: `constant/polyMesh/${k}`, data: v }))), 'polyMesh.zip'); })),
+    h('h4', {}, 'Computational mesh (selected level)'), h('div', { class: 'export-grid' }, B('Gmsh MSH 2.2', () => txt(toGmsh(m), 'mesh.msh')), B('VTK unstructured (+quality fields)', () => txt(toVTK(m, { skewness: Q.skew, aspectRatio: Q.ar, scaledJacobian: Q.minJ }), 'mesh.vtk')), B('SU2', () => txt(toSU2(m), 'mesh.su2')), B('INP keyword deck', () => txt(toINP(m), 'mesh.inp')), B('BDF bulk-data deck', () => txt(toBDF(m), 'mesh.bdf')),
+      B('polyMesh directory (ZIP, open CFD format)', async () => { const of = toPolyMesh(m); download(await zip(Object.entries(of).map(([k, v]) => ({ name: `constant/polyMesh/${k}`, data: v }))), 'polyMesh.zip'); })),
     h('h4', {}, 'Conversion report'), repBox,
     callout('info', 'Neutral formats cannot carry the full parametric feature tree, constitutive models or solver settings; the native project JSON remains the master record. CGNS, Parasolid, ACIS, JT and DWG require licensed or binary kernels and are provided through STEP/STL/glTF interchange.'));
   void max; void linspace; void Mesh;

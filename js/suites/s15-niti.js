@@ -103,7 +103,7 @@ export default {
     verification: ['Second-law check η ≤ η_Carnot', 'Cycle closure (repeatability) of strain', 'Work-integral convergence with path refinement', 'Stress-free transformation temperatures reproduced'],
     validation: ['Measured complete heating–loading–cooling–unloading cycles: delivered work, reset work, temperatures, frequency, fatigue — high peak force alone is not validation'],
   },
-  formats: { import: ['CSV/XLSX DSC curves', 'CSV force–displacement–temperature cycles', 'JSON'], export: ['CSV cycle paths', 'JSON calibrated parameter set', 'Abaqus INP / Nastran BDF material cards via Suite 02 export manager', 'PNG/SVG'] },
+  formats: { import: ['CSV/XLSX DSC curves', 'CSV force–displacement–temperature cycles', 'JSON'], export: ['CSV cycle paths', 'JSON calibrated parameter set', 'INP keyword deck / BDF bulk-data deck material cards via Suite 02 export manager', 'PNG/SVG'] },
   params: [
     { key: 'grade', label: 'Shape-memory alloy grade', type: 'select', group: 'Material', default: 'nitcu', options: SMAS.map(m => ({ value: m.id, label: m.name })), auto: (c) => { const h = c.upstream('s14')?.alloyHint; if (h && SMAS.some(m => m.id === h)) return { value: h, prov: 'coupled' }; const id = c.store.project.materials?.actuator; return { value: id && SMAS.some(m => m.id === id) ? id : 'nitcu', prov: id ? 'user' : 'library' }; }, help: 'Revision 6: follows the latent-heat store temperature (Suite 14) — NiTiHf for the 167 °C store, NiTiCu for a 118 °C store.' },
     { key: 'autoMatch', label: 'Match transformation temperatures to the interfaces', type: 'bool', group: 'Material', default: true, help: 'Composition / heat-treatment tuning within ±40 K so A_f(σ_H) ≤ T_hot − 3 K and M_f(σ_L) ≥ T_cold + 3 K.' },

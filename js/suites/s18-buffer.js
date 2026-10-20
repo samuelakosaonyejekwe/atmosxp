@@ -27,7 +27,7 @@ export default {
     verification: ['Closed-form bistability limit vs numerical extremum detection', '∫F du equals U(u₂) − U(0)', 'Shallow-arch strain formula vs exact kinematics'],
     validation: ['Measured charge–discharge testing of an assembled array driving a dynamometer: usable energy, recovery efficiency, duration at specified load'],
   },
-  formats: { import: ['CSV force–displacement cycles', 'XLSX', 'JSON'], export: ['CSV energy landscape & sizing', 'STEP/3MF/STL cell geometry (Suite 02)', 'Abaqus INP (Suite 02)', 'PNG/SVG'] },
+  formats: { import: ['CSV force–displacement cycles', 'XLSX', 'JSON'], export: ['CSV energy landscape & sizing', 'STEP/3MF/STL cell geometry (Suite 02)', 'INP keyword deck (Suite 02)', 'PNG/SVG'] },
   params: [
     { key: 'mat', label: 'Cell material', type: 'select', group: 'Cell', default: 'ti-beta21s', options: forUse('buffer').map(m => ({ value: m.id, label: m.name })), auto: (c) => ({ value: c.store.material('buffer', 'ti-beta21s'), prov: 'library' }) },
     { key: 'b', label: 'Half-span b', unit: 'mm', type: 'number', min: 5, max: 300, step: 1, group: 'Cell', default: 50 },

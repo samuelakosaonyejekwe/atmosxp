@@ -27,7 +27,7 @@ and sustainability.
 - **CAD & meshing** — parametric vehicle and hub assemblies, NACA/CST airfoils, dimensioned third-angle
   drawings, mesh generation with quality metrics, mesh-sensitivity studies (GCI) and automatic mesh selection.
 - **Exports** — STEP (faceted B-rep), STL, OBJ, PLY, glTF/GLB, DXF, SVG, airfoil DAT/CSV, Gmsh MSH, VTK, SU2,
-  Abaqus INP, Nastran BDF, CSV/JSON, PNG/SVG plots, research evidence packages and full project ZIPs.
+  INP keyword decks, BDF bulk-data decks, CSV/JSON, PNG/SVG plots, research evidence packages and full project ZIPs.
 - **Data portal** — CSV/TSV/TXT/DAT, JSON/GeoJSON, XLSX/XLS/ODS, XML/GPX/KML, STL, OBJ, MSH, VTK.
 - **Materials library** with datasheets, uncertainty and sources; component-by-component assignment.
 - **Component dossier** — architecture rationale, fabrication, drawings, experiment replication, operation.

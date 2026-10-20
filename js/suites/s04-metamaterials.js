@@ -48,7 +48,7 @@ export default {
     { key: 'tr', label: 'Strut slenderness t/l', type: 'range', min: 0.004, max: 0.25, step: 0.0005, group: 'Unit cell', default: 0.0055, help: 't = 0.41 mm at the default 75 mm cell — the powder-bed-fusion minimum for PP; 3 % relative density.' },
     { key: 'rr', label: 'Chiral ring radius r/L', type: 'range', min: 0.1, max: 0.4, step: 0.01, group: 'Unit cell', default: 0.25 },
     { key: 'depth', label: 'Out-of-plane depth b', unit: 'mm', type: 'number', min: 1, max: 100, step: 1, group: 'Unit cell', default: 60 },
-    { key: 'mat', label: 'Constituent material', type: 'select', group: 'Constituent', default: 'pp', options: latticeMats.map(m => ({ value: m.id, label: m.name })), auto: (c) => ({ value: c.material('lattice')?.id || 'pa12', prov: 'library' }) },
+    { key: 'mat', label: 'Constituent material', type: 'select', group: 'Constituent', default: 'pp', options: latticeMats.map(m => ({ value: m.id, label: m.name })), auto: (c) => ({ value: c.material('lattice')?.id || 'pp', prov: 'library' }) },
     { key: 'strainViz', label: 'Visualised macroscopic strain εxx', unit: '%', type: 'range', min: 0.1, max: 10, step: 0.1, group: 'Visualisation', default: 4 },
     { key: 'bL', label: 'Bistable beam span L', unit: 'mm', type: 'number', min: 10, max: 200, step: 1, group: 'Bistable cell', default: 80 },
     { key: 'bh', label: 'Bistable apex height h', unit: 'mm', type: 'number', min: 0.5, max: 20, step: 0.1, group: 'Bistable cell', default: 3 },

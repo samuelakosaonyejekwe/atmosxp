@@ -1,7 +1,7 @@
 // Mesh engine: structured O-grids around airfoils (normal marching + elliptic-type smoothing), 2-D Delaunay
 // (Bowyer–Watson) unstructured meshes with boundary-layer node layers, element-quality metrics, a P1
 // finite-element potential-flow solver used for mesh-sensitivity studies, GCI-based mesh selection and
-// writers for Gmsh MSH 2.2, VTK, SU2, OpenFOAM polyMesh, Abaqus INP and Nastran BDF.
+// writers for Gmsh MSH 2.2, VTK, SU2, polyMesh, INP keyword deck and BDF bulk-data deck.
 import { SparseBuilder, pcg, gci as gciFn, clamp, linspace, range, mean, max, min } from './num.js';
 import { inside } from './lbm-core.js';
 
@@ -197,11 +197,11 @@ export function toSU2(m) {
   const L = ['% PHOENIX-ATMOS-XP 2-D mesh', 'NDIME= 2', `NELEM= ${m.elems.length}`, ...m.elems.map((e, k) => `${e.length === 3 ? 5 : 9} ${e.join(' ')} ${k}`), `NPOIN= ${m.nodes.length}`, ...m.nodes.map((p, i) => `${p[0]} ${p[1]} ${i}`), 'NMARK= 2', 'MARKER_TAG= airfoil', `MARKER_ELEMS= ${m.bnd.wall.length}`, ...m.bnd.wall.map(([a, b]) => `3 ${a} ${b}`), 'MARKER_TAG= farfield', `MARKER_ELEMS= ${m.bnd.farfield.length}`, ...m.bnd.farfield.map(([a, b]) => `3 ${a} ${b}`)];
   return L.join('\n') + '\n';
 }
-export function toAbaqus(m) { const L = ['*Heading', 'PHOENIX-ATMOS-XP mesh (units m)', '*Node']; m.nodes.forEach((p, i) => L.push(`${i + 1}, ${p[0]}, ${p[1]}, 0.`)); const tri = m.elems.filter(e => e.length === 3), quad = m.elems.filter(e => e.length === 4); let k = 1; if (tri.length) { L.push('*Element, type=CPS3, elset=FLUID'); for (const e of tri) L.push(`${k++}, ${e.map(i => i + 1).join(', ')}`); } if (quad.length) { L.push('*Element, type=CPS4, elset=FLUID'); for (const e of quad) L.push(`${k++}, ${e.map(i => i + 1).join(', ')}`); } L.push('*Nset, nset=WALL', ...chunk([...new Set(m.bnd.wall.flat())].map(i => i + 1)), '*Nset, nset=FARFIELD', ...chunk([...new Set(m.bnd.farfield.flat())].map(i => i + 1))); return L.join('\n') + '\n'; }
+export function toINP(m) { const L = ['*Heading', 'PHOENIX-ATMOS-XP mesh (units m)', '*Node']; m.nodes.forEach((p, i) => L.push(`${i + 1}, ${p[0]}, ${p[1]}, 0.`)); const tri = m.elems.filter(e => e.length === 3), quad = m.elems.filter(e => e.length === 4); let k = 1; if (tri.length) { L.push('*Element, type=CPS3, elset=FLUID'); for (const e of tri) L.push(`${k++}, ${e.map(i => i + 1).join(', ')}`); } if (quad.length) { L.push('*Element, type=CPS4, elset=FLUID'); for (const e of quad) L.push(`${k++}, ${e.map(i => i + 1).join(', ')}`); } L.push('*Nset, nset=WALL', ...chunk([...new Set(m.bnd.wall.flat())].map(i => i + 1)), '*Nset, nset=FARFIELD', ...chunk([...new Set(m.bnd.farfield.flat())].map(i => i + 1))); return L.join('\n') + '\n'; }
 const chunk = (a) => { const o = []; for (let i = 0; i < a.length; i += 16) o.push(a.slice(i, i + 16).join(', ')); return o; };
-export function toNastran(m) { const L = ['$ PHOENIX-ATMOS-XP mesh (units m)', 'BEGIN BULK']; m.nodes.forEach((p, i) => L.push(`GRID,${i + 1},,${p[0].toPrecision(8)},${p[1].toPrecision(8)},0.`)); m.elems.forEach((e, k) => L.push(`${e.length === 3 ? 'CTRIA3' : 'CQUAD4'},${k + 1},1,${e.map(i => i + 1).join(',')}`)); L.push('PSHELL,1,1,0.001', 'ENDDATA'); return L.join('\n') + '\n'; }
-// OpenFOAM polyMesh (2-D mesh extruded one cell in z; front/back as "empty" patch)
-export function toOpenFOAM(m, dz = 0.1) {
+export function toBDF(m) { const L = ['$ PHOENIX-ATMOS-XP mesh (units m)', 'BEGIN BULK']; m.nodes.forEach((p, i) => L.push(`GRID,${i + 1},,${p[0].toPrecision(8)},${p[1].toPrecision(8)},0.`)); m.elems.forEach((e, k) => L.push(`${e.length === 3 ? 'CTRIA3' : 'CQUAD4'},${k + 1},1,${e.map(i => i + 1).join(',')}`)); L.push('PSHELL,1,1,0.001', 'ENDDATA'); return L.join('\n') + '\n'; }
+// polyMesh (2-D mesh extruded one cell in z; front/back as "empty" patch)
+export function toPolyMesh(m, dz = 0.1) {
   const n = m.nodes.length, pts = m.nodes.map(p => `(${p[0]} ${p[1]} 0)`).concat(m.nodes.map(p => `(${p[0]} ${p[1]} ${dz})`));
   const F = new Map(); m.elems.forEach((e, c) => { for (let k = 0; k < e.length; k++) { const a = e[k], b = e[(k + 1) % e.length], key = a < b ? a + ',' + b : b + ',' + a; if (F.has(key)) F.get(key).nb = c; else F.set(key, { a, b, own: c, nb: -1 }); } });
   const wallSet = new Set(m.bnd.wall.map(([a, b]) => (a < b ? a + ',' + b : b + ',' + a))), internal = [], wall = [], far = [];
