@@ -2,16 +2,11 @@
 //  (1) passive pressure relief — one monolithic KIRIGAMI RELIEF PANEL per leg and one in the bridge: a laser-cut pattern of
 //      bistable flaps in the glass-reinforced TPU skin (curved ligaments). The flaps pop out of plane together when the mean
 //      pressure difference reaches Δp_open and fold back elastically below Δp_close; one elastic part per panel, no hinges;
-//  (2) the driver lever is the EXISTING parking-lock lever with ONE 4-position gate, in order of cable stroke —
-//      DRIVE / SAIL (hub off) / DEPOWER / PARK. Its single cable is extended past the pylon root:
-//        sail    — the two hub branches set the bistable hold-off spring at each drive hub; its pad lifter holds the rocking
-//                  pads off the cam track (no contact, no drag); the driver selects sail when the hot-sector dial
-//                  thermometer reads below its net-work mark (Suite 17);
-//        depower — hubs stay off and the tendon tails stretch each kirigami panel past its pop-up strain, so all flaps open
-//                  at any load (crosswind, braking, Suite 12);
-//        park    — adds the parking lock valve on the master cylinder and slides the park wedges onto the yaw end stops.
-//      The gate is a straight slot with detents, so PARK is reachable only through DEPOWER (the interlock: the parking lock
-//      can only be set with the arch unloaded) and every position beyond DRIVE keeps the hubs off.
+//  (2) the driver lever is the EXISTING parking-lock lever with ONE 3-position gate, in order of cable stroke — DRIVE / DEPOWER / PARK
+//      (there is no hub sail position: no design can hold the pads clear of the rotating cartridges, Suite 01). One closed-loop
+//      strand runs through the three panels in series: depower stretches the panels past their pop-up strain so all flaps open at
+//      any load (crosswind, braking, Suite 12); park adds the forked wedge on the strand (yaw end stops) and the strand bead that holds
+//      the brake pedal (parking brake, Suite 12) through a 4:1 park-step profile. Park is reachable only through depower (interlock).
 // Ligament strain ε = t·θ/(2·L_lig); flap opening moment M = Δp·b·a²/2; pop-up work by energy (barrier + ligament bending).
 import { G0 } from './num.js';
 
@@ -68,7 +63,7 @@ export function unloadingDesign({ S, legHeight, bridgeSpan = 0.9, chord, vents, 
   const lStrand = 3.0 + (series ? spans.reduce((x, y) => x + y, 0) + 0.6 + (returnMode === 'loop' ? 3.6 : 0) : 3 * 1.2), mCordX = series && returnMode === 'cord' ? cordL * Math.PI / 4 * cordD ** 2 * 1150 + 0.01 : 0, mTendon = lStrand * 0.009 + (series ? 3.6 + (returnMode === 'loop' ? 1.2 : 0) : 3.0) * 0.03 /* PTFE liner & guides */ + mCordX /* return cord + end fittings */, mEdge = 0.12 * panels.length, mRib = 0.08 * panels.length, mass = mEdge + mRib + mTendon;
   const parts = [
     ...panels.map(pn => [pn.name, 1, `${pn.span.toFixed(2)} m span; slit zones ${(pn.chordLE * 1000).toFixed(0)} mm (2–12 % c) + ${(pn.chordAft * 1000).toFixed(0)} mm (30–98 % c); ${pn.flaps} flaps ${(flapA * 1000).toFixed(0)} × ${(flapB * 1000).toFixed(0)} mm, ligaments ${(ligW * 1000).toFixed(0)} × ${(Llig * 1000).toFixed(0)} mm`, (mEdge + mRib) / panels.length, 'replaces skin area (elastic, 0 moving parts)']),
-    ['Parking-lock lever, 4-position gate (drive / sail — hub off / depower / park)', 1, `ratio ${ratio}:1, stroke ${(strokeHand * 1000).toFixed(0)} mm`, 0, 'replaces the 2-position parking-lock lever; gate detent counted as a moving part (Suite 01)'],
+    ['Parking-lock lever, 3-position gate (drive / depower / park; 4:1 park-step profile)', 1, `ratio ${ratio}:1, stroke ${(strokeHand * 1000).toFixed(0)} mm`, 0, 'replaces the 2-position parking-lock lever; gate detent counted as a moving part (Suite 01)'],
     ...(series ? [['Parking-lock cable continued as ONE strand through the three panel edge ribs in series (stainless 7×19 Ø1.5 mm, PTFE-lined guides), anchored at the far leg root', 1, `${lStrand.toFixed(1)} m; wrap ${(wrap * 180 / Math.PI).toFixed(0)}°, capstan ×${cap.toFixed(2)}${returnMode === 'loop' ? '; closed loop back to the lever (lost-motion slot), positive return' : ''}`, mTendon - mCordX, 'one strand (Suite 01 counts it once)'], ...(returnMode === 'cord' ? [['Series-strand return cord (pre-stretched silicone, strand end → far leg-root fitting)', 1, `Ø${(cordD * 1000).toFixed(0)} × ${(cordL * 1000).toFixed(0)} mm, ${leafPre.toFixed(1)} → ${FleafMax.toFixed(1)} N`, cordL * Math.PI / 4 * cordD ** 2 * 1150 + 0.01, 'its end moves with the strand: counted as a moving part (Suite 01)']] : [])] : [['Parking-lock cable extended to the pylon root + 3 tendon tails (stainless 7×19 Ø1.5 mm, PTFE-lined)', 1, '3.0 m extension + 3 × 1.2 m tails', mTendon, 'one cable with branches; every moving strand is counted in Suite 01']])];
   return { dpOpen: dpO, dpClose: dpC, nFlap, panels, Llig, epsLig: eps, SFlig: SF, dpHold, Mopen, Wpop, Fhand, Fcable, tendonStroke, ratio: ratioUsed, series: seriesCheck, openArea, kerf, mass, parts, weightN: mass * G0,
     newMechanisms: 0, newMovingParts: series ? (returnMode === 'cord' ? 1 : 0) : 3 }; // the lever chain replaces the parking-brake lever chain; separate tendon tails are new moving strands, the series strand is the existing cable

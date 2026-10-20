@@ -271,7 +271,11 @@ export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence, airfoil,
     const put = (m, x, y, z) => { m.translate(x, y, z); parts.push(m); return m; }, o = (comp, col, group) => ({ color: color(comp, col), group, component: comp });
     const xF = wheelPos[0][0], xOccC = (cockX[0] + cockX[1]) / 2;
     wheelPos.forEach(([x, y], k) => put(box(`Brake caliper ${k + 1}`, 0.08, 0.03, 0.06, o('brake', '#6b7280', 'Brakes')), x - 0.05, y - Math.sign(y || 1) * 0.03, R + 0.085));
-    put(box('Master cylinder with parking lock valve', 0.12, 0.05, 0.05, o('brake', '#6b7280', 'Brakes')), cockX[1] - 0.12, 0.12, zfl(cockX[1]) + 0.14);
+    put(box(veh.parkBrake === 'strand' && veh.unloadingLever && veh.vents ? 'Master cylinder (no lock valve: in park the lever strand holds the pedal)' : veh.parkLockOnPedal ? 'Master cylinder with parking lock valve' : 'Master cylinder', 0.12, 0.05, 0.05, o('brake', '#6b7280', 'Brakes')), cockX[1] - 0.12, 0.12, zfl(cockX[1]) + 0.14);
+    if (veh.launchTrip === 'pedal') { const sp = cylinder('Brake pushrod over-travel cartridge (preloaded Cr-Si coil, 640 N threshold; returns the pedal through the master-cylinder spring)', 0.022, 0.154, 20, o('brake', '#9ca3af', 'Brakes')); sp.rotY(Math.PI / 2); put(sp, cockX[1] - 0.25, 0.12, zfl(cockX[1]) + 0.14);
+      put(box('Regen carriage knock-back ramp (fixed on the carriage; disarms a cocked launch trip leaf while rolling)', 0.04, 0.02, 0.012, o('cartridgeHousing', '#64748b', 'Buffer')), wheelPos[0][0] - 0.15, 0.025, zfl(wheelPos[0][0]) + 0.105); }
+    if (veh.launchTrip === 'pedal') put(box('Launch trip leaf (β-21S bistable; brake-pedal over-travel cocks it at standstill, the regen carriage ramp disarms it while rolling)', 0.2, 0.075, 0.003, o('cartridgeHousing', '#94a3b8', 'Buffer')), cockX[1] - 0.25, 0, zfl(cockX[1]) + 0.05);
+    if (veh.parkBrake === 'strand' && veh.unloadingLever && veh.vents) put(box('Brake-pedal park hook (on the pedal arm; the strand bead catches it in the park step)', 0.02, 0.03, 0.04, o('brake', '#9ca3af', 'Brakes')), cockX[1] - 0.05, 0.12, zfl(cockX[1]) + 0.08);
     put(box('Front-circuit pressure limiter (0.75 g)', 0.05, 0.04, 0.04, o('brake', '#6b7280', 'Brakes')), cockX[1] - 0.12, 0.2, zfl(cockX[1]) + 0.14);
     put(box('Brake pedal', 0.03, 0.08, 0.18, o('steering', '#9ca3af', 'Controls')), cockX[1] - 0.02, 0.1, zfl(cockX[1]) + 0.12);
     put(cylinder('Direct tiller', 0.012, 0.35, 16, o('steering', '#9ca3af', 'Controls')), xOccC + 0.3, 0.25, zfl(xOccC) + 0.35);
@@ -286,12 +290,12 @@ export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence, airfoil,
     put(box('Retroreflector front (white)', 0.004, 0.1, 0.05, o('safety', '#f8fafc', 'Safety')), L * 0.58 - 0.01, 0, topZ(L * 0.5) - 0.05);
     put(box('Retroreflector rear (red)', 0.004, 0.12, 0.05, o('safety', '#dc2626', 'Safety')), -L * 0.42 + 0.03, 0, topZ(-L * 0.38) - 0.04);
     for (const sd of [1, -1]) { const q0 = bodySec(uOf(0)); put(box(`Retroreflector side ${sd > 0 ? 'port' : 'starboard'} (amber)`, 0.1, 0.004, 0.04, o('safety', '#f59e0b', 'Safety')), 0, sd * (q0.a + 0.002), q0.cz); }
-    if (veh.vents && veh.unloadingLever && archMeta && wingX?.length) { put(box('Parking-lock lever, one 4-position gate: drive / sail (hub off) / depower / park (6:1)', 0.04, 0.03, 0.22, o('steering', '#9ca3af', 'Controls')), xOccC + 0.25, 0.22, zfl(xOccC) + 0.3);
-      put(box('Lever gate plate: straight slot, spring-steel detent leaves at drive / sail / depower / park (park only through depower)', 0.03, 0.06, 0.2, o('steering', '#6b7280', 'Controls')), xOccC + 0.25, 0.26, zfl(xOccC) + 0.22);
+    if (veh.vents && veh.unloadingLever && archMeta && wingX?.length) { put(box(veh.hubSail === true ? 'Parking-lock lever, one 4-position gate: drive / sail (hub off) / depower / park' : 'Parking-lock lever, one 3-position gate: drive / depower / park (4:1 park-step profile)', 0.04, 0.03, 0.22, o('steering', '#9ca3af', 'Controls')), xOccC + 0.25, 0.22, zfl(xOccC) + 0.3);
+      put(box(veh.hubSail === true ? 'Lever gate plate: straight slot, spring-steel detent leaves at drive / sail / depower / park (park only through depower)' : 'Lever gate plate: straight slot, detent leaves at drive / depower / park, 4:1 park-step profile (park only through depower)', 0.03, 0.06, 0.2, o('steering', '#6b7280', 'Controls')), xOccC + 0.25, 0.26, zfl(xOccC) + 0.22);
       const cl = cylinder('Parking-lock cable extension to the pylon root (tendons to the kirigami panels)', 0.004, Math.max(0.1, xOccC + 0.25 - wingX[0]), 10, o('steering', '#9ca3af', 'Controls')); cl.rotY(Math.PI / 2); put(cl, (xOccC + 0.25 + wingX[0]) / 2, 0.22, zfl(xOccC) + 0.2); }
     // hub sail hardware at each drive hub (Suite 17): bistable hold-off spring + pad lifter ring, set by a cable branch from the
     // driver lever (sail and beyond); a pivot-less bimetal-strip indicator on the port hot sector tells the driver when to select sail
-    { const hubs = wheelPos.filter(w => w[2]), xLv = xOccC + 0.25, yLv = 0.22, zLv = zfl(xOccC) + 0.2, own = veh.vents && veh.unloadingLever && archMeta && wingX?.length;
+    if (veh.hubSail === true) { const hubs = wheelPos.filter(w => w[2]), xLv = xOccC + 0.25, yLv = 0.22, zLv = zfl(xOccC) + 0.2, own = veh.vents && veh.unloadingLever && archMeta && wingX?.length;
       if (!own) put(box('Hub sail lever, 2-position (drive / sail), elastic detent gate', 0.04, 0.03, 0.2, o('steering', '#9ca3af', 'Controls')), xLv, yLv, zLv + 0.1);
       for (const [x, y] of hubs) { const sd = Math.sign(y) || 1, side = sd > 0 ? 'port' : 'starboard', yIn = y - sd * 0.06;
         const lr = tube(`Hub bistable lifter ring ${side} (17-7PH snap-through cone, 0.5 mm; second stable state holds the rocking pads off the cam track)`, R * 0.42 * 0.66, R * 0.42 * 0.35, 0.003, 48, o('cartridgeHousing', '#a3e635', 'Hub')); lr.rotX(Math.PI / 2); put(lr, x, yIn, R);
@@ -316,9 +320,10 @@ export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence, airfoil,
       // merged parking restraint (Suite 09 parkMode 'merged'): the ±35° yaw end stops are EPDM blocks (70 × 70 × 30 mm, 22 050 N·m/rad) at r 0.15 m between
       // the bottom-cup lug and the base flange; in park the lever cable slides two Al wedges in to take up the free play onto the same blocks
       for (const sd of [1, -1]) { put(box(`Arch yaw end stop ${sd > 0 ? 'port' : 'starboard'} (EPDM 70 × 70 × 30 mm, 22 050 N·m/rad; parking restraint)`, 0.07, 0.03, 0.07, o('chassis', '#111827', 'Chassis')), xP, sd * 0.15, zS);
-        if ((veh.parkWedge ?? 'pair') !== 'forked') put(box(`Park wedge ${sd > 0 ? 'port' : 'starboard'} (Al, on the parking-lock lever cable)`, 0.05, 0.012, 0.03, o('steering', '#9ca3af', 'Chassis')), xP + 0.06, sd * 0.15, zS); }
-      if ((veh.parkWedge ?? 'pair') === 'forked') { /* one forked Al wedge: a bridge plate carrying both 4° PTFE-faced tips, one part on the lever cable */
-        const FW = 'Forked park wedge (one Al part: bridge plate + two 4° PTFE-faced tips at ±0.15 m, on the parking-lock lever cable)';
+        if (!['forked', 'onStrand'].includes(veh.parkWedge ?? 'pair')) put(box(`Park wedge ${sd > 0 ? 'port' : 'starboard'} (Al, on the parking-lock lever cable)`, 0.05, 0.012, 0.03, o('steering', '#9ca3af', 'Chassis')), xP + 0.06, sd * 0.15, zS); }
+      if (['forked', 'onStrand'].includes(veh.parkWedge ?? 'pair')) { /* one forked Al wedge: a bridge plate carrying both 4° PTFE-faced tips, one part on the lever cable */
+        const FW = veh.parkWedge === 'onStrand' ? 'Forked park wedge swaged on the loop strand (one Al part: bridge plate + two 4° PTFE-faced tips at ±0.15 m; moves with the strand)' : 'Forked park wedge (one Al part: bridge plate + two 4° PTFE-faced tips at ±0.15 m, on the parking-lock lever cable)';
+        if (veh.parkWedge === 'onStrand') for (const sd of [1, -1]) put(box(`Forked-wedge guide rail ${sd > 0 ? 'port' : 'starboard'} (fixed, PTFE-lined; the wedge rides on the strand and enters the stops only in the park step)`, 0.12, 0.02, 0.004, o('chassis', '#6b7280', 'Chassis')), xP + 0.06, sd * 0.15, zS - 0.019);
         put(box(`${FW} — bridge plate`, 0.02, 0.32, 0.03, o('steering', '#9ca3af', 'Chassis')), xP + 0.105, 0, zS);
         for (const sd of [1, -1]) put(box(`${FW} — ${sd > 0 ? 'port' : 'starboard'} tip`, 0.07, 0.012, 0.03, o('steering', '#9ca3af', 'Chassis')), xP + 0.06, sd * 0.15, zS); }
       if (veh.tendonSeries && veh.vents && veh.unloadingLever && (veh.strandReturn ?? 'cord') === 'loop') { const rr = cylinder('Series-strand return run (same closed-loop strand: far leg root → pylon root → lever lost-motion slot; stainless 7×19 Ø1.5, PTFE-lined)', 0.002, Math.max(0.2, xOccC + 0.25 - xP), 8, o('steering', '#9ca3af', 'Controls')); rr.rotY(Math.PI / 2); put(rr, (xOccC + 0.25 + xP) / 2, -0.2, zfl(xOccC) + 0.2); }
@@ -331,7 +336,7 @@ export function vehicleAssembly(veh = DEFAULT_VEHICLE, { wingIncidence, airfoil,
 }
 
 // Direct-rim hub sub-assembly in its own frame (z = axle axis)
-export function hubAssembly({ R = 0.30, nCart = 24, hotSector = 150, camAmp = 0.006, theta = 0 } = {}) {
+export function hubAssembly({ R = 0.30, nCart = 24, hotSector = 150, camAmp = 0.006, theta = 0, sail = false } = {}) {
   const parts = [], rc = R * 0.42;
   parts.push(tube('Rim', R - 0.06, R - 0.09, 0.05, 72, { color: '#c0c6cf', group: 'Wheel' }));
   parts.push(torus('Tyre', R - 0.025, 0.025, 72, 18, { color: '#111', group: 'Wheel' }));
@@ -353,8 +358,8 @@ export function hubAssembly({ R = 0.30, nCart = 24, hotSector = 150, camAmp = 0.
     const arm = box(`Pad flexure arm ${k + 1} (0.4 mm spring steel)`, rc * 0.1, 0.0004 * 10, 0.03, { color: '#94a3b8', group: 'Flexures' }); arm.translate(rc * 0.68, 0, 0); arm.rotZ(ph); parts.push(arm);
   }
   // sail hardware (Suite 17): pad lifter ring + bistable hold-off spring set by the driver lever's sail position; hot-sector bimetal strip indicator
-  const lift = tube('Bistable lifter ring (17-7PH snap-through cone; its second stable state holds the rocking pads off the cam track)', rc * 0.66, rc * 0.35, 0.003, 72, { color: '#a3e635', group: 'Sail hardware' }); lift.translate(0, 0, 0.034); parts.push(lift);
-  const ind = box('Hot-sector bimetal strip indicator (no pivot; scale marked at the net-work threshold)', rc * 0.35, 0.006, 0.03, { color: '#f8fafc', group: 'Sail hardware' }); ind.translate(0, rc * 0.95, 0.045); parts.push(ind);
+  if (sail) { const lift = tube('Bistable lifter ring (17-7PH snap-through cone; its second stable state holds the rocking pads off the cam track)', rc * 0.66, rc * 0.35, 0.003, 72, { color: '#a3e635', group: 'Sail hardware' }); lift.translate(0, 0, 0.034); parts.push(lift);
+  const ind = box('Hot-sector bimetal strip indicator (no pivot; scale marked at the net-work threshold)', rc * 0.35, 0.006, 0.03, { color: '#f8fafc', group: 'Sail hardware' }); ind.translate(0, rc * 0.95, 0.045); parts.push(ind); }
   return { parts };
 }
 

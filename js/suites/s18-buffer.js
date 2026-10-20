@@ -173,7 +173,7 @@ export default {
       out.verdicts.push({ test: 'Buffer containment & mounting', status: cageOK && mntCap >= 1.25 * Fmnt ? 'pass' : 'fail', detail: `Each cell caged (${cg.name}, ${fmt(mCage * 1000, 3)} g) to absorb ${fmt(2 * Ecell, 4)} J ≥ 2 × release; mounts ${fmt(mntCap / 1000, 3)} kN vs ${fmt(Fmnt / 1000, 3)} kN at 20 g (≥ 1.25).` });
       bufSysMass = sysMass; }
     // ===================== Revision 6.3 practicable backup =====================
-    const veh = ctx.vehicle, mVeh = veh.mass, g0 = 9.80665, v20 = 20 / 3.6, P20 = s17o?.demand_W ?? ((veh.Crr ?? 0.0045) * mVeh * g0 * v20 + 0.5 * 1.2 * (veh.CdA ?? 0.13) * v20 ** 3 + 2);
+    const veh = ctx.vehicle, mVeh = veh.mass, g0 = 9.80665, v20 = 20 / 3.6, P20 = (s17o?.demand_W ?? ((veh.Crr ?? 0.0045) * mVeh * g0 * v20 + 0.5 * 1.2 * (veh.CdA ?? 0.13) * v20 ** 3 + 2)) + Math.max(0, s17o?.hubParasitic_W ?? 0); // the engaged hub's parasitic drag (night/cold) is part of the load the buffer must carry
     const ELA = {
       ir: { name: 'synthetic polyisoprene (30 phr black)', G: 0.9e6, Jm: 70, rho: 1050, hyst: 0.10, relax: 0.03, Tg: -70, Nref: 1e6, b: 2.5, cost: 4, co2: 3.5, energy: 95, ozone: 'unsaturated backbone: cracks under ozone when stretched — antiozonant wax plus the sealed, opaque enclosure are required' },
       sbr: { name: 'SBR (carbon-black filled)', G: 1.2e6, Jm: 50, rho: 1150, hyst: 0.20, relax: 0.04, Tg: -50, Nref: 2e5, b: 2.5, cost: 2.5, co2: 3.0, energy: 85, ozone: 'unsaturated backbone: antiozonant wax plus sealed, opaque enclosure required' },
