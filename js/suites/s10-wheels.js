@@ -3,6 +3,8 @@ import { G0, fmt, linspace, range, sum, max, rad, deg } from '../core/num.js';
 import { kmh, moistAir, flatPlateH } from '../core/physics.js';
 import { ROADS, mfLateral, mfLongitudinal, fiala, dugoff, crrModel, wheelLayout, threeWheelLoads } from '../core/vehicle.js';
 import { h } from '../core/ui.js';
+import { get as getMat } from '../core/materials.js';
+import { vehicleAssembly } from '../core/cad.js';
 
 export default {
   description: 'Tyre–road force generation (Magic Formula, Fiala/brush, Dugoff combined slip, friction ellipse), rolling resistance versus speed, pressure and load, wheel-bearing friction (Palmgren) and loss power, Hertzian contact stresses, wheel rotational inertia, tyre hysteresis heating, and traction limits against the wing side force — for dry and wet roads.',
@@ -19,6 +21,13 @@ export default {
     { key: 'speed', label: 'Vehicle speed', unit: 'km/h', type: 'range', min: 1, max: 80, step: 1, group: 'Operating point', default: 20 },
     { key: 'Fz', label: 'Reference wheel load', unit: 'N', type: 'number', min: 100, max: 4000, step: 10, group: 'Operating point', default: 981, auto: (c) => { const o = c.upstream('s01'); return o?.wheelLoads ? { value: +max(o.wheelLoads).toFixed(1), prov: 'coupled' } : { value: +(c.vehicle.mass * G0 / 3).toFixed(1), prov: 'calc' }; } },
     { key: 'width', label: 'Tyre section width', unit: 'mm', type: 'number', min: 25, max: 200, step: 1, group: 'Tyre', default: 40, help: 'Revision 4.1: narrow high-pressure low-loss tyres (velomobile practice) — rolling resistance dominates the light-wind power budget.' },
+    { key: 'widthAuto', label: 'Auto-size tyre width to the load rating', type: 'bool', group: 'Tyre', default: true, help: 'Picks the narrowest standard width (ETRTO 35–80 mm) whose load rating covers 1.25 × the static wheel load and 1.15 × the outer-front load at the safe side-force limit. Rolling resistance is held at the narrow-tyre value (wider tyres at equal pressure roll no worse).' },
+    { key: 'axleMat', label: 'Front axle / stub-arm material', type: 'select', group: 'Axle & rims', default: 'al-7075-t6', options: [{ value: 'al-7075-t6', label: 'Aluminium 7075-T6 tube' }, { value: 'ti-6al4v', label: 'Titanium Ti-6Al-4V tube' }, { value: 'st-4130', label: 'Steel 4130 tube' }, { value: 'cfrp-t700', label: 'CFRP T700 tube (±45/0 lay-up, 45 % of UD strength)' }] },
+    { key: 'axleAuto', label: 'Auto-size the front axle tube', type: 'bool', group: 'Axle & rims', default: true, help: 'Lightest tube (Ø 25–80 mm, wall 1–6 mm) with static safety factor ≥ 2 on the worst load case, fatigue factor ≥ 1.5 and camber change ≤ 0.5°.' },
+    { key: 'axleD', label: 'Axle tube outer diameter', unit: 'mm', type: 'number', min: 20, max: 100, step: 1, group: 'Axle & rims', default: 45 },
+    { key: 'axleT', label: 'Axle tube wall', unit: 'mm', type: 'number', min: 0.8, max: 8, step: 0.1, group: 'Axle & rims', default: 3 },
+    { key: 'spokeDepth', label: 'Rim spoke axial depth', unit: 'mm', type: 'number', min: 10, max: 60, step: 1, group: 'Axle & rims', default: 30, help: 'Six-spoke cast/forged wheel; spoke cross-section is thickness × axial depth.' },
+    { key: 'spokeThk', label: 'Rim spoke thickness', unit: 'mm', type: 'number', min: 5, max: 30, step: 0.5, group: 'Axle & rims', default: 12 },
     { key: 'pInf', label: 'Inflation pressure', unit: 'kPa', type: 'range', min: 150, max: 900, step: 10, group: 'Tyre', default: 600 },
     { key: 'Crr0', label: 'Reference C_rr (450 kPa, ref. load)', type: 'number', min: 0.002, max: 0.03, step: 0.0005, group: 'Tyre', default: 0.006, auto: (c) => ({ value: c.vehicle.Crr, prov: 'user' }) },
     { key: 'kAlpha', label: 'Cornering stiffness / load', unit: '1/rad', type: 'number', min: 4, max: 25, step: 0.5, group: 'Tyre', default: 12, expert: true },
@@ -42,6 +51,38 @@ export default {
     const veh = ctx.vehicle, road = ROADS[p.road], mu = road.mu, v = kmh(p.speed), R = veh.wheelRadius, tyre = ctx.material('tyre'), rim = ctx.material('wheel');
     const s01 = ctx.upstream('s01'); const lay = wheelLayout(veh, s01?.frontFrac ?? veh.frontFrac); const loads = s01?.wheelLoads || threeWheelLoads(lay.pts, veh.mass * G0);
     const opts = { kAlpha: p.kAlpha, C: p.Cy, E: p.Ey };
+    // ---- Structural load cases for tyres, rims and the front axle (Revision 5 audit) ----
+    // A: 3 g vertical bump on the static wheel load. B: safe side-force limit (0.8 × 0.7 μ W, applied at CG height) × 1.5
+    // dynamic factor, tyre lateral force = μ × wheel load. C: emergency braking μ F_z at 1.5 × static load (forward transfer).
+    const Wt = veh.mass * G0, sideTot = 0.8 * 0.7 * mu * Wt, sideLoads = threeWheelLoads(lay.pts, Wt, 0, [{ Fy: -sideTot, z: veh.cgHeight }]);
+    const iF = loads.indexOf(Math.max(...loads.slice(0, 2))), FzS = loads[iF], FzSide = Math.max(...sideLoads.slice(0, 2)), FzRear = loads[2];
+    const tyreRating = (w, pk = p.pInf, D = 2 * R) => 1270 * (w / 40) ** 1.6 * (pk / 600) ** 0.6 * (D / 0.62) ** 0.6; // fit to ETRTO load tables for 35–80 mm high-pressure sizes
+    const needTyre = Math.max(1.25 * FzS, 1.15 * FzSide), widthIn = p.width;
+    if (p.widthAuto) { const W_ = [35, 40, 47, 50, 55, 62, 70, 80]; p.width = W_.find(w => tyreRating(w) >= needTyre) ?? 80; }
+    const ratingT = tyreRating(p.width);
+    const R0 = R + 0.12; // stub-arm height above ground (strut fairing line)
+    // hard point = the real body half-width at the front-axle station (CAD body section); the shoulder pod fairs the arm out to the spat
+    let axG = null; try { axG = vehicleAssembly(veh).meta.axle; } catch { axG = null; }
+    const yHard = axG?.bodyHalfWidth ?? 0.9 * (veh.width / 2) * 0.82, Larm = Math.max(0.08, veh.track / 2 - yHard - 0.05);
+    const amat = getMat(p.axleMat) || getMat('al-7075-t6'), isC = amat.cls === 'cfrp', sAllow = (isC ? 0.45 : 1) * amat.sy * 1e6, sFat = (isC ? 0.45 * 0.6 * amat.sy : amat.fatigue) * 1e6;
+    const cases = [
+      { name: 'A · 3 g bump', Fz: 3 * FzS, Fy: 0, Fx: 0 },
+      { name: 'B · side-force limit × 1.5', Fz: 1.5 * FzSide, Fy: 1.5 * mu * FzSide * 0.7, Fx: 0 },
+      { name: 'C · emergency braking', Fz: 1.5 * FzS, Fy: 0, Fx: mu * 1.5 * FzS },
+    ];
+    const tubeProps = (D, t) => { const Do = D / 1000, Di = Math.max(0, Do - 2 * t / 1000), I = Math.PI / 64 * (Do ** 4 - Di ** 4), J = 2 * I, A = Math.PI / 4 * (Do ** 2 - Di ** 2); return { I, J, A, c: Do / 2 }; };
+    const axleEval = (D, t) => { const tp = tubeProps(D, t); let worst = null;
+      for (const cs of cases) { const Mroll = cs.Fz * Larm + cs.Fy * R0, Myaw = cs.Fx * Larm, T = cs.Fx * R0, sig = Math.hypot(Mroll, Myaw) * tp.c / tp.I, tau = T * tp.c / tp.J, vm = Math.sqrt(sig * sig + 3 * tau * tau), SF = sAllow / vm; if (!worst || SF < worst.SF) worst = { ...cs, vm, SF }; }
+      const sAmp = 0.5 * FzS * Larm * tp.c / tp.I, sMean = FzS * Larm * tp.c / tp.I, SFf = 1 / (sAmp / sFat + sMean / (amat.su * 1e6 * (isC ? 0.45 : 1))); // Goodman, 1 g ± 0.5 g
+      const camber = deg((FzSide * Larm ** 2 / (2 * amat.E * 1e9 * tp.I)) + (FzSide * mu * 0.7 * R0 * Larm / (amat.E * 1e9 * tp.I)));
+      return { D, t, ...tp, worst, SFf, camber, mass: 2 * tp.A * (Larm + 0.15) * amat.rho };
+    };
+    let axle = axleEval(p.axleD, p.axleT);
+    if (p.axleAuto) { let best = null; for (let D = 25; D <= 80; D += 5) for (let t = 1; t <= 6; t += 0.5) { if (t > D / 6) continue; const e = axleEval(D, t); if (e.worst.SF >= 2 && e.SFf >= 1.5 && e.camber <= 0.5 && (!best || e.mass < best.mass)) best = e; } if (best) { axle = best; p.axleD = best.D; p.axleT = best.t; } }
+    // six-spoke rim: out-of-plane bending at the spoke root from the tyre lateral force (2 spokes share the moment)
+    const wmat = rim, FyWheel = 1.5 * mu * FzSide * 0.7, Mspoke = FyWheel * (R - 0.06) / 2, Zsp = (p.spokeThk / 1000) * (p.spokeDepth / 1000) ** 2 / 6, sigSp = Mspoke / Zsp, SFsp = (wmat.sy * 1e6) / sigSp;
+    const sigSpB = 3 * FzS * 0.5 * (R - 0.06) * 0.15 / (2 * (p.spokeDepth / 1000) * (p.spokeThk / 1000) ** 2 / 6), SFspB = (wmat.sy * 1e6) / Math.max(sigSp, sigSpB);
+    const structTbl = [['Outer-front tyre load at side-force limit', FzSide, 'N'], ['Tyre load rating (' + p.width + ' mm, ' + p.pInf + ' kPa)', ratingT, 'N'], ['Required rating', needTyre, 'N'], ['Front axle arm length (hard point → hub)', Larm * 1000, 'mm'], ['Axle tube', `Ø${axle.D} × ${axle.t} mm ${amat.name}`, ''], ['Axle governing case', axle.worst.name, ''], ['Axle static safety factor', axle.worst.SF, '×'], ['Axle fatigue factor (Goodman, 1 g ± 0.5 g)', axle.SFf, '×'], ['Camber change at side-force limit', axle.camber, '°'], ['Axle mass (both sides)', axle.mass, 'kg'], ['Rim spoke safety factor (lateral)', SFspB, '×'], ['Rear wheel load (static)', FzRear, 'N']];
     // force curves
     const al = linspace(-15, 15, 121), ka = linspace(-0.3, 0.3, 121);
     const Fz3 = [0.5, 1, 1.5].map(f => f * p.Fz);
@@ -114,6 +155,15 @@ export default {
     out.verdicts.push({ test: 'Bearing contact stress', status: p0 < 1.5e9 ? 'pass' : p0 < 4.2e9 ? 'warn' : 'fail', detail: `p₀ = ${fmt(p0 / 1e6, 4)} MPa at ${fmt(p.Fz, 4)} N wheel load (elliptical contact, groove conformity 0.52)${brgChosen ? ` — selected bearing ${brgChosen.name} (${brgChosen.d}×${brgChosen.D} mm, ${brgChosen.Z} × ${brgChosen.Dw} mm balls)` : ''}.`, fix: 'Select a larger bearing (higher C₀) or more balls.' });
     out.verdicts.push({ test: 'Rolling resistance assumption', status: CrrEff <= veh.Crr * 1.1 ? 'pass' : 'warn', detail: `Effective ${fmt(CrrEff, 3)} vs global assumption ${veh.Crr}.`, fix: 'Raise inflation pressure, use a low-hysteresis silica compound, or update the global C_rr in Suite 01 so energy results stay honest.' });
     out.verdicts.push({ test: 'Tyre thermal state', status: dT < 25 ? 'pass' : 'warn', detail: `ΔT ≈ ${fmt(dT, 3)} K at ${p.speed} km/h.` });
+    k('Tyre load margin', ratingT / Math.max(FzSide, 1), '×', `Load rating ${fmt(ratingT, 4)} N (${p.width} mm at ${p.pInf} kPa) ÷ outer-front load ${fmt(FzSide, 4)} N at the safe side-force limit.${p.widthAuto && p.width !== widthIn ? ` Auto-sized from ${widthIn} mm.` : ''}`, 'calc', ratingT >= needTyre ? 'ok' : 'bad');
+    k('Front axle safety factor', axle.worst.SF, '×', `Ø${axle.D} × ${axle.t} mm ${amat.name}; governing case ${axle.worst.name} (von Mises ${fmt(axle.worst.vm / 1e6, 3)} MPa).`, 'calc', axle.worst.SF >= 2 ? 'ok' : axle.worst.SF >= 1.5 ? 'warn' : 'bad');
+    k('Front axle fatigue factor', axle.SFf, '×', 'Goodman: mean 1 g, amplitude 0.5 g road loading for 10⁷ cycles.', 'calc', axle.SFf >= 1.5 ? 'ok' : 'warn');
+    k('Rim spoke safety factor', SFspB, '×', `Six-spoke ${wmat.name} wheel, spokes ${p.spokeThk} × ${p.spokeDepth} mm, lateral tyre force ${fmt(FyWheel, 4)} N.`, 'calc', SFspB >= 2 ? 'ok' : SFspB >= 1.5 ? 'warn' : 'bad');
+    out.verdicts.push({ test: 'Tyre load rating', status: ratingT >= needTyre ? 'pass' : 'fail', detail: `${p.width} mm tyre rated ${fmt(ratingT, 4)} N vs required ${fmt(needTyre, 4)} N (1.25 × static ${fmt(FzS, 4)} N; 1.15 × side-limit ${fmt(FzSide, 4)} N).`, fix: 'Use the auto-sized width or raise the pressure within the rim rating.' });
+    out.verdicts.push({ test: 'Front axle strength, fatigue & camber', status: axle.worst.SF >= 2 && axle.SFf >= 1.5 && axle.camber <= 0.5 ? 'pass' : axle.worst.SF >= 1.5 ? 'warn' : 'fail', detail: `SF ${fmt(axle.worst.SF, 3)} (${axle.worst.name}), fatigue ${fmt(axle.SFf, 3)}, camber ${fmt(axle.camber, 3)}°, ${fmt(axle.mass, 3)} kg for both stub arms.`, fix: 'Enable auto-sizing, choose a stronger tube material or move the hard points outboard.' });
+    out.verdicts.push({ test: 'Rim spokes', status: SFspB >= 2 ? 'pass' : SFspB >= 1.5 ? 'warn' : 'fail', detail: `Safety factor ${fmt(SFspB, 3)} on yield at the spoke root under ${fmt(FyWheel, 4)} N lateral and 3 g bump.`, fix: 'Deepen the spokes axially (bending ∝ depth²) or use a forged disc wheel.' });
+    out.tables.push({ title: 'Tyre, rim & front-axle structural check (load cases A bump · B side limit · C braking)', cols: ['Item', 'Value', 'Unit'], rows: structTbl });
+    out.explain.push({ title: 'Why the tyres and axle were re-sized', text: `In a strong side wind the wing pushes the car sideways and the outer front wheel carries most of the front load (${fmt(FzSide, 4)} N against ${fmt(FzS, 4)} N static). A narrow 40 mm tyre is rated ≈ ${fmt(tyreRating(40), 4)} N, so the width is auto-sized to ${p.width} mm. Each front wheel hangs on a ${fmt(Larm * 1000, 3)} mm stub arm from the body; it is sized for a 3 g bump, 1.5 × the side-force limit and full braking with a factor of 2 on yield.` });
     // tables
     out.tables.push({ title: 'Per-wheel results', cols: ['Wheel', 'F_z (N)', 'C_rr', 'Rolling force (N)', 'Bearing torque (N·m)', 'Bearing loss (W)', 'Lateral capacity (N)'], rows: loads.map((F, i) => [lay.pts[i][2], F, crrW[i], crrW[i] * F, 2 * bw[i].M, bw[i].P, mu * F]) });
     out.tables.push({ title: 'Magic Formula parameter set (export)', cols: ['Parameter', 'Lateral', 'Longitudinal'], rows: [['B (per rad / per unit slip)', p.kAlpha * p.Fz / (p.Cy * mu * p.Fz), p.kKappa * p.Fz / (1.65 * mu * p.Fz)], ['C', p.Cy, 1.65], ['D = μF_z (N)', mu * p.Fz, mu * p.Fz], ['E', p.Ey, 0.2]] });
@@ -213,7 +263,7 @@ export default {
         A.bar(g, { x: qx, y: py + qh + 54, w: qw, value: qMax * 1.0 / 1000, max: qMax / 1000, label: 'Peak line load', unit: ' kN/m', color: '#eab308' });
       }, explain: 'Brush-model contact patch solved at each instant of a ±10° slip-angle sweep: pressure distribution (colour), bristle lateral deflection (arrows, magnified as labelled), adhesion/sliding boundary (red) and the resulting lateral force traced on the brush and Magic-Formula curves.' });
     } });
-    out.outputs = { Crr: CrrEff, rollingForce_N: Froll, muPeak: mu, Fymax_N: FyCap, FxDrivenMax_N: FxCap, bearingLoss_W: Pbear, wheelInertia: Jw, rotEqMass: mRotEq, contactPressure_kPa: pc, kAlpha: p.kAlpha, Calpha_N_rad: p.kAlpha * p.Fz, road: p.road, muLock: road.muLock };
+    out.outputs = { tyreWidth_mm: p.width, tyreRating_N: ratingT, axleD_mm: axle.D, axleT_mm: axle.t, axleMass_kg: axle.mass, axleSF: axle.worst.SF, axleFatigueSF: axle.SFf, spokeSF: SFspB, FzSideLimit_N: FzSide, Crr: CrrEff, rollingForce_N: Froll, muPeak: mu, Fymax_N: FyCap, FxDrivenMax_N: FxCap, bearingLoss_W: Pbear, wheelInertia: Jw, rotEqMass: mRotEq, contactPressure_kPa: pc, kAlpha: p.kAlpha, Calpha_N_rad: p.kAlpha * p.Fz, road: p.road, muLock: road.muLock };
     out.headline = `${p.road}: μ = ${mu}, effective C_rr ${fmt(CrrEff, 3)}, rolling ${fmt(Froll * v, 3)} W + bearings ${fmt(Pbear, 3)} W at ${p.speed} km/h; lateral grip ${fmt(FyCap, 4)} N vs wing side force ${fmt(Fs, 4)} N.`;
     void deg; void range;
     return out;

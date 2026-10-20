@@ -1,11 +1,12 @@
 // Release notes shown in the update / "What's new" pop-up. Newest first; `id` must increase.
 export const CHANGELOG = [
-  { id: 7, date: '2026-10-19', title: 'AeroArch — the new PHOENIX-ATMOS-XP automobile', items: [
-    'One closed, swept “halo” arch wing replaces separate wings: 3.0 m tall (was 4.06 m), rising behind a forward teardrop cockpit on an airfoil-shaped lifting body with wheel spats and a pearl-white/graphite/cobalt finish.',
-    'Far more robust: tip-over wind 16 m/s with the arch working and 40 m/s feathered (was 9.3 m/s); 268 kg; the arch doubles as a roll-over hoop; directionally stable.',
-    'As fast as the original design from 4 m/s of wind and faster above 8 m/s (e.g. 79 vs 78 km/h at 10 m/s), within the safe tip-over and grip limits; slightly slower only in very light wind.',
-    'The whole arch turns on a ring track around the cockpit for any wind direction and feathers itself in gusts.',
-    'Coupled inputs now update automatically from upstream results; many hidden calculation issues fixed across the suites.',
+  { id: 7, date: '2026-10-20', title: 'Revision 5.1 — the new PHOENIX-ATMOS-XP automobile', items: [
+    'One closed, splayed arch wing on a single compliant titanium pylon: it self-trims to the wind by bending — no ring track, bearing, hinge, drive or lock. Lifting body 3.5 m long, 2.0 m wide over the wheel pods, 3.1 m tall, 181 kg.',
+    'Faster than every earlier revision and the original at every wind: 46.5 / 61 / 73.5 / 82.5 / 94 / 104 km/h at 2 / 2.5 / 3 / 4 / 6 / 10 m/s (same models for every design).',
+    'Much more stable: stability factor 1.61, stays upright to 26.5 m/s of side wind (17 m/s even if gust washout failed), nose-over limit 1.6 g with a front-brake limiter.',
+    'Lower drag (C_dA 0.127 m²), 53 W at 20 km/h, cheaper to build and run, 20 g CO₂e/km over its life, fewest moving parts (8 mechanisms), 43 wind-free starts per sunny day.',
+    'Every part checked: tyres, rims and front axle; pylon, root frame and brush seal; rear fork; crash cone, side sills and harness anchors; buffer containment; collectors and canopy heat gain; passive (non-electric) conspicuity.',
+    'Honest limits shown in the suites: the heat-driven backup cannot give an hour of driving with demonstrated materials (the latent-heat store is an optional research setting), night road use needs a non-electric lamp approval, and the brush-seal light-wind gain needs a wind-tunnel check.',
   ] },
   { id: 6, date: '2026-10-19', title: 'Visible wing evolution, reset controls & update notices', items: [
     'Suite 08: new 3D fluid–structure playback — the gust-loaded wing visibly bends and twists (labelled magnification with true-scale values), colours change over the gust, flow particles stream past and the HUD shows the solved values live.',

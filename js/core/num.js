@@ -7,7 +7,7 @@ export const G0 = 9.80665, R_AIR = 287.058, R_V = 461.495, SIGMA = 5.670374419e-
 // ---------- array helpers ----------
 export const linspace = (a, b, n) => { const o = new Array(n); if (n === 1) { o[0] = a; return o; } for (let i = 0; i < n; i++) o[i] = a + (b - a) * i / (n - 1); return o; };
 export const logspace = (a, b, n) => linspace(a, b, n).map(v => 10 ** v);
-export const range = (a, b) => b === undefined ? Array.from({ length: Math.max(0, a | 0) }, (_, i) => i) : Array.from({ length: Math.max(0, (b - a) | 0) }, (_, i) => a + i);
+export const range = (a, b) => { const s = b === undefined ? 0 : a, n = Math.max(0, ((b === undefined ? a : b - a) | 0)), o = new Array(n); for (let i = 0; i < n; i++) o[i] = s + i; return o; };
 export const sum = (a) => { let s = 0; for (const v of a) s += v; return s; };
 export const mean = (a) => a.length ? sum(a) / a.length : NaN;
 export const std = (a) => { const m = mean(a); return Math.sqrt(sum(a.map(v => (v - m) ** 2)) / Math.max(1, a.length - 1)); };
@@ -158,7 +158,7 @@ export const transpose = (A) => { const C = zeros(A[0].length, A.length); for (l
 export const dot = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };
 export const norm = (a) => Math.sqrt(dot(a, a));
 export function luSolve(Ain, bin) { // Gaussian elimination with partial pivoting
-  const n = Ain.length, A = Ain.map(r => Float64Array.from(r)), b = Float64Array.from(bin);
+  const n = Ain.length, A = new Array(n), b = new Float64Array(bin); for (let i = 0; i < n; i++) A[i] = new Float64Array(Ain[i]);
   for (let k = 0; k < n; k++) {
     let p = k, mx = Math.abs(A[k][k]);
     for (let i = k + 1; i < n; i++) if (Math.abs(A[i][k]) > mx) { mx = Math.abs(A[i][k]); p = i; }

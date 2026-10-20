@@ -12,6 +12,7 @@ export async function runSuite(id, overrides = {}, { persist = false, onProgress
   const { values } = resolveParams(def, ctx, false); const p = { ...values, ...overrides };
   if (persist) for (const [k, v] of Object.entries(overrides)) store.setParam(id, k, v, 'user');
   const t0 = performance.now(); const res = await def.run(p, ctx); res.elapsed = performance.now() - t0;
+  for (const k of res.kpis || []) if (typeof k.value === 'number' && !Number.isFinite(k.value)) { k.value = Number.isNaN(k.value) ? 'not defined for these inputs' : (k.value > 0 ? 'unbounded (∞) — never reached' : '−∞'); k.unit = ''; k.status ||= 'warn'; } // same readable form as the suite page
   store.publish(id, res.outputs || {}, { credibility: res.credibility || 'Analytical screening', hash: hashObj(p) });
   return { def, res, p };
 }

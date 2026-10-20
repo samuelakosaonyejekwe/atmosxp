@@ -113,9 +113,11 @@ export function flutterModeShape(sec, k, fTarget) {
 }
 
 // Typical-section V–g flutter (k-method). sec: {m (kg/m), Ia (kg·m²/m about EA), xa (CG aft of EA, semichords), a (EA position, semichords aft of mid-chord), b (semichord), wh, wa (rad/s), rho, gs}
-export function flutterVg(sec, { kmax = 3, kmin = 0.02, nk = 220 } = {}) {
+export function flutterVg(sec, { kmax = 3, kmin = 0.02, nk = 260, vmax = 60 } = {}) {
   const { m, Ia, xa, a, b, wh, wa, rho } = sec, Sa = m * xa * b, Kh = m * wh * wh, Ka = Ia * wa * wa, gs = sec.gs ?? 0.02;
-  const ks = linspace(Math.log(kmax), Math.log(kmin), nk).map(Math.exp); const br = [[], []]; let prev = null;
+  // the airspeed sweep must reach vmax (≥ 1.2 × the design speed) for the LOWEST mode, independent of any scenario wind:
+  // V = ω·b/k, so k must go down to ω_min·b/vmax (a soft flexure pitch mode needs very low reduced frequencies)
+  const kLo = Math.min(kmin, 0.8 * Math.min(wh, wa) * b / Math.max(1, vmax)), ks = linspace(Math.log(kmax), Math.log(Math.max(1e-5, kLo)), nk).map(Math.exp); const br = [[], []]; let prev = null;
   for (const k of ks) {
     const C = theodorsen(k), i = cx(0, 1), P = Math.PI * rho;
     // non-dimensional aerodynamic coefficients (Theodorsen), multiplied by ω²; see method notes
@@ -134,7 +136,9 @@ export function flutterVg(sec, { kmax = 3, kmin = 0.02, nk = 220 } = {}) {
   let Vf = Infinity, ff = NaN, mode = -1;
   br.forEach((B, j) => { const s = B.slice().sort((p, q) => p.V - q.V); for (let i = 1; i < s.length; i++) if (s[i - 1].g < gs && s[i].g >= gs) { const t = (gs - s[i - 1].g) / (s[i].g - s[i - 1].g), V = s[i - 1].V + t * (s[i].V - s[i - 1].V); if (V < Vf) { Vf = V; ff = s[i - 1].f + t * (s[i].f - s[i - 1].f); mode = j; } break; } });
   const e = (a + 0.5) * b, VD = e > 0 ? Math.sqrt(Ka / (0.5 * rho * 2 * b * 2 * Math.PI * e)) : Infinity;
-  return { branches: br.map(B => B.slice().sort((p, q) => p.V - q.V)), Vflutter: Vf, fFlutter: ff, mode, Vdiv: VD };
+  // highest airspeed actually reached by every tracked branch: 'no crossing' only means stable up to this speed
+  const vSwept = Math.max(...br.map(B => B.length ? Math.max(...B.map(q => q.V)) : 0)); // a branch that ends early has become aerodynamically overdamped (no oscillatory root), not unstable
+  return { branches: br.map(B => B.slice().sort((p, q) => p.V - q.V)), Vflutter: Vf, fFlutter: ff, mode, Vdiv: VD, vSwept };
 }
 
 // Transient gust / motion response of the wing beam: modal Newmark-β structure + Wagner/Küssner indicial strip aerodynamics.

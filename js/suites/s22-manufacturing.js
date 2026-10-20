@@ -9,7 +9,7 @@ const AM = {
   'L-PBF Ti-6Al-4V': { minStrut: 0.30, minHole: 0.8, overhang: 45, Ra: 12, density: 99.7, rate: 12, costCm3: 2.2, fatigueKd: 0.45 },
   'EBM Ti-6Al-4V': { minStrut: 0.60, minHole: 1.2, overhang: 50, Ra: 25, density: 99.5, rate: 55, costCm3: 1.8, fatigueKd: 0.35 },
   'L-PBF NiTi': { minStrut: 0.25, minHole: 0.8, overhang: 45, Ra: 10, density: 99.3, rate: 6, costCm3: 4.5, fatigueKd: 0.4 },
-  'SLS PA12': { minStrut: 0.80, minHole: 1.5, overhang: 90, Ra: 15, density: 96, rate: 120, costCm3: 0.15, fatigueKd: 0.6 },
+  'SLS PP': { minStrut: 0.80, minHole: 1.5, overhang: 90, Ra: 15, density: 96, rate: 120, costCm3: 0.15, fatigueKd: 0.6 },
 };
 const R = 8.314;
 
@@ -201,27 +201,31 @@ export default {
     out.recs.push({ level: 'sustain', text: `Processing electricity at ${p.grid} gCO₂/kWh: prefer out-of-autoclave prepregs and near-net-shape AM with powder reuse; schedule energy-intensive cures when grid carbon is low.`, basis: 'BOM process energy × grid intensity' });
     out.recs.push({ level: 'econ', text: `At ${p.quantity} units the average unit cost is ${fmt(avgUnit, 3)} USD (first unit ${fmt(proto, 3)} USD). Labour-dominated parts (high fabricated/material ratio) are the main targets for tooling investment.`, basis: 'Learning curve & BOM' });
     out.explain.push({ title: 'Why tolerances matter for the hub', text: 'The direct-rim drive transmits actuator work through contact between flexure shoes and a stationary cam. Clearance scatter changes preload and therefore the force–displacement path of every cartridge; too small and the cartridge binds (seizure risk), too large and stroke is lost to free play.' });
-    // ---------- Revision 4 AeroArch: closed-frame CFRP arch, ring track & slewing bearing, fold hinge ----------
-    if ((ctx.vehicle.wingConfig || 'tandem') === 'arch') {
-      const { vehicleAssembly } = await import('../core/cad.js'); const asmA = vehicleAssembly(ctx.vehicle), ringM = asmA.parts.find(m => /ring track/i.test(m.name)), bb = ringM ? ringM.bbox() : [-0.8, -0.8, 0, 0.8, 0.8, 0];
-      const Rr = Math.max(0.3, (bb[3] - bb[0]) / 2), aRing = ctx.material('rootInsert')?.alpha ?? 8.6, aBody = 2.0, dTop = 40;
-      // slewing-bearing axial clearance (spec 5–80 µm): bearing internal clearance 40 ± 10 µm, CFRP seat flatness (after in-situ machining ±40 µm),
-      // bolt-preload distortion ±10 µm, differential thermal growth of the metal ring vs the CFRP body (radial growth resolved through 45° contact)
-      const R3 = rng(2203), axial = range(20000).map(() => 0.040 + R3.normal(0, 0.010 / 3) - Math.abs(R3.normal(0, 0.040 / 3)) * 0.5 - R3.normal(0, 0.010 / 3) - Rr * (aRing - aBody) * 1e-6 * dTop * R3() * 0.5);
-      const bind = axial.filter(c => c < 0.005).length / axial.length, slack = axial.filter(c => c > 0.080).length / axial.length;
-      out.kpis.push({ label: 'Arch ring-track bearing axial clearance (P5–P95)', value: `${fmt(percentile(axial, 0.05) * 1000, 3)}–${fmt(percentile(axial, 0.95) * 1000, 3)}`, unit: 'µm', explain: `Slewing ring Ø${fmt(2 * Rr * 1000, 4)} mm on the CFRP body seat: bearing clearance, seat flatness, preload distortion and differential expansion over ±${dTop} K (Monte Carlo 20 000).`, prov: 'calc', status: bind < 0.01 && slack < 0.05 ? 'ok' : 'warn' });
-      out.verdicts.push({ test: 'Arch ring track: no binding, limited play', status: bind < 0.01 && slack < 0.05 ? 'pass' : bind < 0.05 ? 'warn' : 'fail', detail: `P(binding, clearance < 5 µm) = ${fmt(bind * 100, 3)} %; P(play > 80 µm) = ${fmt(slack * 100, 3)} %. Ring Ø ${fmt(2 * Rr, 3)} m.`, fix: 'Finish-machine the bearing seat after bonding (flatness ≤ 0.03 mm), use a preloaded four-point-contact ring and a titanium seat insert to limit expansion mismatch.' });
-      out.tables.push({ title: 'AeroArch manufacturing route & inspection', cols: ['Item', 'Specification'], rows: [
-        ['Arch closed frame', 'CFRP prepreg over PET-foam core; legs + bridge laid up as one closed frame and cured once (OOA ≤ 120 °C or autoclave 180 °C, 6 bar); ±45° skins for torsion, 0° caps in leg spars, co-cured shear webs'],
-        ['Bridge collector', 'Glazed selective absorber bonded to the bridge top after cure (structural epoxy, 80 °C post-cure)'],
-        ['Ring-track seat', `Ø${fmt(2 * Rr * 1000, 4)} mm titanium seat bonded to the fore/aft bulkheads, machined in situ: flatness ≤ 0.03 mm, roundness ≤ 0.05 mm`],
-        ['Slewing bearing', 'Four-point-contact / crossed-roller ring, internal clearance 30–50 µm, bolted with torque-angle controlled preload'],
-        ['Incidence drive & breakaway lock', 'Driver-operated worm/cable drive; torque-limited detent set ±10 % of the breakaway torque and recorded'],
-        ['Fold hinge & latch', 'Machined Ti clevis, PTFE-lined pins Ø25 H7/f7, positive latch with visual indicator; proof load 1.5× limit'],
-        ['Inspection', 'Tap/ultrasonic of the closed frame each service; bearing friction torque and breakaway torque every 6 months']] });
+    // ---------- Revision 5.1 AeroArch: closed CFRP arch on ONE centreline pylon flexure (no rotating parts) ----------
+    if ((ctx.vehicle.wingConfig || 'tandem') === 'arch' && ctx.vehicle.archRoot !== 'ring') {
+      // same geometry as Suite 09: Ti rod cage (n rods Ø d × L at pitch radius R) + pre-buckled negative-stiffness compensator
+      const fx = ctx.material('flexure') || { name: 'Titanium β-21S', E: 105, sy: 1300, su: 1400, fatigue: 600, nu: 0.33 }, P9 = ctx.store?.params?.('s09') || {}, P7 = ctx.store?.params?.('s07') || {};
+      const n = P9.cageN ?? 6, d = P9.cageD ?? 11.0, Lr = P9.cageL ?? 550, R = P9.cageR ?? 105, thA = (P9.flexAmp ?? 8) * Math.PI / 180, thM = (P7.flexMax ?? 25) * Math.PI / 180, kT = P7.flexK ?? 60, tol = (P9.trimTol ?? 0.5) / 100, drift = (P9.driftRes ?? 0.3) / 100;
+      const E = (fx.E || 105) * 1e3, Gm = E / (2 * (1 + (fx.nu ?? 0.33))), su = fx.su || 1400, endur = (fx.fatigue || 0.45 * su) * 0.8; // MPa; surface factor 0.8 (centreless-ground, shot-peened rods)
+      const sb = (th) => 6 * E * (d / 2) * R * th / (Lr * Lr), tt = (th) => Gm * (d / 2) * th / Lr, sa = Math.hypot(sb(thA), Math.sqrt(3) * tt(thA)), smx = Math.hypot(sb(thM), Math.sqrt(3) * tt(thM));
+      const SFfat = 1 / (sa / endur + 0.1 * (fx.sy || 1300) / su), SFst = (fx.sy || 1300) / smx; // mean stress ≈ 10 % of yield from the operating axial load
+      const kOf = (dd, LL, RR, Em) => { const I = Math.PI * dd ** 4 / 64; return n * 12 * Em * I * RR * RR / LL ** 3 + n * Em / 2.66 * 2 * I / LL; };
+      const R4 = rng(2204), k0 = kOf(d, Lr, R, E), kSamp = range(20000).map(() => kOf(R4.normal(d, 0.01 / 3), R4.normal(Lr, 0.1 / 3), R4.normal(R, 0.02 / 3), E * R4.normal(1, 0.03 / 3)));
+      const spread = Math.max(percentile(kSamp, 0.975) / k0 - 1, 1 - percentile(kSamp, 0.025) / k0), kPos = k0 * 1e-3, dNet = kPos * Math.hypot(tol, drift);
+      const fatOK = SFfat >= 2 && SFst >= 2, stiffOK = kT - dNet >= 5;
+      out.kpis.push({ label: 'Pylon rod cage: fatigue SF (Goodman, 10⁷ cycles) / static SF at the yaw stop', value: `${fmt(SFfat, 3)} / ${fmt(SFst, 3)}`, unit: '', explain: `${n} × ${fx.name} rods Ø${d} × ${Lr} mm at R ${R} mm; ±${P9.flexAmp ?? 8}° yaw → equivalent amplitude ${fmt(sa, 3)} MPa vs endurance ${fmt(endur, 3)} MPa (0.8 surface factor). Requirement SF ≥ 2.`, prov: 'calc', status: fatOK ? 'ok' : 'bad' });
+      out.kpis.push({ label: 'Pylon stiffness: as-machined spread (95 %) / net uncertainty after trim', value: `${fmt(spread * 100, 3)} % / ±${fmt(dNet, 3)} N·m/rad`, unit: '', explain: `Monte Carlo of rod diameter ±0.01 mm, length ±0.1 mm, pitch radius ±0.02 mm and modulus ±3 % on k_pos = ${fmt(kPos, 4)} N·m/rad. The compensator preload is trimmed at assembly to ±${fmt(tol * 100, 3)} %; the same-alloy compensator leaves ±${fmt(drift * 100, 3)} % residual thermal drift. Net target ${kT} N·m/rad must stay ≥ 5.`, prov: 'calc', status: stiffOK ? 'ok' : 'warn' });
+      out.verdicts.push({ test: 'Centreline pylon flexure manufacturability & fatigue SF ≥ 2 (no rotating parts)', status: fatOK && stiffOK ? 'pass' : fatOK ? 'warn' : 'fail', detail: `Rod fatigue SF ${fmt(SFfat, 3)}, static SF ${fmt(SFst, 3)} (both must be ≥ 2); net stiffness ${kT} ± ${fmt(dNet, 3)} N·m/rad after trim (as-machined spread ±${fmt(spread * 100, 3)} % of ${fmt(kPos, 4)} would be ±${fmt(spread * kPos, 3)} N·m/rad without trimming).`, fix: 'Longer rods or a smaller pitch radius (lower bending strain); trim the compensator preload on a yaw-stiffness rig; raise the net target if the trim tolerance cannot be held.' });
+      out.tables.push({ title: 'AeroArch (Revision 5.1) manufacturing route & inspection', cols: ['Item', 'Specification'], rows: [
+        ['Arch closed frame', 'CFRP prepreg over PET-foam core; legs + bridge + root crossbeam (box ≈ 120 × 80 × 2 mm) as one closed loop, single cure (OOA ≤ 120 °C or autoclave 180 °C, 6 bar)'],
+        ['Pylon rod cage', `${n} × ${fx.name} bars, centreless ground Ø${d} ± 0.01 mm, ${Lr} mm free length at R ${R} mm, potted into Ti end plates, shot-peened, aged`],
+        ['Negative-stiffness compensator', 'Pair of pre-buckled bistable β-21S strips acting on the crossbeam; preload set by a locked shim stack on a yaw-stiffness rig (static adjustment, not a mechanism)'],
+        ['Root frame', 'Transverse CFRP frame at x ≈ 0.37 L tied to the keel; potted Ti inserts ≥ 6 kN; progressive elastomer stops at ±' + fmt(thM * 180 / Math.PI, 3) + '°'],
+        ['Bistable camber skin', 'Prestressed CFRP shell cured on a doubly-curved tool; snap-load check on every panel'],
+        ['Inspection', 'Yaw stiffness (moment vs angle) at assembly and every 6 months; rod eddy-current check; tap test of the closed frame']] });
     }
     // ---------- Revision 2.2: telescoping reef joint (sliding fit Ø40 H7/g6 with PTFE-lined bushings) ----------
-    if ((ctx.vehicle.wingReefSpan ?? ctx.vehicle.wingHeight) < ctx.vehicle.wingHeight - 1e-6) { const Dn = 40, hole = [0, 0.025], shaft = [-0.025, -0.009], liner = 0.010, dTmax = 40, aIn = (ctx.material('rootInsert')?.alpha ?? 8.6), aOut = 2.0;
+    if (ctx.vehicle.wingConfig !== 'arch' && (ctx.vehicle.wingReefSpan ?? ctx.vehicle.wingHeight) < ctx.vehicle.wingHeight - 1e-6) { const Dn = 40, hole = [0, 0.025], shaft = [-0.025, -0.009], liner = 0.010, dTmax = 40, aIn = (ctx.material('rootInsert')?.alpha ?? 8.6), aOut = 2.0;
       const thermal = Dn * (aIn - aOut) * 1e-6 * dTmax; // mm: hot day closes the gap when the metal inner sleeve grows more than the CFRP outer tube
       const R2 = rng(2202), cl = range(20000).map(() => (R2.normal((hole[0] + hole[1]) / 2, (hole[1] - hole[0]) / 6) - R2.normal((shaft[0] + shaft[1]) / 2, (shaft[1] - shaft[0]) / 6)) - Math.abs(R2.normal(0, liner / 3)) - thermal * R2());
       const jam = cl.filter(c => c < 0.004).length / cl.length, play = cl.filter(c => c > 0.060).length / cl.length;

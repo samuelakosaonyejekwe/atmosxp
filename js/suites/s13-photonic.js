@@ -4,10 +4,32 @@ import { SCENARIOS, derive } from '../core/env.js';
 import { linspace, fmt, trapz, max, argmax, range, KELVIN, SIGMA, goldenMin } from '../core/num.js';
 import { forUse, get } from '../core/materials.js';
 import { vehicleAssembly } from '../core/cad.js';
+// Glazing options: solar transmittance, thermal-IR emittance (opaque glazings ≈ 0.9), expansion, continuous service limit, areal mass
+const GLAZING = {
+  glass: { name: 'Low-iron tempered glass 3.2 mm', tau: 0.91, eps: 0.88, cte: 9e-6, Tmax: 200, kgm2: 8.0, impact: 'brittle — unsuitable as a roll-over contact surface' },
+  pc: { name: 'Hard-coated polycarbonate 2 mm (UV/abrasion coat)', tau: 0.88, eps: 0.9, cte: 68e-6, Tmax: 115, kgm2: 2.4, impact: 'impact-tough — suitable as roll-over contact surface' },
+  etfe: { name: 'ETFE film 0.2 mm (tensioned)', tau: 0.94, eps: 0.55, cte: 100e-6, Tmax: 150, kgm2: 0.35, impact: 'tough film, but partly transparent to thermal IR (higher losses)' },
+};
 // Sky-facing area of a conformal thermal patch (thin closed shell → half its surface area), cached per vehicle
 const _areaCache = new Map();
 function patchInfo(veh, comp) { const key = JSON.stringify(veh) + comp; if (!_areaCache.has(key)) { try { const asm = vehicleAssembly(veh), parts = asm.parts.filter(m => m.component === comp); let area = parts.reduce((s, m) => s + m.area() / 2, 0), z = parts.length ? Math.max(...parts.map(m => m.bbox()[5])) : NaN; if (comp === 'collector' && asm.meta.arch?.collectorArea) { area = parts.reduce((s2, m) => s2 + (/bridge/i.test(m.name) ? asm.meta.arch.collectorArea : m.area() / 2), 0); } _areaCache.set(key, { area, z, names: parts.map(m => m.name) }); } catch { _areaCache.set(key, { area: 0, z: NaN, names: [] }); } } return _areaCache.get(key); }
 function patchArea(veh, comp) { return patchInfo(veh, comp).area; }
+// Revision 6: sky-facing (upward-projected) areas of the current CAD surfaces that can carry the selective absorber
+// and glazing in addition to the nose and bridge collectors. The canopy and the rear-deck radiator stay clear.
+const _skyCache = new Map();
+export function skyAreas(veh) {
+  const key = JSON.stringify(veh); if (_skyCache.has(key)) return _skyCache.get(key);
+  let r = { nose: 0, bridge: 0, deck: 0, bridgeRest: 0, crossbeam: 0, fairings: 0, pods: 0, ext: 0, existing: 0, total: 0 };
+  try {
+    const asm = vehicleAssembly(veh), up = (m) => { if (!m) return 0; const P = m.p, I = m.i; let a = 0; for (let k = 0; k < I.length; k += 3) { const A = I[k] * 3, B = I[k + 1] * 3, C = I[k + 2] * 3; const ux = P[B] - P[A], uy = P[B + 1] - P[A + 1], vx = P[C] - P[A], vy = P[C + 1] - P[A + 1], nz = (ux * vy - uy * vx) / 2; if (nz > 0) { const uz = P[B + 2] - P[A + 2], vz = P[C + 2] - P[A + 2], nx = (uy * vz - uz * vy) / 2, ny = (uz * vx - ux * vz) / 2; if (nz / Math.hypot(nx, ny, nz) > 0.5) a += nz; } } return a; };
+    const f = (re) => asm.parts.filter(m => re.test(m.name)), sum = (arr) => arr.reduce((s2, m) => s2 + up(m), 0);
+    const body = sum(f(/^Monocoque body/i)), canopy = sum(f(/canopy/i)), rad = sum(f(/Radiative-cooling/i)), nose = sum(f(/collector \(nose/i)), bridgeCol = sum(f(/collector \(arch bridge/i)), bridge = sum(f(/Arch top bridge/i));
+    r.nose = nose; r.bridge = bridgeCol; r.deck = Math.max(0, body - canopy - rad - nose); r.bridgeRest = Math.max(0, bridge - bridgeCol);
+    r.crossbeam = 0.8 * sum(f(/root crossbeam/i)); r.fairings = sum(f(/root fairing/i)); r.pods = sum(f(/shoulder wheel pod/i));
+    r.existing = nose + bridgeCol; r.ext = r.deck + r.bridgeRest + r.crossbeam + r.fairings + r.pods; r.total = r.existing + r.ext;
+  } catch { /* no CAD — leave zeros */ }
+  _skyCache.set(key, r); return r;
+}
 
 const caseFrom = (env, kind) => {
   // pick representative day (max irradiance) and night (median sky depression) hours from the Suite 05 series
@@ -55,7 +77,15 @@ export default {
     { key: 'Acol', label: 'Absorber (collector) area', unit: 'm²', type: 'number', min: 0.1, max: 20, step: 0.1, group: 'Geometry', default: 4, auto: (c) => { const A = patchArea(c.vehicle, 'collector'); return A ? { value: +A.toFixed(2), prov: 'generated' } : undefined; }, help: 'Automatic: area of the conformal collector surface in the current CAD (Suite 02).' },
     { key: 'Arad', label: 'Radiator area', unit: 'm²', type: 'number', min: 0.1, max: 20, step: 0.1, group: 'Geometry', default: 4, auto: (c) => { const A = patchArea(c.vehicle, 'radiator'); return A ? { value: +A.toFixed(2), prov: 'generated' } : undefined; }, help: 'Automatic: area of the conformal radiative-cooling surface in the current CAD. The specification’s reference case uses 4 m².' },
     { key: 'glazed', label: 'Glazed collector (low-iron glass + insulated back)', type: 'bool', group: 'Collector construction', default: true, help: 'Revision 2 (D5): glazing suppresses convective and IR losses of the absorber.' },
-    { key: 'tauGlass', label: 'Glazing solar transmittance τ', type: 'number', min: 0.5, max: 0.98, step: 0.01, group: 'Collector construction', default: 0.91 },
+    { key: 'glazingMat', label: 'Glazing material', type: 'select', group: 'Collector construction', default: 'glass', auto: (c) => ({ value: c.vehicle.wingConfig === 'arch' ? 'pc' : 'glass', prov: 'generated' }), options: Object.entries(GLAZING).map(([value, g]) => ({ value, label: g.name })), help: 'Revision 5.1: the bridge is also the roll-over contact surface, so impact-tough hard-coated PC replaces glass.' },
+    { key: 'tauGlass', label: 'Glazing solar transmittance τ', type: 'number', min: 0.5, max: 0.98, step: 0.01, group: 'Collector construction', default: 0.91, auto: (c) => ({ value: GLAZING[c.vehicle.wingConfig === 'arch' ? 'pc' : 'glass'].tau, prov: 'library' }) },
+    { key: 'bondT', label: 'Structural silicone bond thickness', unit: 'mm', type: 'number', min: 1, max: 15, step: 0.5, group: 'Collector construction', default: 3 },
+    { key: 'panelL', label: 'Glazing tile size (segmented panels)', unit: 'm', type: 'number', min: 0.1, max: 2, step: 0.05, group: 'Collector construction', default: 0.25, help: 'Segmenting the PC glazing into small bonded tiles keeps the thermal-mismatch shear strain of the silicone bond within its allowable.' },
+    { key: 'canopyCoat', label: 'Canopy', type: 'select', group: 'Cabin', default: 'irpc', options: [{ value: 'clear', label: 'Clear PC 3–4 mm' }, { value: 'irpc', label: 'IR-reflective PC 3–4 mm (spectrally selective)' }] },
+    { key: 'cabinDT', label: 'Allowed cabin air rise above ambient', unit: 'K', type: 'number', min: 2, max: 20, step: 0.5, group: 'Cabin', default: 8 },
+    { key: 'collectorExtent', label: 'Collector extent (Revision 6 store charging)', type: 'select', group: 'Collector construction', default: 'existing', options: [{ value: 'all', label: 'All sky-facing upper surfaces (body deck, bridge, crossbeam, root fairings, pods)' }, { value: 'existing', label: 'Nose and bridge collectors only' }], help: 'Suite 14 compares both extents against the vehicle mass cap.' },
+    { key: 'collectorType', label: 'Collector construction for store charging', type: 'select', group: 'Collector construction', default: 'evaccpc', options: [{ value: 'flat', label: 'Glazed flat absorber (air gap)' }, { value: 'cpc', label: 'Static compound-parabolic troughs (C = 1.5, E–W axis, no tracking)' }, { value: 'evac', label: 'Evacuated flat glazing (2 × 2 mm glass, support pillars)' }, { value: 'evaccpc', label: 'Evacuated glazing over compound-parabolic troughs (no moving parts)' }] },
+    { key: 'TabsStore', label: 'Absorber temperature while charging the store', unit: '°C', type: 'number', min: 40, max: 200, step: 1, group: 'Operating point', default: 180, help: 'PCM melting point plus the loop-heat-pipe temperature drop (D-mannitol 167 °C + ≈ 10 K; erythritol 118 °C + ≈ 7 K).' },
     { key: 'Uback', label: 'Back/edge insulation loss coefficient', unit: 'W/m²K', type: 'number', min: 0.1, max: 5, step: 0.1, group: 'Collector construction', default: 0.8 },
     { key: 'opMode', label: 'Operating temperatures', type: 'select', group: 'Operating point', default: 'optimal', options: [{ value: 'optimal', label: 'Exergy-optimal (maximise Q·Carnot factor)' }, { value: 'fixed', label: 'Fixed offsets below' }] },
     { key: 'dThot', label: 'Absorber temperature above ambient (fixed mode)', unit: 'K', type: 'range', min: 1, max: 120, step: 1, group: 'Operating point', default: 25 },
@@ -79,7 +109,7 @@ export default {
     await ctx.yield();
     const hOf = (c) => p.shield ? 2 : TH.mcAdamsH(Math.max(c.Uz ?? c.U ?? 0, p.vConv / 3.6));
     const balance = (c, epsTab, T) => { const TaK = c.T + KELVIN, sky = TH.skySpectralEmissivity(TaK, c.eps ?? 0.8).fn, r = TH.radiativeTerms(epsTab, T, TaK, sky, c.ghi || 0); return { ...r, solAbs: r.solAbs * solarDerate, TaK, h: hOf(c) }; };
-    const epsAbsTh = TH.thermalWeighted(epsCol, (day.T + KELVIN) + 60), epsGl = 0.88;
+    const GZ = GLAZING[p.glazingMat] || GLAZING.glass, epsAbsTh = TH.thermalWeighted(epsCol, (day.T + KELVIN) + 60), epsGl = GZ.eps; let lastTg = NaN;
     const absorberQ = (c, T) => {
       const b = balance(c, epsCol, T);
       if (!p.glazed) return b.solAbs - (b.emit - b.atm) - b.h * (T - b.TaK);
@@ -87,7 +117,7 @@ export default {
       const Tsky = b.TaK * Math.max(0.5, c.eps ?? 0.8) ** 0.25, hGap = 2.8, rad = (a, g) => SIGMA * (a ** 4 - g ** 4) / (1 / epsAbsTh + 1 / epsGl - 1);
       const f = (Tg) => (hGap * (T - Tg) + rad(T, Tg)) - (b.h * (Tg - b.TaK) + epsGl * SIGMA * (Tg ** 4 - Tsky ** 4));
       const r = TH.brent(f, Math.min(T, Tsky) - 5, Math.max(T, b.TaK) + 5), Tg = r.ok ? r.x : b.TaK;
-      return b.solAbs * p.tauGlass - (hGap * (T - Tg) + rad(T, Tg)) - p.Uback * (T - b.TaK);
+      lastTg = Tg; return b.solAbs * p.tauGlass - (hGap * (T - Tg) + rad(T, Tg)) - p.Uback * (T - b.TaK);
     };
     const radiatorQ = (c, T) => { const b = balance(c, epsRad, T); return (b.emit - b.atm) - b.solAbs - b.h * (b.TaK - T); };
     // operating points
@@ -132,6 +162,20 @@ export default {
     K('Radiator 8–13 µm emittance', eW_rad, '', 'Emittance inside the atmospheric window — the channel through which heat escapes to cold space.', 'calc');
     K('Day useful absorber flux', qDay, 'W/m²', `Net heat deliverable at T_a + ${dTh} K under ${fmt(day.ghi, 4)} W/m² (${day.src}).`, day.coupled ? 'coupled' : 'hypothetical', qDay > 0 ? 'ok' : 'bad');
     { const ci = patchInfo(ctx.vehicle, 'collector'), ri = patchInfo(ctx.vehicle, 'radiator'); K('Collector / radiator placement', `${ci.names.map(n => n.replace(/^Solar-selective collector /, '')).join(' + ')} · ${(ri.names[0] || '—').replace(/^Radiative-cooling emitter /, '')}`, '', ctx.vehicle.wingConfig === 'arch' ? `AeroArch: primary collector on the unshaded nose deck above the driven front wheels plus the sky-facing arch-bridge top (horizontal, sky view ≈ 1, no ground-reflected gain credited, ${fmt(ci.z, 3)} m high so wind convection is stronger — glazing limits it); total ${fmt(ci.area, 3)} m². Suite 14 routes each to the hubs.` : 'Conformal body patches from the current CAD.', 'generated'); }
+    // Revision 5.1: glazing attachment / thermal-mismatch and canopy solar-gain checks
+    if (p.glazed) {
+      absorberQ(day, TaD + dTh); const TgOp = lastTg - KELVIN; absorberQ(day, stag.ok ? stag.x : TaD + 150); const TgStag = lastTg - KELVIN;
+      const Lp = p.panelL ?? 0.25, dT = TgStag - (-10), slip = (GZ.cte - 2e-6) * (Lp / 2) * dT * 1000, gam = slip / p.bondT, gAllow = 0.25;
+      K('Glazing temperature (operating / stagnation)', `${fmt(TgOp, 4)} / ${fmt(TgStag, 4)}`, '°C', `${GZ.name}: continuous limit ${GZ.Tmax} °C. Stagnation = parked in full sun with no heat drawn.`, 'calc', TgStag <= GZ.Tmax ? 'ok' : 'bad');
+      K('Glazing bond shear strain (thermal mismatch)', gam, '', `Expansion mismatch vs the CFRP bridge over a ${fmt(Lp, 3)} m glazing tile from −10 °C to stagnation (${fmt(slip, 3)} mm edge slip) on a ${p.bondT} mm structural-silicone bond; allowable ≈ ${gAllow}.`, 'calc', gam <= gAllow ? 'ok' : 'bad');
+      out.verdicts.push({ test: 'Collector glazing attachment & temperature', status: TgStag <= GZ.Tmax && gam <= gAllow ? 'pass' : 'fail', detail: `${GZ.name}: ${fmt(TgStag, 4)} °C at stagnation vs ${GZ.Tmax} °C; bond shear strain ${fmt(gam, 3)} vs ${gAllow} with a ${p.bondT} mm bond. ${GZ.impact}.`, fix: `Thicker silicone bond (≥ ${fmt(Math.ceil(slip / gAllow * 2) / 2, 3)} mm), smaller panels, or venting/over-temperature shading at standstill.` });
+    }
+    { let Acan = 1.1; try { const cp = vehicleAssembly(ctx.vehicle).parts.find(m => /canopy/i.test(m.name)); if (cp) Acan = cp.area() / 2; } catch { /* default */ }
+      const tauC = p.canopyCoat === 'irpc' ? 0.42 : 0.85, shade = ctx.vehicle.wingConfig === 'arch' ? 0.25 : 0, G0d = day.ghi || 0, Qc = G0d * Acan * tauC * (1 - shade), Qclear = G0d * Acan * 0.85, Vdot = Qc / (1.2 * 1005 * p.cabinDT);
+      K('Canopy solar gain (clear PC / selected)', `${fmt(Qclear, 4)} / ${fmt(Qc, 4)}`, 'W', `${fmt(Acan, 3)} m² canopy at ${fmt(G0d, 4)} W/m²; ${p.canopyCoat === 'irpc' ? 'IR-reflective PC τ_sol 0.42' : 'clear PC τ_sol 0.85'}${shade ? ', arch bridge shades ≈ 25 %' : ''}.`, 'calc');
+      K('Cabin vent airflow needed', Vdot * 1000, 'L/s', `Ram-air vent to keep the cabin within ${p.cabinDT} K of ambient (no fan — no battery).`, 'calc', Vdot * 1000 <= 60 ? 'ok' : 'warn');
+      out.verdicts.push({ test: 'Canopy solar gain manageable by a passive vent', status: Vdot * 1000 <= 60 ? 'pass' : 'warn', detail: `${fmt(Qc, 4)} W gain needs ${fmt(Vdot * 1000, 3)} L/s of ram air (≈ 60 L/s is available from a small NACA duct at 20 km/h).` });
+    }
     K('Absorber operating temperature', day.T + dTh, '°C', p.opMode !== 'fixed' ? `Exergy-optimal: maximises q·(1 − T_a/T) for the ${p.glazed ? 'glazed (τ = ' + p.tauGlass + ')' : 'unglazed'} collector.` : 'Fixed offset (user).', p.opMode !== 'fixed' ? 'generated' : 'user');
     K('Radiator operating temperature', night.T - dTc, '°C', p.opMode !== 'fixed' ? 'Exergy-optimal: maximises q·(T_a/T − 1).' : 'Fixed offset (user).', p.opMode !== 'fixed' ? 'generated' : 'user');
     K('Absorber stagnation temperature', stag.ok ? stag.x - KELVIN : NaN, '°C', 'Temperature at which no heat can be extracted (upper bound for the hot side).', 'calc');
@@ -172,7 +216,35 @@ export default {
     out.explain.push({ title: 'What the photonic layer can and cannot do', text: 'Spectral engineering controls which wavelengths are absorbed and emitted, maximising heat collection by day and radiative heat rejection by night. It cannot create energy: the useful work is bounded by the heat flow times the Carnot factor of the real surface temperatures, which at night are only a few kelvin apart.' });
     out.views.push({ label: '2D animation: day/night spectral balance', icon: '🎞', render: (el) => anim2dBalance(el, { env, day, night, p: { ...p, dThot: dTh, dTcold: dTc }, absorberQ, radiatorQ, epsCol, epsRad, ctx }) });
     out.views.push({ label: '3D day/night cycle', icon: '🌗', render: (el) => view3dCycle(el, { env, day, night, p: { ...p, dThot: dTh, dTcold: dTc }, absorberQ, radiatorQ, colName: colM.name, radName: stackOn ? 'custom photonic stack' : radM.name, ctx }) });
-    out.outputs = { qNetDay_W_m2: qDay, qNetNight_W_m2: qNight, Pabs_W: PabsW, Pcool_W: PcoolW, Thot_C: day.T + dTh, Tcold_C: night.T - dTc, collectorArea: p.Acol, radiatorArea: p.Arad, TstagC: stag.ok ? stag.x - KELVIN : null, TminC: Tmin.ok ? Tmin.x - KELVIN : null, TaDayC: day.T, TaNightC: night.T, curves: { absorber: { T: Th.map(t => t - KELVIN), q: qA }, radiator: { T: Tc.map(t => t - KELVIN), q: qR } }, wNightMax_W_m2: wNightMax, wDayMax_W_m2: wDayMax, aSolar: aS_col, eWindow: eW_rad, collector: p.collector, radiator: p.radiator };
+    // ----- Revision 6: daily heat collected for the latent-heat store (hour by hour from the Suite 05 series) -----
+    const SA = skyAreas(ctx.vehicle), Astore = p.collectorExtent === 'existing' ? SA.existing || p.Acol : SA.total || p.Acol;
+    const hPark = (c) => p.shield ? 2 : TH.mcAdamsH(Math.max(0, c.Uz ?? c.U ?? 0)); // charging happens mostly parked
+    // Solar position for the compound-parabolic acceptance check (E–W trough axis, horizontal aperture):
+    // beam is accepted while the transverse projected angle tan θ_p = tan θ_z·|cos γ_s| stays within θ_a = asin(1/C).
+    const lat = (env?.lat ?? ctx.site?.lat ?? 0) * Math.PI / 180, sunPos = (r) => { const d = new Date(r.time || Date.now()), doy = Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 864e5), dec = 23.45 * Math.PI / 180 * Math.sin(2 * Math.PI * (284 + doy) / 365), hr = d.getHours() + d.getMinutes() / 60, w = (hr - 12) * 15 * Math.PI / 180; const cz = Math.sin(lat) * Math.sin(dec) + Math.cos(lat) * Math.cos(dec) * Math.cos(w), z = Math.acos(Math.max(-1, Math.min(1, cz))); const az = Math.atan2(Math.sin(w), Math.cos(w) * Math.sin(lat) - Math.tan(dec) * Math.cos(lat)); return { z, az }; };
+    const accepted = (r, Cc) => { if (Cc <= 1) return 1; const { z, az } = sunPos(r); if (z >= Math.PI / 2) return 0; const tp = Math.atan(Math.tan(z) * Math.abs(Math.cos(az))); return tp <= Math.asin(1 / Cc) ? 1 : 0; };
+    const collQ = (c, T, type) => { // useful heat per m² of aperture for the static constructions
+      const b = balance(c, epsCol, T), hC = hPark(c), Tsky = b.TaK * Math.max(0.5, c.eps ?? 0.8) ** 0.25, evac = type === 'evac' || type === 'evaccpc';
+      const Cc = type === 'cpc' || type === 'evaccpc' ? 1.5 : 1, tau = evac ? 0.91 * 0.91 : p.tauGlass, eG = evac ? 0.88 : epsGl, hG = evac ? 0 : 2.8, back = evac ? 1.0 : p.Uback; // evacuated: edge seal + support-pillar conduction ≈ 1 W/m²K
+      const rad = (a, g) => SIGMA * (a ** 4 - g ** 4) / (1 / epsAbsTh + 1 / eG - 1), fl = (Tg) => (hG * (T - Tg) + rad(T, Tg)) - (hC * (Tg - b.TaK) + eG * SIGMA * (Tg ** 4 - Tsky ** 4)) / Cc;
+      const rr = TH.brent(fl, Math.min(T, Tsky) - 5, Math.max(T, b.TaK) + 5), Tg = rr.ok ? rr.x : b.TaK;
+      const fb = (c.ghi || 0) > 0 && (c.dni || 0) > 0 ? Math.min(0.85, Math.max(0.1, 1 - (c.cloud ?? 20) / 100)) : 0.15;
+      const opt = Cc > 1 ? fb * 0.96 * accepted(c, Cc) + (1 - fb) / Cc : 1;
+      return b.solAbs * tau * opt - ((hG * (T - Tg) + rad(T, Tg)) + back * (T - b.TaK)) / Cc;
+    };
+    const hrs = (env?.series || []).slice(0, 24), daily = (type, T) => hrs.reduce((sum, r) => sum + Math.max(0, (r.ghi || 0) > 0 ? collQ(r, T, type) : 0) * 3600, 0);
+    const kgm2 = { flat: GZ.kgm2 + 1.1 + 0.75 + 0.3, cpc: GZ.kgm2 + 1.1 / 1.5 + 0.75 + 0.3 + 0.6, evac: 2 * 5.0 + 1.1 + 0.3 + 0.4, evaccpc: 2 * 5.0 + 1.1 / 1.5 + 0.3 + 0.4 + 0.6 };
+    const typeName = { flat: 'Glazed flat absorber', cpc: 'Compound-parabolic troughs C = 1.5', evac: 'Evacuated flat glazing', evaccpc: 'Evacuated glazing + compound-parabolic troughs' };
+    const accFrac = hrs.length ? hrs.filter(r => (r.ghi || 0) > 0).reduce((s2, r) => s2 + (r.ghi || 0) * accepted(r, 1.5), 0) / Math.max(1, hrs.filter(r => (r.ghi || 0) > 0).reduce((s2, r) => s2 + (r.ghi || 0), 0)) : 1;
+    const cmp = ['flat', 'cpc', 'evac', 'evaccpc'].map(t => ({ t, d: daily(t, p.TabsStore), noon: hrs.length ? Math.max(...hrs.map(r => (r.ghi || 0) > 0 ? collQ(r, p.TabsStore, t) : 0)) : 0 }));
+    const sel = cmp.find(x => x.t === p.collectorType) || cmp[0], dailyStore = sel.d * Astore, extMass = SA.ext * kgm2[sel.t] * (p.collectorExtent === 'existing' ? 0 : 1) + SA.existing * Math.max(0, kgm2[sel.t] - kgm2.flat); // new surfaces + upgrade of the existing glazed collectors
+    const qHourly = hrs.map(r => (r.ghi || 0) > 0 ? Math.max(0, collQ(r, p.TabsStore, sel.t)) : 0);
+    K('Sky-facing collector area for the store', Astore, 'm²', `Nose ${fmt(SA.nose, 3)} + bridge ${fmt(SA.bridge, 3)} m² existing${p.collectorExtent === 'existing' ? '' : `; added: body deck ${fmt(SA.deck, 3)}, bridge remainder ${fmt(SA.bridgeRest, 3)}, crossbeam ${fmt(SA.crossbeam, 3)} (80 % unshaded), root fairings ${fmt(SA.fairings, 3)}, shoulder pods ${fmt(SA.pods, 3)} m² (upward projections of the current CAD; canopy and rear-deck radiator left clear)`}.`, 'generated');
+    K('Heat collected per sunny day (store charging)', dailyStore / 1e6, 'MJ', `${typeName[sel.t]} at ${p.TabsStore} °C absorber temperature, hour by hour over the Suite 05 day (parked convection): ${fmt(sel.d / 1e6, 3)} MJ/m²; peak ${fmt(sel.noon, 3)} W/m² (η at noon ≈ ${fmt(sel.noon / Math.max(1, Math.max(...hrs.map(r => r.ghi || 0))) * 100, 3)} %).`, env?.series ? 'coupled' : 'hypothetical', dailyStore > 0 ? 'ok' : 'bad');
+    K('Compound-parabolic acceptance vs sun path', accFrac * 100, '% of daily irradiance', `E–W trough axis, C = 1.5 → acceptance half-angle ${fmt(Math.asin(1 / 1.5) * 180 / Math.PI, 3)}°; share of the day's irradiance arriving while the sun's transverse angle is inside it (latitude ${fmt(lat * 180 / Math.PI, 3)}°). Outside the acceptance only the diffuse share 1/C is collected.`, env?.series ? 'coupled' : 'hypothetical', accFrac > 0.8 ? 'ok' : 'warn');
+    out.tables.push({ title: 'Static collector constructions for store charging (no moving parts)', cols: ['Construction', 'Heat per sunny day (MJ/m²)', 'Noon useful flux (W/m²)', 'Areal mass (kg/m²)', 'Heat per day per kg of collector (MJ/kg)'], rows: cmp.map(x => [typeName[x.t], x.d / 1e6, x.noon, kgm2[x.t], x.d / 1e6 / kgm2[x.t]]) });
+    out.charts.push({ title: 'Store-charging heat through the day', type: 'area', x: { label: 'Hour of the Suite 05 series', unit: 'h' }, y: { label: 'Useful heat', unit: 'W' }, series: [{ name: `Collector → store (${fmt(Astore, 3)} m²)`, x: range(qHourly.length), y: qHourly.map(q => q * Astore) }], explain: `Hour-by-hour useful heat at a ${p.TabsStore} °C absorber. The loop heat pipe is a one-way thermal diode, so heat only flows into the store while the absorber is hotter.` });
+    out.outputs = { dailyHeat_J: dailyStore, dailyHeat_J_m2: sel.d, hourlyStore_W: qHourly.map(q => q * Astore), collectorAreaStore_m2: Astore, collectorExtArea_m2: p.collectorExtent === 'existing' ? 0 : SA.ext, collectorExtMass_kg: extMass, collectorType: sel.t, collectorKgm2: kgm2[sel.t], collectorOptions: cmp.map(x => ({ type: x.t, name: typeName[x.t], dailyJ_m2: x.d, kgm2: kgm2[x.t] })), cpcAcceptance: accFrac, TabsStore_C: p.TabsStore, noonStoreFlux_W_m2: sel.noon, skyAreas: SA, qNetDay_W_m2: qDay, qNetNight_W_m2: qNight, Pabs_W: PabsW, Pcool_W: PcoolW, Thot_C: day.T + dTh, Tcold_C: night.T - dTc, collectorArea: p.Acol, radiatorArea: p.Arad, TstagC: stag.ok ? stag.x - KELVIN : null, TminC: Tmin.ok ? Tmin.x - KELVIN : null, TaDayC: day.T, TaNightC: night.T, curves: { absorber: { T: Th.map(t => t - KELVIN), q: qA }, radiator: { T: Tc.map(t => t - KELVIN), q: qR } }, wNightMax_W_m2: wNightMax, wDayMax_W_m2: wDayMax, aSolar: aS_col, eWindow: eW_rad, collector: p.collector, radiator: p.radiator };
     out.headline = `Day: ${fmt(qDay, 3)} W/m² useful heat at ${fmt(day.T + dTh, 3)} °C. Night: ${fmt(qNight, 3)} W/m² cooling at ${fmt(night.T - dTc, 3)} °C — ideal night work ≤ ${fmt(wNightMax, 3)} W/m² vs 150 W/m² target.`;
     out.headlineKind = wNightMax >= 150 ? 'ok' : 'warn';
     return out;

@@ -4,6 +4,7 @@ import { beamResultants, beamModes } from '../core/fem.js';
 import { flutterVg } from '../core/aeroelastic.js';
 import { range, fmt, deg, rad, max, gci, interp1 } from '../core/num.js';
 import { h } from '../core/ui.js';
+import * as AA from '../core/archaero.js';
 
 export default {
   description: 'Partitioned fluid–structure interaction of the passive metamaterial wing: the lifting-line aerodynamic solver and the bend–twist beam finite-element solver exchange interface twist, deflection and loads until both satisfy kinematic continuity and traction equilibrium. Compares coupling algorithms (fixed point, Aitken, interface quasi-Newton IQN-ILS), rigid versus coupled loading, and runs transient gust FSI (Newmark-β structure + Wagner/Küssner indicial aerodynamics) with time-step convergence, energy-transfer and added-mass checks.',
@@ -97,7 +98,21 @@ export default {
     const FSg = featherState(W, p, ctx, Lc, nW), Lpk = ll.L + Math.max(...Gi.lift), sidePk = FSg.side * Lpk / Math.max(1e-9, ll.L), iRel = Gi.lift.findIndex(dl => FSg.side * (ll.L + dl) / Math.max(1e-9, ll.L) > FSg.FySafe);
     out.kpis.push({ label: 'Gust peak side force / breakaway setting', value: `${fmt(sidePk, 3)} / ${fmt(FSg.FySafe, 3)}`, unit: 'N', explain: `Both wings; ${p.wingState === 'reefed' ? 'reefed' : 'deployed'} configuration. Above the setting the torque-limited lock releases and the wings weathervane.`, prov: 'calc', status: sidePk <= FSg.FySafe ? 'ok' : 'warn' });
     out.verdicts.push({ test: 'Gust response with free-feathering breakaway (D3)', status: sidePk <= FSg.FySafe || p.breakaway ? 'pass' : 'fail', detail: sidePk <= FSg.FySafe ? `Peak side force ${fmt(sidePk, 3)} N stays below the breakaway setting ${fmt(FSg.FySafe, 3)} N — wings remain locked through the gust.` : p.breakaway ? `Breakaway releases at t = ${fmt(Gi.t[iRel], 3)} s (side force reaches ${fmt(FSg.FySafe, 3)} N); feathered residual side force ${fmt(FSg.feathered.side, 3)} N — rollover protected, propulsion paused until re-latching.` : `Peak side force ${fmt(sidePk, 3)} N exceeds the safe limit with the breakaway disabled.` });
-    out.outputs = { converged: S.converged, iterations: S.iterations, twistTip_deg: tipTw, tipDefl_m: tipW, CLdeformed: ll.CL, CLrigid: rigid.aero.ll.CL, flutterMargin: fm, flutterSpeed: FL.Vflutter, gustPeakRootMoment: Math.abs(Mstatic) + Mpk, rootMomentStatic: Math.abs(Mstatic), rootMoment_Nm: Mstatic, thrustN: Lc.thrust * nW, sideN: Lc.side * nW, rootShear_N: ll.L };
+    // Revision 5 compliant flexure: gust washout. A gust raises V_a and swings β; a locked root would see α rise by Δβ, the
+    // self-trimming flexure re-trims (aero pitch mode ≈ f_aero ≫ 1/T_gust → quasi-static) and holds C_L ≈ C_L,trim.
+    const s07 = ctx.upstream('s07'), vehF = ctx.vehicle || {}; let gustWash = null;
+    if (s07?.flexure && (vehF.wingConfig || 'arch') === 'arch') {
+      const GA = AA.archGeometry(vehF), polA = AA.sectionPolar('7418', s07.Re || 5e5), fx = s07.flexure, b0 = Math.max(5, Math.abs(s07.awa ?? 60)), Va0 = s07.Va || 8, FyS = s07.FySafe ?? AA.safeSide(vehF, GA.hCE);
+      const fl = { kTheta: fx.kTheta, xAxis: fx.xAxis, Cm0: fx.Cm0, deltaMax: fx.deltaMax ?? 25 }, T0 = AA.trimState(GA, polA, vehF, b0, Va0, 1.225, { ...fl, FyS: Infinity, scanN: 60 });
+      const gV = 1.4, gB = 12, b1 = Math.min(175, b0 + gB), Va1 = gV * Va0;
+      const lockF = AA.archForces(GA, polA, vehF, b1, T0.alpha + gB, Va1, 1.225), trimF = AA.trimState(GA, polA, vehF, b1, Va1, 1.225, { ...fl, FyS, scanN: 60 }), trimU = AA.trimState(GA, polA, vehF, b1, Va1, 1.225, { ...fl, FyS: Infinity, scanN: 60 });
+      const fA = ctx.upstream('s06')?.flexure?.fAero;
+      gustWash = { CL0: T0.CL, CLlocked: lockF.CL, CLtrim: trimU.CL, sideLocked: lockF.side, sideFlex: trimF.side, FyS, fAero: fA };
+      out.kpis.push({ label: 'Gust washout (flexure): C_L before / locked root / self-trimmed', value: `${fmt(T0.CL, 3)} / ${fmt(lockF.CL, 3)} / ${fmt(trimU.CL, 3)}`, unit: '', explain: `Gust ×${gV} apparent-wind speed and +${gB}° apparent-wind angle at β = ${fmt(b0, 3)}°. A locked root takes the full angle change as incidence; the closed arch on its single centreline pylon flexure re-trims${fA ? ` (aero pitch mode ${fmt(fA, 3)} Hz, quasi-static for gusts > ${fmt(1 / fA, 2)} s)` : ''}.`, prov: 'calc' });
+      out.kpis.push({ label: 'Gust side force: locked root / flexure with washout cap / limit', value: `${fmt(lockF.side, 3)} / ${fmt(trimF.side, 3)} / ${fmt(FyS, 3)}`, unit: 'N', explain: 'The flexure response plus passive de-cambering (lift cap) keeps the gust side force at or below the safe value without any release mechanism.', prov: 'calc', status: trimF.side <= 1.02 * FyS ? 'ok' : 'warn' });
+      out.verdicts.push({ test: 'Flexure gust washout keeps side force within the safe limit (no release)', status: trimF.side <= 1.02 * FyS ? 'pass' : trimF.side <= 1.2 * FyS ? 'warn' : 'fail', detail: `Locked root ${fmt(lockF.side, 3)} N vs flexure ${fmt(trimF.side, 3)} N (limit ${fmt(FyS, 3)} N); C_L ${fmt(T0.CL, 3)} → ${fmt(trimU.CL, 3)} self-trimmed vs ${fmt(lockF.CL, 3)} locked.`, fix: 'Move the flexure axis forward or soften the flexure so the arch re-trims; lower the de-camber trigger.' });
+    }
+    out.outputs = { gustWashout: gustWash, converged: S.converged, iterations: S.iterations, twistTip_deg: tipTw, tipDefl_m: tipW, CLdeformed: ll.CL, CLrigid: rigid.aero.ll.CL, flutterMargin: fm, flutterSpeed: FL.Vflutter, gustPeakRootMoment: Math.abs(Mstatic) + Mpk, rootMomentStatic: Math.abs(Mstatic), rootMoment_Nm: Mstatic, thrustN: Lc.thrust * nW, sideN: Lc.side * nW, rootShear_N: ll.L };
     out.headline = `${p.method} FSI converged in ${S.iterations} exchanges; coupled tip twist ${fmt(tipTw, 3)}°, root moment ${fmt(Mstatic, 4)} N·m (${fmt((Mstatic / (resR[0].M || 1) - 1) * 100, 3)} % vs rigid); gust peak ${fmt(Math.abs(Mstatic) + Mpk, 4)} N·m; flutter margin ${fmt(fm, 3)}.`;
     return out;
   },

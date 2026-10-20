@@ -4,7 +4,7 @@ import { h } from '../core/ui.js';
 import { kmh } from '../core/physics.js';
 import { ROADS, wheelLayout, threeWheelLoads, discStep, brakeConvH } from '../core/vehicle.js';
 
-const UNLOAD = { release: { label: 'Feathering release linked to brake pedal (Revision 2: C_L ≈ 0, residual ≈ 0)', f: 0.0 }, feathered: { label: 'Wing feathered / unloaded (10 % residual)', f: 0.1 }, partial: { label: 'Partially unloaded (50 %)', f: 0.5 }, stuck: { label: 'Wing fails to unload (100 %)', f: 1.0 } };
+const UNLOAD = { washout: { label: 'Compliant flexure arch: no unloading mechanism — self-trimmed thrust continues, capped by passive washout (Revision 5)', f: 1.0 }, release: { label: 'Feathering release linked to brake pedal (Revision 2: C_L ≈ 0, residual ≈ 0)', f: 0.0 }, feathered: { label: 'Wing feathered / unloaded (10 % residual)', f: 0.1 }, partial: { label: 'Partially unloaded (50 %)', f: 0.5 }, stuck: { label: 'Wing fails to unload (100 %)', f: 1.0 } };
 const FAIL = { none: 'No fault', front: 'Circuit A failed (front circuit / diagonal A)', rear: 'Circuit B failed (rear circuit / diagonal B)', lock: 'No modulation (wheels may lock)' };
 
 export default {
@@ -22,18 +22,20 @@ export default {
     { key: 'road', label: 'Road surface', type: 'select', group: 'Stop', default: 'dry asphalt', options: Object.keys(ROADS), auto: (c) => c.upstream('s10')?.road },
     { key: 'slope', label: 'Road gradient (downhill +)', unit: '%', type: 'number', min: -20, max: 20, step: 0.5, group: 'Stop', default: 0 },
     { key: 'thrust', label: 'Wing forward thrust at brake onset', unit: 'N', type: 'number', min: 0, max: 2000, step: 5, group: 'Wing', default: 50, auto: (c) => { const o = c.upstream('s07') || c.upstream('s06'); return o?.thrustN !== undefined ? { value: +Math.max(0, o.thrustN).toFixed(1), prov: 'coupled' } : undefined; } },
-    { key: 'unload', label: 'Wing unloading state', type: 'select', group: 'Wing', default: 'release', auto: (c) => ({ value: ['feathering', 'ring'].includes(c.upstream('s01')?.wingRoot ?? 'feathering') ? 'release' : 'feathered', prov: 'coupled' }), options: Object.entries(UNLOAD).map(([value, o]) => ({ value, label: o.label })) },
+    { key: 'unload', label: 'Wing unloading state', type: 'select', group: 'Wing', default: 'release', auto: (c) => { const r = c.upstream('s01')?.wingRoot ?? ((c.vehicle.archRoot || 'flexure') === 'flexure' && (c.vehicle.wingConfig || 'arch') === 'arch' ? 'washout' : 'feathering'); return { value: r === 'washout' ? 'washout' : ['feathering', 'ring'].includes(r) ? 'release' : 'feathered', prov: 'coupled' }; }, options: Object.entries(UNLOAD).map(([value, o]) => ({ value, label: o.label })) },
     { key: 'circuit', label: 'Brake circuit layout', type: 'select', group: 'Faults', default: 'diagonal', options: [{ value: 'diagonal', label: 'Diagonal split (each circuit: one front wheel + one rear caliper)' }, { value: 'axle', label: 'Axle split (front circuit / rear circuit)' }], help: 'With 75 % of the weight on the front wheels, an axle split leaves only the lightly loaded rear wheel after a front-circuit failure; the diagonal split keeps braking on both axles.' },
     { key: 'fault', label: 'Fault case', type: 'select', group: 'Faults', default: 'none', options: Object.entries(FAIL).map(([value, label]) => ({ value, label })) },
     { key: 'pedal', label: 'Pedal force', unit: 'N', type: 'number', min: 50, max: 800, step: 10, group: 'Actuation', default: 250 },
     { key: 'pedalRatio', label: 'Pedal lever ratio', type: 'number', min: 2, max: 8, step: 0.1, group: 'Actuation', default: 4 },
     { key: 'areaRatio', label: 'Hydraulic area ratio (caliper/master)', type: 'number', min: 1, max: 12, step: 0.1, group: 'Actuation', default: 4, help: 'Set to 1 with a high pedal ratio to represent a pure cable system.' },
     { key: 'eff', label: 'Transmission efficiency', type: 'number', min: 0.5, max: 1, step: 0.01, group: 'Actuation', default: 0.85, expert: true },
-    { key: 'bias', label: 'Front brake-force share', unit: '%', type: 'range', min: 30, max: 90, step: 1, group: 'Actuation', default: 65 },
+    { key: 'frontLimit', label: 'Front-pressure limiter (caps the front brakes at this deceleration; 0 = none)', unit: 'g', type: 'number', min: 0, max: 1.2, step: 0.01, group: 'Actuation', default: 0.75, help: 'A proportioning valve in the front circuit: above the set line pressure the front brake force stops rising, keeping the ground braking force below the nose-over (pitch-over) limit of the short, front-biased tadpole.' },
+    { key: 'bias', label: 'Front brake-force share', unit: '%', type: 'range', min: 30, max: 95, step: 1, group: 'Actuation', default: 65, auto: (c) => { const o = c.upstream('s01'), ff = o?.frontFrac ?? 0.65, hc = o?.cgHeight ?? c.vehicle.cgHeight, wb = o?.wheelbase ?? c.vehicle.wheelbase, aD = 0.75; return { value: Math.round(clamp(100 * (ff + aD * hc / wb), 30, 95)), prov: o ? 'coupled' : 'estimated' }; }, help: 'Auto: the dynamic front-axle load share at the 0.75 g design deceleration, f + a·h/L, so neither axle locks first.' },
     { key: 'reaction', label: 'Driver reaction time', unit: 's', type: 'number', min: 0.3, max: 2.5, step: 0.1, group: 'Actuation', default: 1.0 },
     { key: 'nStops', label: 'Repeated stops (fade test)', type: 'number', min: 1, max: 40, step: 1, group: 'Thermal', default: 10 },
     { key: 'interval', label: 'Interval between stops', unit: 's', type: 'number', min: 10, max: 300, step: 5, group: 'Thermal', default: 45 },
-    { key: 'discThk', label: 'Disc thickness', unit: 'mm', type: 'number', min: 3, max: 20, step: 0.5, group: 'Thermal', default: 5 },
+    { key: 'discDia', label: 'Disc diameter', unit: 'mm', type: 'number', min: 120, max: 300, step: 5, group: 'Thermal', default: 220 },
+    { key: 'discThk', label: 'Disc thickness', unit: 'mm', type: 'number', min: 3, max: 20, step: 0.5, group: 'Thermal', default: 4 },
     { key: 'parkSlope', label: 'Parking slope', unit: '%', type: 'number', min: 0, max: 40, step: 1, group: 'Parking', default: 18 },
     { key: 'parkGust', label: 'Parking gust (from behind)', unit: 'm/s', type: 'number', min: 0, max: 35, step: 0.5, group: 'Parking', default: 15, auto: (c) => c.env?.gust ? { value: +Math.max(10, c.env.gust).toFixed(1), prov: 'coupled' } : undefined },
     { key: 'parkLever', label: 'Parking lever force', unit: 'N', type: 'number', min: 50, max: 400, step: 10, group: 'Parking', default: 200 },
@@ -46,14 +48,16 @@ export default {
     const veh = ctx.vehicle, m = veh.mass, R = veh.wheelRadius, rho = ctx.env?.rho ?? 1.225, th = Math.atan(p.slope / 100);
     const pad = ctx.material('brakePad'), disc = ctx.material('brake'), muPad0 = pad.mu ?? 0.38, padTmax = pad.Tmax ?? 350;
     const lay = wheelLayout(veh, ctx.upstream('s01')?.frontFrac ?? veh.frontFrac), mEff = m + (ctx.upstream('s10')?.rotEqMass ?? 9);
-    const ro = 0.55 * R, ri = 0.3 * R, rEff = (2 / 3) * (ro ** 3 - ri ** 3) / (ro ** 2 - ri ** 2), mDisc = Math.PI * (ro * ro - ri * ri) * p.discThk / 1000 * disc.rho, Adisc = 2 * Math.PI * (ro * ro - ri * ri);
+    const ro = (p.discDia ?? 220) / 2000, ri = ro - 0.045, rEff = (2 / 3) * (ro ** 3 - ri ** 3) / (ro ** 2 - ri ** 2), mDisc = Math.PI * (ro * ro - ri * ri) * p.discThk / 1000 * disc.rho, Adisc = 2 * Math.PI * (ro * ro - ri * ri);
     const isFront = lay.pts.map(q => q[0] > 0), nF = isFront.filter(Boolean).length, nR = 3 - nF;
     const clamp0 = p.pedal * p.pedalRatio * p.areaRatio * p.eff;
+    // front-pressure limiter: front line pressure saturates where the front brakes alone give frontLimit·g at the design share (scales with pad μ)
+    const FfrontCap = p.frontLimit > 0 ? p.frontLimit * m * G0 * (p.bias / 100) / nF : Infinity;
     // one stop simulation
-    const stop = ({ v0 = kmh(p.v0), road = p.road, unloadF = UNLOAD[p.unload].f, fault = p.fault, muPad = muPad0, thrust = p.thrust, record = true } = {}) => {
+    const stop = ({ v0 = kmh(p.v0), road = p.road, unloadF = UNLOAD[p.unload].f, fault = p.fault, muPad = muPad0, thrust = p.thrust, record = true, clampF = clamp0 } = {}) => {
       const R_ = ROADS[road]; let v = v0, x = 0, t = 0, Ework = 0, Eloss = 0, Ethr = 0, Egr = 0; const dt = 0.005, T = [], Vs = [], A = [], X = [], LK = [], FB = []; let locked = new Array(3).fill(false), a = 0, cannotStop = false;
-      const tOn = p.reaction + 0.2; const Fth = thrust * unloadF;
-      const wheelForce = new Array(3).fill(0);
+      const tOn = p.reaction + 0.2; const capW = ctx.upstream('s01')?.washoutCap_N ?? Infinity, Fth = p.unload === 'washout' && unloadF === UNLOAD.washout.f ? Math.min(thrust, capW) : thrust * unloadF;
+      const wheelForce = new Array(3).fill(0); let FbMax = 0;
       while (v > 0 && t < 120) {
         const braking = t >= tOn;
         let Fb = [0, 0, 0];
@@ -68,7 +72,7 @@ export default {
               const keep = (p.circuit || 'diagonal') === 'diagonal'
                 ? (fault === 'front' ? (isFront[i] ? (fi === 0 ? 0 : 1) : 0.5) : fault === 'rear' ? (isFront[i] ? (fi === 1 ? 0 : 1) : 0.5) : 1)
                 : ((fault === 'front' && isFront[i]) || (fault === 'rear' && !isFront[i]) ? 0 : 1);
-              const demand = keep * 2 * muPad * clamp0 * share * 3 * rEff / R; // ×3 normalises shares to per-wheel clamp
+              const demand = Math.min(keep * 2 * muPad * clampF * share * 3 * rEff / R, isFront[i] ? keep * FfrontCap * muPad / muPad0 : Infinity); // ×3 normalises shares to per-wheel clamp
               const lim = R_.mu * Math.max(0, Fz); locked[i] = demand > lim; return demand > lim ? (fault === 'lock' ? R_.muLock * Math.max(0, Fz) : lim) : demand;
             });
             const Fr = m * G0 * Math.cos(th) * veh.Crr, Fa = 0.5 * rho * veh.CdA * v * v, an = (sum(Fb) + Fr + Fa - Fth - m * G0 * Math.sin(th)) / mEff;
@@ -78,12 +82,12 @@ export default {
         if (braking && a <= 0) { cannotStop = true; }
         const vn = Math.max(0, v - a * dt), vm = 0.5 * (v + vn);
         Ework += sum(Fb) * vm * dt; Eloss += (m * G0 * Math.cos(th) * veh.Crr + 0.5 * rho * veh.CdA * vm * vm) * vm * dt; Ethr += Fth * vm * dt; Egr += m * G0 * Math.sin(th) * vm * dt;
-        Fb.forEach((f, i) => wheelForce[i] += f * vm * dt);
+        Fb.forEach((f, i) => wheelForce[i] += f * vm * dt); FbMax = Math.max(FbMax, sum(Fb));
         x += vm * dt; t += dt; v = vn;
         if (record && Math.round(t / dt) % 10 === 0) { T.push(t); Vs.push(v * 3.6); A.push(a); X.push(x); LK.push(locked.slice()); FB.push(braking ? Fb.slice() : [0, 0, 0]); }
         if (cannotStop && t > tOn + 30) break;
       }
-      return { dist: x, time: t, aMean: v0 / Math.max(1e-6, t - tOn), aMax: a, Ework, Eloss, Ethr, Egr, wheelEnergy: wheelForce, locked: locked.slice(), T, Vs, A, X, LK, FB, Fth, cannotStop: cannotStop || v > 0.01, KE: 0.5 * mEff * v0 * v0 };
+      return { FbMax, dist: x, time: t, aMean: v0 / Math.max(1e-6, t - tOn), aMax: a, Ework, Eloss, Ethr, Egr, wheelEnergy: wheelForce, locked: locked.slice(), T, Vs, A, X, LK, FB, Fth, cannotStop: cannotStop || v > 0.01, KE: 0.5 * mEff * v0 * v0 };
     };
     const base = stop();
     // energy closure: KE + thrust work + gravity work = brake work + losses
@@ -93,6 +97,15 @@ export default {
     // scenario table
     const cases = [['Nominal (dry, ' + (UNLOAD[p.unload]?.label.split(' (')[0] || 'feathered') + ')', { road: 'dry asphalt', unloadF: UNLOAD[p.unload].f, fault: 'none' }], ['Wet road', { road: 'wet asphalt', unloadF: UNLOAD[p.unload].f, fault: 'none' }], ['Wing fails to unload', { road: 'dry asphalt', unloadF: 1, fault: 'none' }], ['Wing fails to unload, wings reefed', { road: 'dry asphalt', unloadF: Math.min(1, (veh.wingReefSpan ?? veh.wingHeight) / veh.wingHeight), fault: 'none' }], ['Wet + wing stuck', { road: 'wet asphalt', unloadF: 1, fault: 'none' }], ['Front circuit failed', { road: 'dry asphalt', unloadF: 0.1, fault: 'front' }], ['Rear circuit failed', { road: 'dry asphalt', unloadF: 0.1, fault: 'rear' }], ['No modulation, wet (lock)', { road: 'wet asphalt', unloadF: 0.1, fault: 'lock' }], ['Ice', { road: 'ice', unloadF: 0.1, fault: 'none' }]];
     const caseRes = cases.map(([n, o]) => [n, stop({ ...o, record: false })]);
+    // pitch-over (nose-over) about the front contact line: the rear wheel lifts when F_b·h + T·(h_A − h) ≥ m g d_f,
+    // with F_b the ground braking force, T the forward aerodynamic force of the arch at its centre of effort h_A (negative = drag)
+    const a01 = ctx.upstream('s01'), dF = lay.a, hcg = veh.cgHeight, hA = a01?.ceHeight_m ?? (R + veh.height * 0.7 + (veh.wingHeight || 2) * 0.5);
+    const poLim = (T) => (dF - T * (hA - hcg) / (m * G0)) / hcg, Uhw = 10, Dhw = 0.5 * rho * (kmh(p.v0) + Uhw) ** 2 * (veh.wingArea || 5) * 0.04;
+    const panic = stop({ clampF: clamp0 * 800 / p.pedal, record: false });
+    const poCases = [['Still air', 0], [`${Uhw} m/s headwind (arch drag ${fmt(Dhw, 3)} N)`, -Dhw], [`Residual arch thrust (${fmt(base.Fth, 3)} N)`, base.Fth]].map(([n, T]) => [n, poLim(T)]);
+    const poMin = Math.min(...poCases.map(c => c[1])), muRoad = ROADS[p.road].mu, aPanic = panic.FbMax / (m * G0), unlimited = Math.min(muRoad, 2 * muPad0 * clamp0 * 800 / p.pedal * 3 * rEff / R / (m * G0));
+    out.tables.push({ title: 'Pitch-over (nose-over) under braking', cols: ['Case', 'Pitch-over limit (g, ground braking)', 'Peak braking with limiter, 800 N pedal (g)', 'Margin'], rows: poCases.map(([n, lim]) => [n, lim, aPanic, lim / Math.max(1e-6, aPanic)]), explain: `Moments about the front tyre contact line: CG ${fmt(dF, 3)} m behind the front axle at ${fmt(hcg, 3)} m height; arch centre of effort ${fmt(hA, 3)} m. A headwind drag on the high arch resists pitch-over; forward arch thrust aids it. Road μ ${muRoad}.` });
+    out.verdicts.push({ test: 'Pitch-over (nose-over) under maximum braking', status: aPanic < poMin * 0.97 ? 'pass' : aPanic < poMin ? 'warn' : 'fail', detail: `Limit ${fmt(poMin, 3)}–${fmt(Math.max(...poCases.map(c => c[1])), 3)} g (worst: ${poCases.find(c => c[1] === poMin)[0]}) vs ${fmt(aPanic, 3)} g peak ground braking at an 800 N pedal ${p.frontLimit > 0 ? `with the ${p.frontLimit} g front-pressure limiter` : 'without a limiter'}; tyres alone would allow ${fmt(unlimited, 3)} g on ${p.road}.`, fix: 'Fit (or lower) the front-pressure limiter, move the front axle forward, or lower the CG.' });
     // repeated stops fade
     const Ta = (ctx.env?.T ?? 20) + 273.15; let Td = Ta, mu = muPad0; const tt = [], TT = [], distPerStop = [], muSeries = [];
     const frontIdx = isFront.indexOf(true);
@@ -198,7 +211,7 @@ export default {
         A.gauge(g, { cx: gx + gw / 2, cy: gy + gh * 0.9, r: Math.min(gw / 2.4, gh / 3.2), value: A.lerp(c0.A, k0), min: 0, max: 10, label: 'Deceleration m/s²', unit: '', cmapName: 'viridis' });
       }, explain: 'Three solved stops from the same speed side by side (nominal, wing failing to unload, wet road with stuck wing): vehicles move along their lanes to their solved stopping points, speed–distance curves with live markers, and the front-disc temperature from the lumped heat balance with the solved deceleration.' });
     } });
-    out.outputs = { stoppingDistance_m: base.cannotStop ? Infinity : base.dist, decel_ms2: base.aMean, brakeTempMax_C: Tmax, fadeRisk, parkingHoldOK: parkOK, cannotStopWithStuckWing: stuck.cannotStop, caseMatrix: caseRes.map(([n, r]) => ({ case: n, dist: r.cannotStop ? null : r.dist })) };
+    out.outputs = { pitchOverLimit_g: poMin, peakBraking_g: aPanic, frontLimit_g: p.frontLimit, stoppingDistance_m: base.cannotStop ? Infinity : base.dist, decel_ms2: base.aMean, brakeTempMax_C: Tmax, fadeRisk, parkingHoldOK: parkOK, cannotStopWithStuckWing: stuck.cannotStop, caseMatrix: caseRes.map(([n, r]) => ({ case: n, dist: r.cannotStop ? null : r.dist })) };
     out.headline = base.cannotStop ? `The vehicle CANNOT be stopped from ${p.v0} km/h in this configuration.` : `Stops from ${p.v0} km/h in ${fmt(base.dist, 4)} m (${fmt(base.aMean, 3)} m/s²). Fade test peak ${fmt(Tmax, 4)} °C; parking ${parkOK ? 'holds' : 'FAILS'} on ${p.parkSlope} %.`;
     out.headlineKind = base.cannotStop || !parkOK ? 'fail' : 'info';
     void range;

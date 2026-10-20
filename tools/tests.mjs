@@ -53,7 +53,9 @@ const bx = box('b', 1, 2, 3); t('box volume', bx.volume(), 6, 1e-9); ok('box clo
 const cy = cylinder('c', 0.5, 2, 256); t('cylinder volume', cy.volume(), Math.PI * 0.25 * 2, 2e-3);
 const asm = vehicleAssembly(P.DEFAULT_VEHICLE); const notClosed = asm.parts.filter(m => !m.checkManifold().closed).map(m => m.name); ok('all vehicle parts closed solids', notClosed.length === 0, notClosed.join(', '));
 const negVol = asm.parts.filter(m => m.volume() <= 0).map(m => m.name); ok('all vehicle parts positive volume', negVol.length === 0, negVol.join(', '));
-ok('overall height ≤ 3.05 m', asm.meta.height <= 3.05, asm.meta.height);
+ok('overall height ≤ 3.10 m (owner cap)', asm.meta.height <= 3.10, asm.meta.height);
+ok('overall width ≤ 2.00 m', (asm.meta.overallWidthAll ?? asm.meta.width) <= 2.005, asm.meta.overallWidthAll);
+ok('length ≤ 3.5 m', asm.meta.length <= 3.5 + 1e-9, asm.meta.length);
 const stl = new Uint8Array(await toSTL([bx]).arrayBuffer()); const back = parseSTL(stl.buffer); ok('STL round-trip triangles', back.triangles === bx.triangleCount, `${back.triangles} vs ${bx.triangleCount}`);
 const step = toSTEP([bx]); ok('STEP header & closed shell', step.startsWith('ISO-10303-21;') && step.includes('CLOSED_SHELL') && step.trim().endsWith('END-ISO-10303-21;'));
 // importers
