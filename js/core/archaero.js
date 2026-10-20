@@ -45,7 +45,7 @@ export function archForces(G, pol, veh, bAbs, alpha, VA, rho = 1.225, opts = {})
   const useStack = (opts.stack ?? veh.stackLL ?? true) && Math.abs(alpha) <= (pol.alphaStall ?? 15) + 4 && bAbs <= 45;
   if (useStack) { const ST = G.ST || (G.ST = vehicleStack(veh, stackOpts(veh))), Fs = stackForces(ST, pol, veh, bAbs, alpha, VA, rho, { camberPct: opts.camberPct ?? 4, interf: opts.interf ?? 1, bridgeCdA: 0.012 * (G.AM.bridgeArea || 0) });
     if (bAbs <= 35) return Fs; const w = (45 - bAbs) / 10, Fo = archForcesRootMirror(G, pol, veh, bAbs, alpha, VA, rho, opts), mix = (k) => w * Fs[k] + (1 - w) * Fo[k];
-    return { ...Fo, CL: mix('CL'), CD: mix('CD'), L: mix('L'), D: mix('D'), wingThrust: mix('wingThrust'), wingSide: mix('wingSide'), net: mix('net'), side: mix('side'), sideEq: mix('sideEq'), CLsys: w * Fs.CLsys + (1 - w) * Fo.CLsys, CDsys: w * Fs.CDsys + (1 - w) * Fo.CDsys }; }
+    return { ...Fo, CL: mix('CL'), CD: mix('CD'), L: mix('L'), D: mix('D'), wingThrust: mix('wingThrust'), wingSide: mix('wingSide'), net: mix('net'), side: mix('side'), sideEq: mix('sideEq'), CLsys: w * Fs.CLsys + (1 - w) * Fo.CLsys, CDsys: w * Fs.CDsys + (1 - w) * Fo.CDsys, aSecMax: Math.max(Fs.aSecMax, Fo.aSecMax) }; }
   return archForcesRootMirror(G, pol, veh, bAbs, alpha, VA, rho, opts);
 }
 export const stackOpts = (veh) => ({ plateW: veh.rootPlateW ?? 0, plateL: veh.rootPlateL ?? 0, deckSeal: veh.deckSeal ?? 0, groundSeal: veh.groundSeal ?? 0, bodyEta: veh.bodyEta ?? 0.6, bodyClmax: 0.6, rootBootH: veh.rootBootH ?? 0, skirtGap: veh.skirtGap ?? null, archFill: veh.archFill || 'hollow', fillFrac: veh.fillFrac ?? 0.3 });
@@ -64,7 +64,8 @@ function archForcesRootMirror(G, pol, veh, bAbs, alpha, VA, rho = 1.225, { cambe
   const F = wingForces(VA, bAbs, CL * interf, CD, G.S, rho), Db = 0.5 * rho * (veh.CdA + 0.012 * (G.AM.bridgeArea || 0)) * VA * VA, B = bodyLift(veh, bAbs, VA, rho, { camberPct });
   // sideEq: side force at the arch centre of effort giving the same overturning moment (the body forces act lower)
   const sB = B.side + Db * Math.sin(rad(bAbs)), zB = (veh.wheelRadius ?? 0.3) + (veh.height ?? 1) / 2;
-  return { CL, CD, CLsys: CL * interf, CDsys: CD, eps, L: F.L, D: F.D, wingThrust: F.thrust, wingSide: F.side, body: B, Db, net: F.thrust + B.thrust - Db * Math.cos(rad(bAbs)), side: F.side + sB, sideEq: F.side + sB * zB / G.hCE };
+  const aI = deg(CL * interf / (Math.PI * G.ARe * oswald)), aSecMax = Math.max(alpha + 0.3 * eps, alpha - eps) - aI; /* effective section angle: windward/lee leg incidence minus the finite-wing induced angle */
+  return { aSecMax, CL, CD, CLsys: CL * interf, CDsys: CD, eps, L: F.L, D: F.D, wingThrust: F.thrust, wingSide: F.side, body: B, Db, net: F.thrust + B.thrust - Db * Math.cos(rad(bAbs)), side: F.side + sB, sideEq: F.side + sB * zB / G.hCE };
 }
 // ---------------------------------------------------------------------------------------------------------------------
 // Stacked vertical lifting line with the ground as an image plane (Revision 5.1 round 5, applied to EVERY revision).
@@ -141,15 +142,17 @@ export function stackForces(ST, pol, veh, bAbs, alpha, VA, rho = 1.225, { camber
   const kA = Math.round(a0w * 1e4), sc = ST._sys || (ST._sys = new Map()); let sys = sc.get(kA); if (!sys) { sys = stackSystem(ST.segs.map(g => g.kind === 'wing' || g.kind === 'deckSkirt' ? { ...g, a: g.a / (2 * Math.PI) * a0w } : g), { plate: ST.plate }); sc.set(kA, sys); } // memoised per section lift slope
   const mB = (veh.bodyCamberPct ?? camberPct) / 100 * (veh.bodyCamberWash === false ? 1 : interf), aB = rad(Math.min(bAbs, 180 - bAbs)) + (bAbs <= 90 ? 2 * mB : 0); // the bistable side panels de-camber with the arch skin
   const theta = ST.segs.map(g => g.kind === 'wing' || g.kind === 'deckSkirt' ? rad(alpha) - al0w * interf : aB);
-  const clmax = ST.segs.map(g => g.kind === 'wing' || g.kind === 'deckSkirt' ? (pol.CLmax ?? 1.6) * interf : 0.6);
+  /* de-cambering removes the camber lift only: the section C_l,max falls by the camber lift at α = 0, to the symmetric-section value (not to zero) */
+  const clW = Math.max(0.3, (pol.CLmax ?? 1.6) - Math.max(0, c0.CL) * (1 - interf)), clmax = ST.segs.map(g => g.kind === 'wing' || g.kind === 'deckSkirt' ? clW : 0.6);
   const R = stackSolve(sys, theta, clmax); let Lw = 0, Lb = 0, Di = 0, Dp = 0;
   sys.pn.forEach((p, i) => { const g = ST.segs[p.si], Lp = 2 * q * R.G[i] * p.dz, Dip = 2 * q * R.G[i] * R.w[i] * p.dz; Di += Dip; if (g.kind === 'wing' || g.kind === 'deckSkirt') { Lw += Lp; Dp += q * p.c * p.dz * Math.max(0.006, coeffs(pol, deg(R.aEff[i])).CD); } else Lb += Lp; });
+  let aSecMax = -Infinity; sys.pn.forEach((p, i) => { const g = ST.segs[p.si]; if (g.kind === 'wing') aSecMax = Math.max(aSecMax, deg(R.aEff[i] + al0w * interf)); }); /* effective local section angle (after downwash incl. ground/plate images), geometric-section convention */
   Di *= ST.kBox; const L = Lw + Lb, D = Di + Dp, F = { L, D, thrust: L * Math.sin(b) - D * Math.cos(b), side: L * Math.abs(Math.cos(b)) + D * Math.sin(b) };
   const Db = 0.5 * rho * (veh.CdA + bridgeCdA) * VA * VA, sB = Db * Math.sin(b), zB = (veh.wheelRadius ?? 0.3) + (veh.height ?? 1) / 2, hCE = 0.5 * (ST.zTop + (ST.segs.find(g => g.kind === 'wing')?.z0 ?? 0));
   const CLw = Lw / (q * S), CDw = (Dp + Di * Lw / Math.max(1e-9, L)) / (q * S);
   // side force at the arch centre of effort: wing part at hCE, body part at the body centre (moment-equivalent)
   const sideW = F.side * Lw / Math.max(1e-9, L), sideBd = F.side - sideW;
-  return { CL: CLw, CD: CDw, CLsys: L / (q * S), CDsys: D / (q * S), eps: 0, L, D, Lw, Lb, Di, Dp, wingThrust: F.thrust, wingSide: F.side, body: { thrust: 0, side: 0, L: Lb }, Db, net: F.thrust - Db * Math.cos(b), side: F.side + sB, sideEq: sideW + (sideBd + sB) * zB / hCE, stack: true };
+  return { CL: CLw, CD: CDw, CLsys: L / (q * S), CDsys: D / (q * S), eps: 0, L, D, Lw, Lb, Di, Dp, wingThrust: F.thrust, wingSide: F.side, body: { thrust: 0, side: 0, L: Lb }, Db, net: F.thrust - Db * Math.cos(b), side: F.side + sB, sideEq: sideW + (sideBd + sB) * zB / hCE, stack: true, aSecMax };
 }
 // drag-area build-up lives in ./dragbuild.js (one function shared by Suites 01 and 07)
 export { dragBuildup } from './dragbuild.js';
@@ -163,7 +166,7 @@ export { dragBuildup } from './dragbuild.js';
 // zone falls with the open-area ratio φ as for porous plates normal to a stream (normalised trend of Castro, J. Fluid Mech. 46,
 // 1971); the cut kerf is sealed shut by a co-moulded TPU lip on the lee face that the flap lifts away when it opens (φ_closed = 0). To be confirmed on a panel in the Suite 24 test plan.
 // k_v = 1 − zone·(1 − r(φ)).
-export const VENT_DEFAULT = { zone: 0.73, phiMax: 0.67, phiClosed: 0, dpOpenK: 0.9, dpCloseK: 0.5 };
+export const VENT_DEFAULT = { zone: 0.76, phiMax: 0.85, phiClosed: 0, dpOpenK: 0.9, dpCloseK: 0.5 };
 const POR = [[0, 1], [0.1, 0.85], [0.2, 0.70], [0.3, 0.56], [0.4, 0.42], [0.5, 0.30], [0.6, 0.20], [0.7, 0.12], [0.8, 0.06], [1, 0]];
 export function porousRatio(phi) { for (let i = 1; i < POR.length; i++) if (phi <= POR[i][0]) { const [x0, y0] = POR[i - 1], [x1, y1] = POR[i]; return y0 + (y1 - y0) * (phi - x0) / (x1 - x0); } return 0; }
 export const ventK = (V, phi) => 1 - V.zone * (1 - porousRatio(phi));
@@ -321,7 +324,7 @@ export function safeDrivingSpeed(G, pol, veh, U, flex, twa, { rho = 1.225, gust 
 // ±δ flexure ('free'); worst over wind angles 0–180°. Overturning moment = arch side force at the centre of effort + the body
 // side force × its height; pass body(U, β) → { Fy, z } to use the SAME body model as every other design (Suite 01), otherwise
 // the lifting-line body of this model is used. Restoring moment M_res = m·g·SSF·h_cg. lever: false = parked in drive (solid).
-export function parkedTipWind(veh, Mres, { lever = false, limiter = 'locked', body = null, flex = { kTheta: 60, xAxis: 0.135, Cm0: 0.05, deltaMax: veh.yawLimit ?? 25 }, pol = sectionPolar('7418', 5e5), rho = 1.225 } = {}) {
+export function parkedTipWind(veh, Mres, { lever = false, limiter = 'locked', body = null, flex = { kTheta: 10, xAxis: 0.10, Cm0: 0.09, deltaMax: veh.yawLimit ?? 35 }, pol = sectionPolar('7418', 5e5), rho = 1.225 } = {}) {
   const G = archGeometry(veh), V = veh.vents === true ? VENT_DEFAULT : veh.vents, kv = V ? ventK(V, lever ? V.phiMax : (V.phiClosed ?? 0)) : 1, rows = [];
   const hW = sideCE(veh) ?? G.hCE, zB = (veh.wheelRadius ?? 0.3) + (veh.height ?? 1) / 2;
   const momentAt = (b, U) => { const bb = Math.max(b, 0.1); let F;

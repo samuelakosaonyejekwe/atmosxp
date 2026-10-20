@@ -1,7 +1,7 @@
 // Engineering economics & life-cycle sustainability: cost estimating relationships, learning curves,
 // discounted cash flow (NPV/IRR/payback), life-cycle cost, cradle-to-gate LCA inventory from the
 // materials registry, end-of-life credits and a simplified Material Circularity Indicator.
-import { COMPONENTS, componentMaterial } from './materials.js';
+import { COMPONENTS, componentMaterial, get as getMat } from './materials.js';
 import { brent } from './num.js';
 import { pcmById } from './pcmstore.js';
 
@@ -25,7 +25,7 @@ export const COMPONENT_REF = {
   actuator: { vol: 0.00037, qty: 1, kWhPerKg: 40, laborH: 30, factor: 2.2, life: 3, process: 'VIM melting, drawing/L-PBF, shape setting 500 °C, training cycles' },
   cartridgeHousing: { vol: 0.0009, qty: 1, kWhPerKg: 50, laborH: 16, factor: 4.0, life: 12, process: 'L-PBF titanium housings, machined datums' },
   cam: { vol: 0.00064, qty: 1, kWhPerKg: 8, laborH: 12, factor: 3.0, life: 20, process: 'CNC profile milling, H1025 ageing, profile grinding', basis: 'Rev 6.2: Hertz contact ≈ 0.12–0.35 GPa vs 1.8 GPa allowable (Suite 17) — well inside rolling-contact endurance for the 20-year life' },
-  flexure: { vol: 0.0003, qty: 1, kWhPerKg: 6, laborH: 4, factor: 1.6, life: 12, process: 'Arch pylon torsion-rod cage from bar stock: rods cut to length, centreless-ground, rolled threads, aged and shot-peened; laser-cut end plates — no machining from billet', basis: 'Rev 6.5 cost basis (same rates as every bar-stock part): bar-stock rods with rolled threads need ≈ 4 h (cut, grind, roll, age, peen, assemble) and a ×1.6 material-to-part factor, vs ×3 / 10 h for parts machined from billet. Life:  the arch pylon rods are designed to SF ≥ 2 in torsional fatigue (Suites 09 / 22) — inspected, not replaced, within 12 years' },
+  flexure: { vol: 0.0003, qty: 1, kWhPerKg: 6, laborH: 4, factor: 1.6, life: 12, process: 'Arch pylon torsion-rod cage from bar stock: rods cut to length, centreless-ground, aged and shot-peened, ends terminated per Suite 09 (default cold-swaged Ti ferrule sockets); laser-cut end plates — no machining from billet', basis: 'Rev 6.5 cost basis (same rates as every bar-stock part): bar-stock rods with rolled threads need ≈ 4 h (cut, grind, roll, age, peen, assemble) and a ×1.6 material-to-part factor, vs ×3 / 10 h for parts machined from billet. Life:  the arch pylon rods are designed to SF ≥ 2 in torsional fatigue (Suites 09 / 22) — inspected, not replaced, within 12 years' },
   buffer: { vol: 0.0012, qty: 1, kWhPerKg: 10, laborH: 14, factor: 3.0, life: 8, process: 'Wire-EDM bistable cells, ageing' },
   wheel: { vol: 0.0032, qty: 1, kWhPerKg: 6, laborH: 9, factor: 2.6, life: 15, process: 'Forged & machined rims' },
   tyre: { vol: 0.0052, qty: 1, kWhPerKg: 3, laborH: 0.6, factor: 4.0, life: 3, process: 'Purchased low-rolling-resistance tyres' },
@@ -39,19 +39,28 @@ export const COMPONENT_REF = {
 // Bill of materials with mass, cost and cradle-to-gate impacts. grid: gCO2/kWh for processing electricity.
 export function bom(store, { grid = 450, labourRate = 35 } = {}) {
   return Object.entries(COMPONENTS).map(([key, c]) => {
-    const m = componentMaterial(store, key), ref = COMPONENT_REF[key] || { vol: 0.001, kWhPerKg: 5, laborH: 2, factor: 2, life: 10, process: '—' };
+    // the arch pylon cage ('flexure') is priced in the rod material chosen in Suite 09 (pylonMat), the same basis for every design
+    const m = key === 'flexure' && store.params?.('s09')?.pylonMat ? (getMat(store.params('s09').pylonMat) || componentMaterial(store, key)) : componentMaterial(store, key), ref = COMPONENT_REF[key] || { vol: 0.001, kWhPerKg: 5, laborH: 2, factor: 2, life: 10, process: '—' };
     // masses come from the Suite 01 mass budget of the design actually configured; the reference volume is only a fallback
     // 'flexure' is only the arch pylon cage (hub flexures are booked in cartridgeHousing), so it is zero when Suite 01 has none
     // Rev 6.2: Suite 01 books the whole buffer system (cells + cages + box + mounts) as 'buffer'; cages and box have their own rows, so only the cells are priced here
     const mb = store.output('s01')?.massByComponent, massRef = (m?.rho || 1000) * ref.vol, o18b = key === 'buffer' && mb ? store.output?.('s18') : null, cells18 = o18b?.bufferMass_kg, mass = o18b && o18b.cellType === 'elastomer' ? 0 : cells18 ? Math.min(mb.buffer ?? cells18, cells18) : mb ? (mb[key] ?? (key in mb || key === 'flexure' ? 0 : massRef)) : massRef, matCost = mass * (m?.cost || 5), procKWh = mass * ref.kWhPerKg;
     const rf = recycledFactor(store, key, m), matCostR = matCost * rf.cost;
-    const fabCost = mass > 0 ? matCostR * ref.factor + ref.laborH * labourRate : 0; // a component the design does not have (zero mass) carries no labour either
+    // pylon cage labour scales with the rod count from Suite 09 (≈ 0.3 h per bar-stock rod + 1.5 h assembly)
+    // rib labour scales with the rib count Suite 06 publishes for the configured wing (≈ 2.5 h per rib + 2 h set-up; + 2 h for the
+    // arch root plate, which is booked with the ribs) — the same rate for every design; without the count the reference 24 h is kept
+    const p09 = key === 'flexure' ? store.params?.('s09') ?? {} : null, nRods = p09 ? (p09.cageN ?? store.project?.vehicle?.pylonRodN ?? 8) * (p09.cageStages ?? store.project?.vehicle?.pylonStages ?? 1) : 0;
+    // rod preparation ≈ 0.2 h each (cut, grind, age, peen) + terminations (2 per rod): cold-swaged Ti ferrule ($3 + 0.05 h), machined clamp socket (0.25 h), or upset end + rolled M14 thread ($4 + nut $0.5 + 0.05 h)
+    const rodEnd = p09 ? (p09.rodEnd ?? store.output?.('s09')?.rodEnd ?? 'swaged') : null, TERM = { swaged: [3, 0.05], machined: [0, 0.25], rolled: [4.5, 0.05] }[rodEnd] || [3, 0.05];
+    const nRib = key === 'rib' ? store.output?.('s06')?.ribCount : null;
+    const labH = p09 ? 1.5 + 0.2 * nRods + 2 * nRods * TERM[1] : Number.isFinite(nRib) ? 2 + 2.5 * nRib + (store.project?.vehicle?.wingConfig === 'arch' ? 2 : 0) : ref.laborH, termCost = p09 ? 2 * nRods * TERM[0] : 0;
+    const fabCost = mass > 0 ? matCostR * ref.factor + labH * labourRate + termCost : 0; // a component the design does not have (zero mass) carries no labour either
     const co2Mat = mass * (m?.co2 || 5) * rf.co2, co2Proc = procKWh * grid / 1000, energyMat = mass * (m?.energy || 80) * rf.energy;
     const recyc = m?.recyclable ?? 0.3, eolCredit = recyc * co2Mat * 0.6;
     // Revision 6 owner-cost actions: NiTi cartridge life from the Suite 15 fatigue design (strain amplitude set for the
     // required life) or Suite 23; buffer-cell life from the Suite 18 Basquin estimate — both capped at the 20-year structure life.
     const s23l = key === 'actuator' ? Math.max(store.output?.('s23')?.cartridgeLife_years || 0, store.output?.('s15')?.lifeYearsAchieved || 0) : key === 'buffer' ? store.output?.('s18')?.fatigueLife_years : null, life = s23l && Number.isFinite(s23l) && s23l > ref.life ? Math.min(20, Math.floor(s23l)) : s23l === Infinity ? 20 : ref.life; // NiTi life extended only when Suite 23 fatigue (at the 1 % strain amplitude) justifies it
-    return { lifeBasis: ref.basis, key, name: c.name, material: (m?.name || '—') + (rf.note ? ` (${rf.note})` : ''), matId: m?.id, family: m?.family, mass, massSource: mb?.[key] !== undefined ? 'Suite 01 mass budget' : 'reference volume', matCost: matCostR, fabCost, laborH: mass > 0 ? ref.laborH : 0, procKWh, co2Mat, co2Proc, co2: co2Mat + co2Proc, energyMat, energy: energyMat + procKWh * 3.6, recyc, eolCredit, life, lifeSource: s23l && life !== ref.life ? 'Suite 23 fatigue' : 'reference', process: ref.process, unc: m?.unc ?? 20 };
+    return { lifeBasis: ref.basis, key, name: c.name, material: (m?.name || '—') + (rf.note ? ` (${rf.note})` : ''), matId: m?.id, family: m?.family, mass, massSource: mb?.[key] !== undefined ? 'Suite 01 mass budget' : 'reference volume', matCost: matCostR, fabCost, laborH: mass > 0 ? labH : 0, procKWh, co2Mat, co2Proc, co2: co2Mat + co2Proc, energyMat, energy: energyMat + procKWh * 3.6, recyc, eolCredit, life, lifeSource: s23l && life !== ref.life ? 'Suite 23 fatigue' : 'reference', process: ref.process, unc: m?.unc ?? 20 };
   }).concat(reefMechanismRow(store, { grid, labourRate }), aeroFairingRows(store, { grid, labourRate }), rev51Rows(store, { grid, labourRate }), rev6Rows(store, { grid, labourRate }))
     // Rev 6.2 audit: these parts are already booked by Suite 01 inside its component lines (spats, pods, sills → chassis;
     // crossbeam → spar; pylon rod cage → flexure; nose cone → chassisCore). Counting them again here double-charged them.
@@ -162,7 +171,10 @@ function rev51Rows(store, { grid, labourRate }) {
     ...(store.output?.('s18')?.regenCoupling_kg ? [R('regenCoupling', 'Regenerative linear-index coupling (2 front hubs: stationary flexure pawls on the existing cartridge-ring lobes, push-pull cables, linear toothed cell carriage; pedal-engaged, buckling torque limit — no drum, spool or wheel)', 'Spring steel / 17-4PH', store.output('s18').regenCoupling_kg, 4, 3, 40, 6, 6, 3, 15, 'Laser-cut spring-steel flexure pawls, two push-pull cables, a stamped toothed linear rack and carriage in the buffer box; cable from the brake pedal', 0.9),
        ...(veh.windHarvester === true && store.output('s18').windHarvester_kg > 0 ? [R('windHarvester', 'Parked-wind click harvester (pylon, parking-lock linked; optional research configuration)', 'Spring steel', store.output('s18').windHarvester_kg, 4, 3, 40, 5, 5, 3, 15, 'Compliant linear bistable click ratchet with linkage to the parking lock', 0.8)] : [])] : []),
     // parked ±3° yaw limiter (two preloaded EPDM shear pads + parking-lever linkage), mass from Suite 09
-    R('parkLimiter', 'Parked yaw limiter ±3° (two EPDM shear pads on a pressed-steel wedge, parking-lever linked)', 'EPDM pads, pressed steel', store.output?.('s09')?.parkLimiter?.stopMass_kg ?? 1.08, 3, 3.2, 60, 4, 1, 1.5, 12, 'Purchased moulded EPDM pads bonded to a pressed-steel wedge (≈ 1 h: press, bond, fit cable); same pressed-part rates as the other stampings', 0.6),
+    ...(veh.parkLimiter === false || store.output?.('s09')?.parkLimiter?.required === false ? [] : [(store.output?.('s09')?.parkMode ?? store.params?.('s09')?.parkMode ?? 'merged') === 'merged'
+      ? R('parkLimiter', 'Parked yaw restraint merged into the yaw end stops (2 enlarged EPDM end-stop blocks 70 × 70 × 30 mm + 2 Al wedges on the existing parking-lever cable)', 'EPDM blocks, Al wedges', store.output('s09').parkLimiter?.stopMass_kg ?? 0.32, 3, 3.2, 60, 4, 0.5, 1.5, 12, 'Moulded EPDM end-stop blocks (enlarged), two machined Al wedges clamped on the existing cable (≈ 0.5 h)', 0.6)
+      : R('parkLimiter', 'Parked yaw limiter ±3° (two EPDM shear pads on a pressed-steel wedge, parking-lever linked)', 'EPDM pads, pressed steel', store.output?.('s09')?.parkLimiter?.stopMass_kg ?? 1.08, 3, 3.2, 60, 4, 1, 1.5, 12, 'Purchased moulded EPDM pads bonded to a pressed-steel wedge (≈ 1 h: press, bond, fit cable); same pressed-part rates as the other stampings', 0.6)]),
+    ...(veh.hubAutoLatch === true ? [R('hubAutoLatch', 'Optional automatic hub latches (2 bimetal snap latches on the hot-sector saddles; research option, 2 discrete moving parts)', 'Bimetal strip, stainless brackets', 0.05, 20, 8, 120, 5, 1, 2.5, 10, 'Purchased thermostatic bimetal discs in stamped brackets', 0.5)] : []),
     R('lighting', 'Passive conspicuity kit (retroreflectors front/rear/side, retroreflective & photoluminescent tape, mirrors, flag) — no electric lighting', 'PMMA reflectors, prismatic film, glass mirrors, Al brackets', 0.6, 0, 6, 120, 0, 0, 1, 8, 'Purchased approved retroreflectors and tape; bonded mirrors', 0.4, 60),
   ].filter(r => veh.wingConfig === 'arch' || !archOnly.includes(r.key));
 }

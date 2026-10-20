@@ -24,15 +24,28 @@ function fields() {
   return { speed, vort, pres };
 }
 
+// passive tracer particles (no feedback on the flow): advected with the lattice velocity each step, re-seeded at the inlet when
+// they leave the domain or enter a solid; each keeps a short trail so the frame shows streaklines of the evolving wake
+const NP = 1000, TRAIL = 4, P = { x: new Float32Array(NP), y: new Float32Array(NP), tr: new Float32Array(NP * TRAIL * 2), k: 0 };
+const seed = (j) => { P.x[j] = 2 + Math.random() * 3; P.y[j] = 2 + Math.random() * (L.ny - 4); for (let t = 0; t < TRAIL; t++) { P.tr[(j * TRAIL + t) * 2] = P.x[j]; P.tr[(j * TRAIL + t) * 2 + 1] = P.y[j]; } };
+let seeded = false;
+function advect() {
+  const { nx, ny, ux, uy, solid } = L; if (!seeded) { for (let j = 0; j < NP; j++) { seed(j); P.x[j] = 2 + Math.random() * (nx - 4); } seeded = true; }
+  for (let j = 0; j < NP; j++) { const x = P.x[j], y = P.y[j], i0 = Math.floor(x), j0 = Math.floor(y); if (i0 < 1 || i0 >= nx - 2 || j0 < 1 || j0 >= ny - 2) { seed(j); continue; }
+    const fx = x - i0, fy = y - j0, a = j0 * nx + i0, b = a + 1, c = a + nx, d = c + 1; if (solid[a] || solid[b] || solid[c] || solid[d]) { seed(j); continue; }
+    P.x[j] = x + (ux[a] * (1 - fx) * (1 - fy) + ux[b] * fx * (1 - fy) + ux[c] * (1 - fx) * fy + ux[d] * fx * fy);
+    P.y[j] = y + (uy[a] * (1 - fx) * (1 - fy) + uy[b] * fx * (1 - fy) + uy[c] * (1 - fx) * fy + uy[d] * fx * fy); }
+}
+function snapTrail() { for (let j = 0; j < NP; j++) { const t = P.k % TRAIL; P.tr[(j * TRAIL + t) * 2] = P.x[j]; P.tr[(j * TRAIL + t) * 2 + 1] = P.y[j]; } P.k++; }
 function loop() {
   if (!running) return;
   const t0 = performance.now(); let n = 0;
-  while (performance.now() - t0 < 40) { step(L); n++; }
+  while (performance.now() - t0 < 40) { step(L); advect(); n++; if (n % 4 === 0) snapTrail(); }
   const q = 0.5 * cfg.u0 * cfg.u0 * cfg.Lref;
   hist.t.push(L.step); hist.cd.push(L.Fx / q); hist.cl.push(L.Fy / q); hist.res.push(L.residual);
   if (hist.t.length > 600) for (const k in hist) hist[k].shift();
   const f = fields();
-  postMessage({ type: 'frame', step: L.step, mlups: L.N * n / ((performance.now() - t0) * 1e3), CD: L.Fx / q, CL: L.Fy / q, residual: L.residual, hist, ...f }, [f.speed.buffer, f.vort.buffer, f.pres.buffer]);
+  const tr = P.tr.slice(); postMessage({ type: 'frame', step: L.step, mlups: L.N * n / ((performance.now() - t0) * 1e3), CD: L.Fx / q, CL: L.Fy / q, residual: L.residual, hist, ...f, tracers: { tr, n: NP, trail: TRAIL, head: P.k % TRAIL } }, [f.speed.buffer, f.vort.buffer, f.pres.buffer, tr.buffer]);
   setTimeout(loop, 0);
 }
 

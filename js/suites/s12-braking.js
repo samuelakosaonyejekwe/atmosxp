@@ -48,7 +48,7 @@ export default {
     const out = { kpis: [], charts: [], tables: [], verdicts: [], recs: [], checks: [], explain: [], views: [] };
     // residual thrust with the unloading lever pulled: shared arch model, normal vs lever trim over beam-to-broad reaches at the onset apparent wind
     const LEV = (() => { const v0 = ctx.vehicle; if (!(v0.vents && v0.unloadingLever) || (v0.wingConfig || 'arch') !== 'arch') return null; try { const o1 = ctx.upstream('s01') || {}, fx = ctx.upstream('s07')?.flexure || {}, vg = { ...v0, mass: o1.massComputed ?? v0.mass, cgHeight: o1.cgHeight ?? v0.cgHeight }, G = AA.archGeometry(vg), pol = AA.sectionPolar('7418', 5e5);
-      const fl = { kTheta: fx.kTheta ?? 60, xAxis: fx.xAxis ?? 0.135, Cm0: fx.Cm0 ?? 0.05, deltaMax: fx.deltaMax ?? v0.yawLimit ?? 25, FyS: o1.FySafe_N ?? Infinity, scanN: 60 }, Va = 8;
+      const fl = { kTheta: fx.kTheta ?? 10, xAxis: fx.xAxis ?? 0.10, Cm0: fx.Cm0 ?? 0.09, deltaMax: fx.deltaMax ?? v0.yawLimit ?? 25, FyS: o1.FySafe_N ?? Infinity, scanN: 60 }, Va = 8;
       const rows = [45, 60, 90, 120, 135].map(b => { const n = AA.trimState(G, pol, vg, b, Va, 1.225, fl), l = AA.trimState(G, pol, vg, b, Va, 1.225, { ...fl, lever: true }); const tn = n.net ?? n.thrust ?? 0, tl = l.net ?? l.thrust ?? 0; return [b, tn, tl, l.CL ?? null]; });
       const worstL = Math.max(0, ...rows.map(r => r[2])), worstN = Math.max(0, ...rows.map(r => r[1])), beamL = Math.max(0, rows.find(r => r[0] === 90)?.[2] ?? 0), beamN = Math.max(1e-6, rows.find(r => r[0] === 90)?.[1] ?? 1); return { rows, frac: Math.max(0, Math.min(1, beamL / beamN)), worstL, worstN, Va }; } catch { return null; } })();
     if (LEV) UNLOAD.lever.f = LEV.frac;
