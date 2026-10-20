@@ -77,3 +77,11 @@ stability factor (≥ 1.11 g, Rev 3), tip-over wind loaded (≥ 17 m/s, Rev 3), 
 (≤ 75 W), moving parts (≤ original: none beyond wheels/steering/brakes — flexure deformation only), structural safety
 factors (≥ 2), cost and life-cycle carbon (≤ best previous). If a respect is physically unattainable together with the
 others, the optimiser must report it explicitly with the size of the shortfall and the binding constraint.
+
+## Revision 5.1 — final (current design, 2026-10-20)
+
+Single closed arch wing (2.8 m², legs splayed 15°, taper 0.6, reflexed bistable skin C_m0 0.05) on one β-titanium rod-cage pylon flexure (8 × Ø9.6 × 495 mm, compensated, ±25° elastic yaw, no bearing), bolted to the root frame by a demountable 12 × M6 flange. GFRP root plate 1.94 × 0.82 m at deck level; parked yaw limiter on the parking lever; EPDM yaw end stops. Lifting body 3.5 m long, track 1.79 m (1.94 m overall), wheelbase 2.36 m, wheel radius 0.24 m, blended pods, spat lips, enclosed rear wheel, skirts and diffuser. Rocking compliant hub pads (no rotating rollers), titanium bistable launch buffer with a linear-index regen coupling. Passive conspicuity only (daylight public-road use).
+
+Head-to-head on one model for every design (km/h at 2 / 2.5 / 3 / 4 / 6 / 10 m/s): Rev 5.1 53.9 / 69.9 / 77.6 / 87.5 / 100.2 / 111.7; best earlier 45.4 / 55.1 / 61.4 / 69.0 / 87.6 / 93.9. Rev 5.1 is also best on height (2.975 m), length, mass (184.1 kg), SSF (1.63), tip-over (18.5 / 26.5 m/s), nose-over (1.63 g), P20 (51.6 W), C_dA (0.109 m²), prototype and unit cost, price, owner life-cycle cost, running cost, NPV, IRR, carbon (20.2 g/km), mechanisms (8/64) and wind-free starts (39/day).
+
+Stated limits: overall width 1.94 m vs the original 1.65 m (safe side force scales with track); share of trips feasible on wind alone 0.63 vs 0.68 (wind gradient on 4 m rigs; no dead-downwind drag mode without a mechanism); no 1 h backup with demonstrated converter efficiency; simulated predictions await the test programme in the dossier.
