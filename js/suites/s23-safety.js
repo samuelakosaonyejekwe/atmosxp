@@ -2,6 +2,7 @@
 import { h, table } from '../core/ui.js';
 import { fmt, linspace, range, rng, histogram, mean, G0 } from '../core/num.js';
 import { form } from '../core/analysis.js';
+import { safeSideForce } from '../core/safeside.js';
 
 const FMEA = [
   ['Wing / aeroelastic', 'Flutter or divergence of morphing wing', 'Structural failure, loss of control', 10, 3, 5, 'Flutter margin ≥ 1.15 × max gust (Suite 06/08); ground vibration test; mass balancing'],
@@ -121,7 +122,7 @@ export default {
     // D3: wings carry load only up to the breakaway side force, then weathervane (C_s ≈ 0.03 incl. residual drag);
     // body side force (side area ≈ 0.75·L·H, C_s 0.8 at mid-height) always acts. Rollover is checked with these loads.
     const mu = ctx.upstream('s10')?.muPeak ?? 0.9, ssf = ctx.upstream('s11')?.ssf ?? s01?.ssf ?? tipArm / v.cgHeight;
-    const FyBreak = s01?.washoutCap_N ?? Math.min(0.7 * mu * mass * G0, 0.8 * ssf * mass * G0 * v.cgHeight / hcp), // shared Suite 01 cap
+    const SSR = safeSideForce({ mass, cgHeight: s01?.cgHeight ?? v.cgHeight, ssf, hCE: s01?.ceHeight_m ?? hcp, mu }), FyBreak = s01?.FySafe_N ?? s01?.washoutCap_N ?? SSR.Fs, // shared safe side-force rule (Suite 01 cap)
       Ubreak = Math.sqrt(FyBreak / (0.5 * rho * v.wingArea * p.Cs));
     const Abody = 0.75 * v.length * (v.height + v.wheelRadius), hBody = (v.height + v.wheelRadius) / 2;
     // Revision 2.2: deployed and reefed wing states (reefed span telescopes into the lower section)
@@ -196,6 +197,8 @@ export default {
     k('“Unable to stop safely” per trip (bounds)', `${top[0].toExponential(1)} … ${top[1].toExponential(1)}`, '', 'Order-of-magnitude interval from judgement-based basic events — NOT a validated probability.', 'hypothetical');
     // verdicts
     out.verdicts.push({ test: 'Wing-root structural reliability', status: F.beta >= p.betaTarget ? 'pass' : F.beta >= 2.5 ? 'warn' : 'fail', detail: `β = ${fmt(F.beta, 3)} (target ${p.betaTarget}); deterministic SF ${fmt(sfWing, 3)}.`, fix: 'Increase spar wall/depth, use higher-strength laminate, or rely on validated gust-load alleviation (Suite 08) to cut the root moment.' });
+    { const SS1 = s01?.safeSide, resv = SS1 && s01?.FySafe_N === FyBreak ? SS1.reserveG : SSR.reserveAt(FyBreak), tipR = SS1 && s01?.FySafe_N === FyBreak ? SS1.tipRatio : SSR.Ftip / Math.max(1, FyBreak); /* Suite 01 publishes the one cap and its reserve */ out.verdicts.push({ test: 'Rollover reserve with arch at full side force ≥ 0.5 g', status: resv >= 0.5 - 1e-6 ? 'pass' : 'fail', detail: `With the arch at its washout cap (${fmt(FyBreak, 3)} N) the car keeps ${fmt(resv, 3)} g of lateral (cornering) reserve before a wheel lifts; straight-line tip-over margin ${fmt(tipR, 3)} × (binding: ${SSR.binding}).` });
+      const vs = [20, 30, 40, 50, 60]; out.tables.push({ title: 'Safe cornering with the arch at full side force (washout cap)', cols: ['Speed (km/h)', 'Lateral reserve (g)', 'Minimum corner radius (m)'], rows: vs.map(vk => { const vv = vk / 3.6; return [vk, resv, resv > 0 ? vv * vv / (resv * G0) : Infinity]; }), explain: 'With a steady crosswind loading the arch to its cap, cornering must stay within the remaining lateral reserve; the radius column is the tightest safe turn at each speed (turning away from the wind direction adds to the margin, into it subtracts).' }); }
     out.verdicts.push({ test: 'Crosswind rollover envelope', status: Uroll >= p.gust ? 'pass' : 'fail', detail: p.feather ? `Wings loaded up to ${flexV ? 'the washout trip' : 'breakaway'} at ${fmt(UbreakD, 3)} m/s (side force ${fmt(FyBreakD, 4)} N), ${flexV ? `passive washout (${fmt(washF * 100, 3)} % of C_s) above` : 'feathered above'}: static tipping only at ≈ ${fmt(Uroll, 3)} m/s vs ${p.gust} m/s design gust (wings permanently loaded would tip at ${fmt(UrollLoaded, 3)} m/s).` : `Static tipping at ≈ ${fmt(Uroll, 3)} m/s apparent wind with wings loaded, ${Uroll >= p.gust ? 'above' : 'below'} the ${p.gust} m/s design gust — the wings MUST be unloaded/feathered above ≈ ${fmt(Uroll / 1.25, 3)} m/s.`, fix: 'Widen the track, lower the centre of pressure (shorter wings), add mass low, or adopt automatic passive wing unloading with a validated threshold.' });
     out.verdicts.push({ test: 'Hub cartridge durability', status: lifeYr >= 2 ? 'pass' : lifeYr >= 0.5 ? 'warn' : 'fail', detail: `${fmt(lifeYr, 3)} years (${fmt(lifeKm, 3)} km) at ${p.epsA} % strain amplitude.`, fix: 'Reduce strain amplitude below ~1 %, use fatigue-optimised NiTiCu, or design cartridges as scheduled replaceables.' });
     out.verdicts.push({ test: 'Insert damage tolerance', status: Ninsp / cycYrGust >= 1 ? 'pass' : 'warn', detail: `Inspect every ${fmt(Ninsp / cycYrGust, 3)} years; total growth life ${fmt(Ntot / cycYrGust, 3)} years.` });
@@ -245,7 +248,7 @@ export default {
     out.explain.push({ title: 'Deterministic vs probabilistic', text: 'The safety factor compares nominal stress to an allowable; the reliability index β measures how many standard deviations separate the mean margin from failure, accounting for uncertain wind, aerodynamic coefficient and strength. Both are reported because a comfortable SF can hide a large scatter.' });
     out.views.push({ label: '2D animation: crack growth & fatigue damage', icon: '🎞', render: (el) => anim2dDamage(el, { grow, a0, ac, aD, Ntot, cycYrGust, Dyr, lifeYr, epsA: p.epsA }) });
     out.views.push({ label: '3D risk map & failure scenarios', icon: '🛡', render: (el) => view3dRisk(el, { fm, sigma, allow, CLmax: p.CLmax, gust: p.gust, Uroll, sfWing, ctx }) });
-    out.outputs = { noseConeMass_kg: noseConeKg, noseConeLength_m: noseConeLen_m, minSafetyFactor: minSF, pfWingRoot: F.pf, betaWingRoot: F.beta, fatigueLife_cycles: lifeCycles, cartridgeLife_years: lifeYr, rolloverWind_ms: Uroll, topRisks: fm.slice(0, 5).map(r => ({ mode: r[1], rpn: r[6] })) };
+    out.outputs = { FySafe_N: FyBreak, hCE_m: s01?.hCE_m ?? hcp, noseConeMass_kg: noseConeKg, noseConeLength_m: noseConeLen_m, minSafetyFactor: minSF, pfWingRoot: F.pf, betaWingRoot: F.beta, fatigueLife_cycles: lifeCycles, cartridgeLife_years: lifeYr, rolloverWind_ms: Uroll, topRisks: fm.slice(0, 5).map(r => ({ mode: r[1], rpn: r[6] })) };
     out.headline = `Governing hazard: crosswind rollover at ≈${fmt(Uroll, 3)} m/s apparent wind. Wing root β = ${fmt(F.beta, 3)}, NiTi cartridges ≈ ${fmt(lifeYr, 3)} years, insert inspection every ${fmt(Ninsp / cycYrGust, 3)} years.`;
     out.headlineKind = Uroll < p.gust || F.beta < p.betaTarget ? 'warn' : 'ok';
     return out;

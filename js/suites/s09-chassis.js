@@ -4,6 +4,7 @@ import { fmt, gci, max, min, SparseBuilder, csrMul, dot } from '../core/num.js';
 import { MATERIALS, get as getMat } from '../core/materials.js';
 import { cmap, cssColor } from '../core/chart.js';
 import { h } from '../core/ui.js';
+import { safeSideForce } from '../core/safeside.js';
 
 const G = 9.80665;
 const faceMats = MATERIALS.filter(m => m.uses.includes('chassis') && m.family !== 'Core');
@@ -179,7 +180,8 @@ export default {
     { key: 'flangeN', label: 'Demountable flange: bolt count', type: 'number', min: 4, max: 24, step: 1, group: 'Centreline pylon flexure (Rev 5.1)', default: 12 },
     { key: 'flangeD', label: 'Flange bolt size (M)', unit: 'mm', type: 'number', min: 4, max: 12, step: 1, group: 'Centreline pylon flexure (Rev 5.1)', default: 6 },
     { key: 'flangeR', label: 'Flange bolt-circle radius', unit: 'm', type: 'number', min: 0.08, max: 0.4, step: 0.01, group: 'Centreline pylon flexure (Rev 5.1)', default: 0.22 },
-    { key: 'flangePreload', label: 'Bolt preload', unit: 'kN', type: 'number', min: 0.5, max: 20, step: 0.1, group: 'Centreline pylon flexure (Rev 5.1)', default: 2.2 },
+    { key: 'flangePreload', label: 'Bolt preload', unit: 'kN', type: 'number', min: 0.5, max: 20, step: 0.1, group: 'Centreline pylon flexure (Rev 5.1)', default: 2.2, auto: (c) => c.vehicle.jointIntegrated ? { value: 2.8, prov: 'coupled' } : undefined, help: '2.8 kN when the integrated thermal joint shares the clamp (graphite pad ≈ 10 kN).' },
+    { key: 'padForce', label: 'Integrated thermal joint: graphite pad clamp force', unit: 'kN', type: 'number', min: 0, max: 30, step: 0.5, group: 'Centreline pylon flexure (Rev 5.1)', default: 10, help: 'Low-density flexible-graphite sheet 0.5 mm in a 0.47 ± 0.01 mm recess (4–8 % strain, ≈ 1.0–1.6 MPa on Ø114 mm inserts); displacement-controlled — set the final recess from the batch compressibility test.' },
     { key: 'flangePhi', label: 'Joint load factor Φ', type: 'number', min: 0.05, max: 0.6, step: 0.01, group: 'Centreline pylon flexure (Rev 5.1)', default: 0.2 },
     { key: 'flangeProof', label: 'Bolt proof stress', unit: 'MPa', type: 'number', min: 200, max: 1200, step: 10, group: 'Centreline pylon flexure (Rev 5.1)', default: 600, help: 'A4-80 stainless (or Ti-6Al-4V) bolts.' },
     { key: 'flangeEndur', label: 'Bolt thread fatigue limit (stress amplitude)', unit: 'MPa', type: 'number', min: 10, max: 150, step: 1, group: 'Centreline pylon flexure (Rev 5.1)', default: 40 },
@@ -289,7 +291,7 @@ export default {
     // ---- Revision 2.1 wing-root load path: mast-step bulkhead ring frame + keel beam (deployed, worst case) ----
     {
       const nW = veh.nWings || 2, mu = ctx.upstream('s10')?.muPeak ?? 0.95, ssf = ctx.upstream('s11')?.ssf ?? ctx.upstream('s01')?.ssf ?? (veh.track / 2) * (2 / 3) / veh.cgHeight;
-      const zRoot = veh.wheelRadius + veh.height * 0.7, hCE = zRoot + 0.45 * veh.wingHeight, FySafe = Math.min(0.7 * mu * veh.mass * G, 0.8 * ssf * veh.mass * G * veh.cgHeight / hCE);
+      const zRoot = veh.wheelRadius + veh.height * 0.7, hCE = zRoot + 0.45 * veh.wingHeight, FySafe = ctx.upstream('s01')?.FySafe_N ?? ctx.upstream('s01')?.washoutCap_N ?? safeSideForce({ mass: veh.mass, cgHeight: veh.cgHeight, ssf, hCE, mu }).Fs;
       const isArch = veh.wingConfig === 'arch', a6 = ctx.upstream('s06')?.arch;
       // tandem: cantilever root moment at breakaway; AeroArch: closed-frame root moment (portal action) at breakaway × gust DAF
       const Mroot = isArch ? (a6?.rootMoment_Nm ?? 0.62 * FySafe / nW * 0.45 * veh.wingHeight * p.gustFactor) : FySafe / nW * (hCE - zRoot) * p.gustFactor;
@@ -389,12 +391,14 @@ export default {
         // Demountable arch joint: bolted flange between the pylon base plate and the root frame (arch removable for storage).
         // Loads: overturning up to the roll-over stop engagement (beyond it the crossbeam lands on the root-frame stops), bump
         // vertical load, yaw torque of the rod cage at the yaw stop, side + braking shear. Preloaded joint with stiffness factor Φ.
-        { const nB = p.flangeN, Rb = p.flangeR, dB = p.flangeD / 1000, As = 0.78 * Math.PI * dB * dB / 4, Fp = p.flangePreload * 1000, Phi = p.flangePhi, mu = 0.2;
+        { const nB = p.flangeN, Rb = p.flangeR, dB = p.flangeD / 1000, As = 0.78 * Math.PI * dB * dB / 4, Fp = p.flangePreload * 1000, Phi = p.flangePhi, mu = 0.2, jInt = !!veh.jointIntegrated, Fpad = jInt ? (p.padForce ?? 10) * 1000 : 0, FpFace = Fp - Fpad / nB; /* integrated thermal joint: the central graphite pad takes Fpad of the total clamp, the faying faces keep the rest */
           const Mfl = Math.max(Mop, Mstop), Tyaw = kCage * thMax, Fz = mA * gN * p.loadFactor, Fsh = Math.hypot((s07?.FySafe ?? 600), 0.9 * gN * mA);
-          const Ft = 2 * Mfl / (nB * Rb) + Fz / nB, SFsep = Fp / Math.max(1e-9, (1 - Phi) * Ft), Fins = Fp + Phi * Ft, SFins2 = p.insertCap * 1000 / Fins;
-          const Fslip = mu * Fp * nB, Fshear = Tyaw / Rb + Fsh, SFslip = Fslip / Fshear, sigB = Fins / As, SFbolt = (p.flangeProof * 1e6) / sigB;
+          const Ft = 2 * Mfl / (nB * Rb) + Fz / nB, SFsep = FpFace / Math.max(1e-9, (1 - Phi) * Ft), Fins = Fp + Phi * Ft, SFins2 = p.insertCap * 1000 / Fins;
+          const Fslip = mu * FpFace * nB + 0.1 * Fpad /* graphite pad μ ≈ 0.1 */, Fshear = Tyaw / Rb + Fsh, SFslip = Fslip / Fshear, sigB = Fins / As, SFbolt = (p.flangeProof * 1e6) / sigB;
           const dFa = Phi * (2 * 0.5 * Mop / (nB * Rb)), sigA = dFa / (2 * As), SFfatB = (p.flangeEndur * 1e6) / Math.max(1, sigA), torque = 0.2 * Fp * dB;
           const okF = Math.min(SFsep, SFins2, SFslip, SFbolt, SFfatB) >= 2;
+          if (jInt) { const padMaxSep = nB * Fp - nB * 2 * (1 - Phi) * Ft, rPk = 0.057, rSock = (p.pylonRodR ?? 85) / 1000 - 0.008, tF = 0.015, dP = 0.006, dAlpha = (23 - 9.7) * 1e-6, dT = 150, slip = dAlpha * dT * rPk;
+            out.tables.push({ title: 'Integrated dry thermal joint in the demountable flange', cols: ['Check', 'Value'], rows: [['Clamp share', `bolts ${nB} × ${fmt(Fp / 1000, 3)} kN = ${fmt(nB * Fp / 1000, 3)} kN; pad ${fmt(Fpad / 1000, 3)} kN; faying faces ${fmt((nB * Fp - Fpad) / 1000, 3)} kN`], ['Pad-force window for separation SF ≥ 2', `≤ ${fmt(padMaxSep / 1000, 3)} kN (set by the recess depth tolerance; verify the pad load–deflection curve)`], ['Pocket (arch-side Ti base flange)', `Ø${fmt(2 * rPk * 1000, 3)} × ${dP * 1000} mm inside the rod circle: ligament to the rod sockets ${fmt((rSock - rPk) * 1000, 3)} mm; ${fmt((tF - dP) * 1000, 3)} mm under the pocket (pad-pressure bending ${fmt(0.75 * 1e6 * rPk ** 2 / ((tF - dP) ** 2) / 1e6, 3)} MPa)`], ['Hub side (CFRP root frame)', 'moulded-in recess with a ply doubler (not machined), Al insert bonded'], ['Heat-pipe exit (arch side)', `vertical 10 × 16 mm port through the ${fmt((tF - dP) * 1000, 3)} mm pocket floor at r ≈ 45 mm (inside the rod circle, ≥ ${fmt((rSock - 0.053) * 1000, 3)} mm to the nearest socket), rising inside the cage to the crossbeam — no radial slot through the load-carrying annulus`], ['Al insert retention / fretting', `clearance fit (≥ 0.25 mm on Ø) on a centre dowel with a PTFE-glass slip film on the pocket floor — Al/Ti mismatch ${fmt(slip * 1000, 3)} mm at the rim over ${dT} K would loosen a press fit; Al/Al across the pad expand together (no fretting)`], ['Ti removed (arch side only)', `${fmt(Math.PI * rPk ** 2 * dP * 1e6, 3)} cm³ ≈ ${fmt(Math.PI * rPk ** 2 * dP * 4940, 3)} kg`]], explain: 'The pocket lies inside the rod circle, where the overturning moment is still in the rods and cage, so the annular flange between the rods and the bolt circle (which carries it to the bolts) is unchanged.' }); }
           out.kpis.push({ label: 'Demountable arch flange: separation / insert pull-out / slip / bolt fatigue SF', value: `${fmt(SFsep, 3)} / ${fmt(SFins2, 3)} / ${fmt(SFslip, 3)} / ${fmt(SFfatB, 3)}`, unit: '', explain: `${nB} × M${p.flangeD} bolts on a ${fmt(Rb * 2000, 4)} mm circle, preload ${p.flangePreload} kN each (torque ≈ ${fmt(torque, 3)} N·m, K 0.2, thread-locked); overturning ${fmt(Mfl, 4)} N·m, yaw torque ${fmt(Tyaw, 4)} N·m, shear ${fmt(Fsh, 4)} N, Φ ${Phi}.`, prov: 'calc', status: okF ? 'ok' : 'bad' });
           out.verdicts.push({ test: 'Demountable arch joint (bolted flange) SF ≥ 2', status: okF ? 'pass' : 'fail', detail: `Max bolt external load ${fmt(Ft, 4)} N; separation SF ${fmt(SFsep, 3)}, insert load ${fmt(Fins, 4)} N vs ${p.insertCap} kN (SF ${fmt(SFins2, 3)}), friction slip SF ${fmt(SFslip, 3)} (μ 0.2), bolt stress ${fmt(sigB / 1e6, 3)} MPa (SF ${fmt(SFbolt, 3)}), gust fatigue amplitude ${fmt(sigA / 1e6, 3)} MPa (SF ${fmt(SFfatB, 3)}).`, fix: 'More bolts or a larger bolt circle; higher-capacity inserts if the preload must rise.' });
           out._flange = { bolts: nB, size: `M${p.flangeD}`, circleDia_mm: Rb * 2000, preload_kN: p.flangePreload, torque_Nm: torque, material: p.flangeMat }; }

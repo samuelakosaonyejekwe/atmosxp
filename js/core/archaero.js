@@ -7,6 +7,7 @@ import { resampleAirfoil } from './mesh.js';
 import { naca4, vehicleAssembly } from './cad.js';
 import { apparentWind, wingForces } from './physics.js';
 import { rad, deg, linspace, clamp, G0 } from './num.js';
+import { safeSideForce } from './safeside.js';
 
 const polarCache = new Map();
 export function sectionPolar(code = '7418', Re = 5e5) {
@@ -32,12 +33,13 @@ export function bodyLift(veh, bAbs, VA, rho = 1.225, { camberPct = 4, fill = 0.7
 }
 
 // safe side force (tyre grip & static tip-over) — lift is capped (de-cambering) to stay inside it
-export function safeSide(veh, hCE, { mu = 0.95, ssf } = {}) { const s = ssf ?? stabilityFactor(veh); return Math.min(0.7 * mu * veh.mass * G0, 0.8 * s * veh.mass * G0 * veh.cgHeight / hCE); }
+export function safeSide(veh, hCE, { mu = 0.95, ssf } = {}) { const s = ssf ?? stabilityFactor(veh); return safeSideForce({ mass: veh.mass, cgHeight: veh.cgHeight, ssf: s, hCE, mu }).Fs; }
 // static stability factor of a tadpole trike: lateral distance CG → tipping axis (front contact → rear contact) / CG height
 export function stabilityFactor(veh) { const fF = veh.frontLoad ?? veh.frontFrac ?? 0.6, a = fF * veh.wheelbase; return (veh.track / 2) * (a / veh.wheelbase) / veh.cgHeight; }
 
 // forces on the arch at apparent-wind angle bAbs and angle of attack alpha (deg); no cap
 export function archForces(G, pol, veh, bAbs, alpha, VA, rho = 1.225, opts = {}) {
+  if (opts.kv != null && opts.kv < 1) return ventScaled(archForces(G, pol, veh, bAbs, alpha, VA, rho, { ...opts, kv: null }), opts.kv, G);
   // stacked lifting line (ground image, body as the lower lifting surface) in attached flow; the earlier root-mirror model
   // is kept for large apparent-wind angles / post-stall, blended over β = 35…45°
   const useStack = (opts.stack ?? veh.stackLL ?? true) && Math.abs(alpha) <= (pol.alphaStall ?? 15) + 4 && bAbs <= 45;
@@ -53,9 +55,12 @@ export function archFillProps(veh, G) { const AM = G.AM, h = AM.legHeight * Math
   if (fill === 'hybrid') return { area: 0.5 * f * h * AM.rootChord + 2 * 0.04, zc: AM.zRoot + f * h / 3, torsionFactor: 1 / Math.sqrt(Math.max(0.2, 1 - f)), parts: 3 };
   return { area: 0, zc: AM.zRoot, torsionFactor: 1, parts: 0 }; }
 function archForcesRootMirror(G, pol, veh, bAbs, alpha, VA, rho = 1.225, { camberPct = 4, interf = 1, oswald = 0.85 } = {}) {
-  const C3 = (a) => { const c = coeffs(pol, a); if (Math.abs(a) > pol.alphaStall + 8) return c; const f = finiteWing(c.CL * G.cosL, c.CD, G.ARe, oswald); return { CL: f.CL, CD: f.CD }; };
+  const C3 = (a) => { const c = coeffs(pol, a); if (Math.abs(a) > pol.alphaStall + 8) return { ...c, CDi: 0 }; const f = finiteWing(c.CL * G.cosL, c.CD, G.ARe, oswald); return { CL: f.CL, CD: f.CD, CDi: f.CDi }; };
   const c1 = C3(alpha), eps = deg(c1.CL / (Math.PI * G.ARe)) * Math.abs(Math.sin(rad(bAbs))) * Math.exp(-G.gMean * Math.abs(Math.cos(rad(bAbs))) / (0.5 * G.cmean));
-  const cw = C3(alpha + 0.3 * eps), cl = C3(alpha - eps), e = rad(eps), CL = (cw.CL + cl.CL * Math.cos(e)) / 2, CD = (cw.CD + cl.CD + cl.CL * Math.sin(e)) / 2;
+  const cw = C3(alpha + 0.3 * eps), cl = C3(alpha - eps), e = rad(eps), CL = (cw.CL + cl.CL * Math.cos(e)) / 2;
+  /* induced drag (finite-wing term and the downwash tilt of the lee leg) belongs to the lift actually carried: when the skin
+     de-cambers (lift × interf) it falls with interf², the profile drag stays */
+  const CDi = (cw.CDi + cl.CDi + cl.CL * Math.sin(e)) / 2, CD = (cw.CD + cl.CD + cl.CL * Math.sin(e)) / 2 - CDi * (1 - interf * interf);
   const F = wingForces(VA, bAbs, CL * interf, CD, G.S, rho), Db = 0.5 * rho * (veh.CdA + 0.012 * (G.AM.bridgeArea || 0)) * VA * VA, B = bodyLift(veh, bAbs, VA, rho, { camberPct });
   // sideEq: side force at the arch centre of effort giving the same overturning moment (the body forces act lower)
   const sB = B.side + Db * Math.sin(rad(bAbs)), zB = (veh.wheelRadius ?? 0.3) + (veh.height ?? 1) / 2;
@@ -150,10 +155,42 @@ export function stackForces(ST, pol, veh, bAbs, alpha, VA, rho = 1.225, { camber
 export { dragBuildup } from './dragbuild.js';
 // lift-capped forces: if the side force exceeds the safe limit the bistable skin de-cambers and the flexure stiffens,
 // shedding lift (modelled as the CL scale that brings the side force back to the limit)
+// PASSIVE PRESSURE-RELIEF VENTS — one monolithic KIRIGAMI RELIEF PANEL per leg and one in the bridge: a laser-cut slit pattern
+// in the glass-reinforced TPU skin between the leading-edge fairing and the spar box (2–12 % chord) and aft of the box (30–97 %).
+// The flaps are bistable (curved ligaments): they pop out of plane together when the mean pressure difference across the arch
+// reaches Δp_open and fold back elastically below Δp_close (buckling-induced kirigami, Rafsanjani & Bertoldi, Phys. Rev. Lett.
+// 118, 084301, 2017; bistable cut patterns, Rafsanjani & Pasini, Extreme Mech. Lett. 9, 2016). The normal force of the vented
+// zone falls with the open-area ratio φ as for porous plates normal to a stream (normalised trend of Castro, J. Fluid Mech. 46,
+// 1971); the cut kerf is sealed shut by a co-moulded TPU lip on the lee face that the flap lifts away when it opens (φ_closed = 0). To be confirmed on a panel in the Suite 24 test plan.
+// k_v = 1 − zone·(1 − r(φ)).
+export const VENT_DEFAULT = { zone: 0.73, phiMax: 0.67, phiClosed: 0, dpOpenK: 0.9, dpCloseK: 0.5 };
+const POR = [[0, 1], [0.1, 0.85], [0.2, 0.70], [0.3, 0.56], [0.4, 0.42], [0.5, 0.30], [0.6, 0.20], [0.7, 0.12], [0.8, 0.06], [1, 0]];
+export function porousRatio(phi) { for (let i = 1; i < POR.length; i++) if (phi <= POR[i][0]) { const [x0, y0] = POR[i - 1], [x1, y1] = POR[i]; return y0 + (y1 - y0) * (phi - x0) / (x1 - x0); } return 0; }
+export const ventK = (V, phi) => 1 - V.zone * (1 - porousRatio(phi));
+// vent opening for a solid-arch state F (wing normal force) at dynamic pressure q: fixed point of φ(Δp(k_v(φ))); thresholds are
+// set from the safe side force so the vents stay shut while the arch loading is below the cap (no thrust lost in normal driving)
+export function ventState(V, F, q, S, FyS, { forceOpen = false } = {}) {
+  /* bistable kirigami flaps pop fully open (φ_max) at Δp_open and fold back below Δp_close (hysteresis); the driver lever
+     (depower / park positions) tensions each panel spanwise through the shared cable, which pops the flaps open at any load.
+     Δp_open is set from the safe side force so the panels stay shut while the arch loading is below the cap. */
+  if (!V) return { phi: 0, kv: 1, dp: 0 };
+  const dpO = V.dpOpen ?? V.dpOpenK * FyS / S, dpC = (V.dpCloseK ?? 0.5) * dpO, wL = F.Lw ?? F.L, wD = F.Lw != null ? (F.Dp ?? 0) + (F.Di ?? 0) * F.Lw / Math.max(1e-9, F.L) : F.D, CN = Math.hypot(wL, wD) / Math.max(1e-9, q * S), dp = CN * q; /* arch panels only (the stacked model's L also holds the body lift) */
+  const open = forceOpen || dp >= dpO, phi = open ? V.phiMax : (V.phiClosed ?? 0);
+  return { phi, kv: ventK(V, phi), dp: dp * ventK(V, phi), dpSolid: dp, dpOpen: dpO, dpClose: dpC, lever: forceOpen, open };
+}
+// scale the arch (wing) share of a force state by k_v; body forces unchanged
+function ventScaled(F, kv, G) {
+  const wS = F.Lw != null && F.L > 0 ? F.Lw / F.L : 1, k = 1 - (1 - kv) * wS, sideW = F.wingSide ?? F.side;
+  const dSide = sideW * (1 - k), dThr = (F.wingThrust ?? 0) * (1 - k);
+  return { ...F, CL: F.CL * kv, CD: F.CD * kv, L: F.L * k, D: F.D * k, Lw: F.Lw != null ? F.Lw * kv : undefined, wingThrust: (F.wingThrust ?? 0) - dThr, wingSide: sideW - dSide, net: F.net - dThr, side: F.side - dSide, sideEq: F.sideEq - dSide, kv, wingL: F.L * wS, wingD: F.D * wS };
+}
 export function cappedForces(G, pol, veh, bAbs, alpha, VA, rho, FyS, opts) {
+  { const V = veh.vents === true ? VENT_DEFAULT : veh.vents; if (V && !opts?.kvDone) { const F0 = archForces(G, pol, veh, bAbs, alpha, VA, rho, { ...opts, interf: opts?.interf ?? 1 }), lev = !!opts?.lever && Math.abs(alpha) <= 90, /* directional flaps (ligaments on the upstream edge): the lever only biases them past the barrier; in reversed flow over the arch (|α| > 90°, wind abaft the arch) the stream folds them shut, so depower acts only where it cuts thrust */ vs = ventState(V, F0, 0.5 * rho * VA * VA, G.S, FyS === Infinity ? safeSide(veh, sideCE(veh) ?? G.hCE) : FyS, { forceOpen: lev });
+    if (lev) { const R = cappedForces(G, pol, veh, bAbs, alpha, VA, rho, FyS, { ...opts, kv: vs.kv, kvDone: true }); return { ...R, vent: vs, lever: true, capped: true }; } /* lever: panels held open (all arch forces × k_v ≤ 1, so thrust and drag push can only fall); skin washout stays passive */
+    if (vs.kv < 1) { const R = cappedForces(G, pol, veh, bAbs, alpha, VA, rho, FyS, { ...opts, kv: vs.kv, kvDone: true }); return { ...R, vent: vs, capped: true }; } } }
   const F = archForces(G, pol, veh, bAbs, alpha, VA, rho, opts); if (F.sideEq <= FyS) return { ...F, capped: false };
   // de-cambering can only remove the camber lift: the scale cannot fall below the symmetric-section fraction (≈ minScale)
-  const minS = opts?.minScale ?? (F.stack ? 0 : 0.6); let lo = minS, hi = 1; // stacked model: interf scales the camber lift only, so full de-cambering is interf = 0 if (archForces(G, pol, veh, bAbs, alpha, VA, rho, { ...opts, interf: minS }).sideEq > FyS) return { ...archForces(G, pol, veh, bAbs, alpha, VA, rho, { ...opts, interf: minS }), capped: true, liftScale: minS, overLimit: true };
+  const minS = Math.min(opts?.minScale ?? (F.stack ? 0 : 0.6), opts?.interf ?? 1); let lo = minS, hi = opts?.interf ?? 1; /* stacked model: interf scales the camber lift only, so full de-cambering is interf = 0 */ if (archForces(G, pol, veh, bAbs, alpha, VA, rho, { ...opts, interf: minS }).sideEq > FyS) return { ...archForces(G, pol, veh, bAbs, alpha, VA, rho, { ...opts, interf: minS }), capped: true, liftScale: minS, overLimit: true };
   for (let i = 0; i < 22; i++) { const m = (lo + hi) / 2; if (archForces(G, pol, veh, bAbs, alpha, VA, rho, { ...opts, interf: m }).sideEq > FyS) hi = m; else lo = m; }
   return { ...archForces(G, pol, veh, bAbs, alpha, VA, rho, { ...opts, interf: lo }), capped: true, liftScale: lo };
 }
@@ -162,11 +199,19 @@ export function cappedForces(G, pol, veh, bAbs, alpha, VA, rho, FyS, opts) {
 // Self-trimming wingsail principle: axis ahead of the aerodynamic centre plus a reflexed (positive C_m,ac) bistable skin.
 // Moment balance about the flexure axis: kθ·δ = q·S·c̄·[C_L(β−δ)·(0.25 − x_axis) − C_m0]. With a soft flexure the arch
 // trims at the constant C_L,trim = C_m0/(0.25 − x_axis), independent of wind speed; the flexure only centres it at rest.
-export function trimState(G, pol, veh, bAbs, VA, rho, { kTheta, xAxis, Cm0 = 0.06, deltaMax = 25, FyS, camberPct = 4, scanN = 100 }) {
+export function trimState(G, pol, veh, bAbs, VA, rho, { kTheta, xAxis, Cm0 = 0.06, deltaMax = 25, FyS, camberPct = 4, scanN = 100, lever = false, camber = 1 }) {
+  /* camber: progressive skin-camber setting from the driver lever travel (1 = full reflexed camber, 0 = flat): scales the camber
+     zero-lift shift and the camber pitching moment, so it also moves the self-trim incidence */
+  if (camber !== 1 && !arguments[6]._camberDone) return trimState(G, pol, veh, bAbs, VA, rho, { ...arguments[6], Cm0: Cm0 * camber, camber: 1, _camberDone: true, _interf: camber });
+  if (lever) { /* depower: in forward flow over the arch the tensioned panels stay open and the cam-free tendon also holds the reflexed skin
+     flat (no camber lift or camber moment); in reversed flow (|α| > 90°) the stream folds the directional flaps shut and the skin
+     is left to the passive washout — so depowering can only cut thrust and drag push */
+    const T1 = trimState(G, pol, veh, bAbs, VA, rho, { kTheta, xAxis, Cm0: 0, deltaMax, FyS, camberPct: 0, scanN, lever: false, _lev: true });
+    if (Math.abs(T1.alpha) <= 90) return T1; return trimState(G, pol, veh, bAbs, VA, rho, { kTheta, xAxis, Cm0, deltaMax, FyS, camberPct, scanN, lever: false }); }
   const q = 0.5 * rho * VA * VA, c = G.cmean;
   // aerodynamic moment about the axis (positive = nose-up, raising α): attached flow → C_L at the quarter chord + C_m0;
   // beyond stall the normal force C_N acts progressively further aft (towards mid-chord), weathervaning the arch
-  const cmAxis = (a) => { const F = archForces(G, pol, veh, bAbs, a, VA, rho, { camberPct }), aa = Math.abs(a), t = clamp((aa - pol.alphaStall) / 25, 0, 1), xcp = 0.25 + 0.22 * t, CN = Math.hypot(F.CL, F.CD) * Math.sign(F.CL || 1), Cmc = Cm0 * (1 - t); return Cmc - CN * (xcp - xAxis); };
+  const intf0 = arguments[6]._interf ?? 1, cmAxis = (a) => { const F = archForces(G, pol, veh, bAbs, a, VA, rho, { camberPct, interf: intf0 }), aa = Math.abs(a), t = clamp((aa - pol.alphaStall) / 25, 0, 1), xcp = 0.25 + 0.22 * t, CN = Math.hypot(F.CL, F.CD) * Math.sign(F.CL || 1), Cmc = Cm0 * (1 - t); return Cmc - CN * (xcp - xAxis); };
   const mom = (d) => kTheta * rad(d) + q * G.S * c * cmAxis(bAbs - d); // >0 → δ decreases? (δ+ rotates nose into wind, lowering α)
   // equilibrium: kθ·δ = q S c̄ C_m,axis(α)·(−1) … expressed as f(δ) = kθδ + qSc̄·C_m(α) = 0; stable when df/dδ > 0
   const f = (d) => kTheta * rad(d) + q * G.S * c * cmAxis(bAbs - d);
@@ -174,7 +219,7 @@ export function trimState(G, pol, veh, bAbs, VA, rho, { kTheta, xAxis, Cm0 = 0.0
   for (let i = N; i > 0; i--) { const d1 = -deltaMax + 2 * deltaMax * i / N, d0 = -deltaMax + 2 * deltaMax * (i - 1) / N; if (f(d1) >= 0 && f(d0) < 0) { let lo = d0, hi = d1; for (let k = 0; k < 20; k++) { const m = (lo + hi) / 2; if (f(m) >= 0) hi = m; else lo = m; } d = (lo + hi) / 2; break; } }
   if (d === null) d = f(deltaMax) < 0 ? deltaMax : -deltaMax; // moment exceeds the flexure at the stop / below the other stop
   void mom;
-  const F = cappedForces(G, pol, veh, bAbs, bAbs - d, VA, rho, FyS ?? Infinity, { camberPct });
+  const F = cappedForces(G, pol, veh, bAbs, bAbs - d, VA, rho, FyS ?? Infinity, { camberPct, lever: arguments[6]._lev === true, interf: arguments[6]._lev ? 0 : (arguments[6]._interf ?? 1) });
   return { delta: d, alpha: bAbs - d, atStop: Math.abs(d) >= deltaMax - 1e-6, ...F };
 }
 // best α within the ±δmax envelope (for comparison: what an ideal adjustable root would do inside the same envelope)
@@ -183,12 +228,20 @@ export function bestInEnvelope(G, pol, veh, bAbs, VA, rho, { deltaMax = 25, FyS,
 }
 
 // sustainable speed for true wind U at the best heading (true-wind angle 30…170°), flexure-trimmed arch
-export function sustainableSpeed(G, pol, veh, U, flex, { rho = 1.225, headings = [35, 45, 60, 75, 90, 105, 120, 140, 160], vmax = 35, dv = 0.25, mode = 'trim', scanN = 100, reach = true, coarse = 0.5 } = {}) {
+export function sustainableSpeed(G, pol, veh, U, flex, { rho = 1.225, headings = [35, 45, 60, 75, 90, 105, 120, 140, 160], vmax = 35, dv = 0.25, mode = 'trim', scanN = 100, reach = true, coarse = 0.5, gust = null, lever = 'off', progressive = false } = {}) {
   // reach: accelerate from rest along the chosen heading while net thrust ≥ rolling resistance (no gaps);
   // reach = false: highest steady force-balance speed (as Suite 20, the vehicle may be brought up to speed by the hub)
-  const FyS = flex.FyS ?? safeSide(veh, G.hCE), Fr = veh.mass * G0 * veh.Crr; let best = { v: 0, twa: 90 };
+  const FyS = flex.FyS ?? safeSide(veh, sideCE(veh) ?? G.hCE), Fr = veh.mass * G0 * veh.Crr; let best = { v: 0, twa: 90 };
   // pol may be a function of the apparent-wind speed (Reynolds-resolved polars, as in Suite 07)
-  const netAt = (v, twa) => { const aw = apparentWind(U, twa, 0, v), b = Math.abs(aw.beta), VA = Math.max(aw.Va, 1e-3), pV = typeof pol === 'function' ? pol(VA) : pol; const F = mode === 'ideal' ? bestInEnvelope(G, pV, veh, b, VA, rho, { deltaMax: flex.deltaMax ?? 25, FyS }) : trimState(G, pV, veh, b, VA, rho, { ...flex, FyS, scanN }); return F.overLimit ? -Infinity : F.net; }; // over the safe side force even when fully de-cambered: inadmissible
+  /* progressive unloading (driver lever travel / storm detent sets the skin camber continuously): the best admissible camber
+     setting — the highest thrust with the side force within the cap */
+  const CAMB = progressive ? [1, 0.75, 0.5, 0.25, 0] : [1];
+  const progBest = (pV, b, VA) => { let best = null; for (const cb of CAMB) { const T = trimState(G, pV, veh, b, VA, rho, { ...flex, FyS, scanN, camber: cb }); if (!best || (best.overLimit && !T.overLimit) || (!T.overLimit === !best.overLimit && T.net > best.net)) best = { ...T, camberSetting: cb }; } return best; };
+  const netAt = (v, twa) => { const aw = apparentWind(U, twa, 0, v), b = Math.abs(aw.beta), VA = Math.max(aw.Va, 1e-3), pV = typeof pol === 'function' ? pol(VA) : pol; const F = mode === 'ideal' ? bestInEnvelope(G, pV, veh, b, VA, rho, { deltaMax: flex.deltaMax ?? 25, FyS }) : progBest(pV, b, VA); if (mode === 'ideal') return F.overLimit ? -Infinity : F.net;
+    /* gust admissibility (same heading and speed, true wind × gust) and the driver lever in its depower position (kirigami panels held open) */
+    const okG = (lev) => { if (!gust) return true; const ag = apparentWind(U * gust, twa, 0, v), bg = Math.abs(ag.beta), Vg = Math.max(ag.Va, 1e-3); return !trimState(G, typeof pol === 'function' ? pol(Vg) : pol, veh, bg, Vg, rho, { ...flex, FyS, scanN, lever: lev }).overLimit; };
+    const nN = !F.overLimit && okG(false) ? F.net : -Infinity; if (lever === 'off' || !veh.vents) return nN;
+    const FL = trimState(G, pV, veh, b, VA, rho, { ...flex, FyS, scanN, lever: true }), nL = !FL.overLimit && okG(true) ? FL.net : -Infinity; return lever === 'on' ? nL : Math.max(nN, nL); }; // over the safe side force even when fully de-cambered: inadmissible
   for (const twa of headings) { if (!reach) { const st = Math.max(dv, coarse); for (let v = vmax; v > best.v; v -= st) if (netAt(v, twa) >= Fr) { let lo = v, hi = Math.min(vmax, v + st); if (hi > lo) for (let k = 0; k < 7 && hi - lo > dv / 4; k++) { const m = (lo + hi) / 2; if (netAt(m, twa) >= Fr) lo = m; else hi = m; } best = { v: lo, twa }; break; } continue; } /* steady: coarse 0.5 m/s scan from the top, then bisect the force-balance edge */ let v = 0.2; if (netAt(v, twa) < Fr) continue; while (v < vmax && netAt(v + dv, twa) >= Fr) v += dv; if (v > best.v) best = { v, twa }; }
   return best;
 }
@@ -211,3 +264,71 @@ export function tipOverWind(G, pol, veh, { ssf, cap = true, deltaMax = 25 } = {}
   return 40;
 }
 export const wheelPower20 = (veh, rho = 1.225) => { const v = 20 / 3.6; return (veh.mass * G0 * veh.Crr + 0.5 * rho * veh.CdA * v * v) * v; };
+// arch centre of side force: height of the lift centroid of the arch panels (legs + root junction) from the stacked lifting-line
+// spanwise loading with the ground image and the root-endplate partial reflection, at a beam-wind cruise state (α 8°). This is
+// THE h_CE of the safe side-force rule (js/core/safeside.js); Suite 01 publishes it and every suite reads it from there.
+export function sideCE(veh, { alpha = 8 } = {}) {
+  if ((veh.wingConfig || 'arch') !== 'arch') return null;
+  const ST = vehicleStack(veh, stackOpts(veh)), isW = (g) => g.kind === 'wing' || g.kind === 'deckSkirt', a0 = 2 * Math.PI;
+  const sys = stackSystem(ST.segs, { plate: ST.plate }), th = ST.segs.map(g => isW(g) ? rad(alpha) : 0), R = stackSolve(sys, th, ST.segs.map(g => isW(g) ? 1.6 : 0.6));
+  let m = 0, f = 0; sys.pn.forEach((p, i) => { if (!isW(ST.segs[p.si])) return; const l = R.G[i] * p.dz; m += l * p.zm; f += l; }); void a0;
+  return f > 0 ? m / f : null;
+}
+// h_CE over the whole operating envelope (safety cap must be conservative): apparent-wind angle 20–160° (sets the body side-panel
+// angle that loads the stack from below), arch incidence −5…40° (self-trim, washout floor, gust +12°, yaw ±25° all land inside it),
+// skin de-camber states (zero-lift shift and section C_l,max scaled 1 → 0.3, which moves load between tip and root through
+// section stall), with and without the root-plate reflection credit, at apparent wind 3–35 m/s. The washout holds the arch side
+// force at or below the cap F, so the heeling moment of a state is min(|F_state|, F)·h_state; the design h_CE is the largest
+// such moment ÷ F (lightly loaded states with a high centre count only by the moment they actually make), + uncertainty.
+const ceCache = new Map();
+function ceStates(veh) { /* Γ/V moments of every envelope state (independent of the cap and of the wind speed) — memoised per geometry */
+  const isW = (g) => g.kind === 'wing' || g.kind === 'deckSkirt', out = [];
+  const stacks = [true, false].map(plateOn => { const v = plateOn ? veh : { ...veh, rootPlateW: 0, rootPlateL: 0 }, ST = vehicleStack(v, stackOpts(v)); return { plateOn, ST }; });
+  const key = JSON.stringify(stacks.map(({ ST }) => [ST.segs.map(g => [g.kind, g.z0, g.z1, g.c0, g.c1, g.a].map(x => typeof x === 'number' ? +x.toFixed(4) : x)), ST.plate])); if (ceCache.has(key)) return ceCache.get(key);
+  for (const { plateOn, ST } of stacks) { const sys = stackSystem(ST.segs, { plate: ST.plate });
+    for (const beta of [20, 40, 60, 90, 120, 140, 160]) for (const al of [-5, 0, 4, 8, 12, 16, 20, 25, 30, 40]) for (const wash of [1, 0.7, 0.5, 0.3]) {
+      const aB = rad(Math.min(beta, 180 - beta)) + (beta <= 90 ? 2 * 0.04 * wash : 0), al0 = rad(-4) * wash;
+      const R = stackSolve(sys, ST.segs.map(g => isW(g) ? rad(al) - al0 : aB), ST.segs.map(g => isW(g) ? 1.6 * wash : 0.6));
+      let m = 0, f = 0; sys.pn.forEach((p, i) => { if (!isW(ST.segs[p.si])) return; const l = R.G[i] * p.dz; m += l * p.zm; f += l; });
+      out.push({ f, m, beta, alpha: al, wash, plate: plateOn });
+    } }
+  if (ceCache.size > 50) ceCache.clear(); ceCache.set(key, out); return out;
+}
+export function sideCEEnvelope(veh, { Fcap, uncertainty = 0.05, Vmin = 3, Vmax = 35, rho = 1.225 } = {}) {
+  if ((veh.wingConfig || 'arch') !== 'arch') return null;
+  const cases = [];
+  for (const st of ceStates(veh)) for (const Va of [Vmin, 8, 15, 25, Vmax]) { const q2 = rho * Va * Va, F = Math.abs(q2 * st.f), M = Math.abs(q2 * st.m); /* lift = 2qΣ(Γ/V)dz */
+    if (F > 1e-6) cases.push({ hEff: Math.min(F, Fcap) / F * M / Fcap, h: M / F, F, Va, beta: st.beta, alpha: st.alpha, wash: st.wash, plate: st.plate }); }
+  const worst = cases.reduce((a, c) => c.hEff > a.hEff ? c : a), loaded = cases.filter(c => c.F >= Fcap).map(c => c.h);
+  return { nominal: sideCE(veh), max: worst.hEff, atCapMin: Math.min(...loaded), atCapMax: Math.max(...loaded), worst, n: cases.length, uncertainty, design: worst.hEff * (1 + uncertainty) };
+}
+// conservative design h_CE and the cap it gives: fixed point of h_CE(F_cap) and F_cap(h_CE) (capOf(h) = the safe-side-force rule)
+export function designCE(veh, capOf, opts = {}) {
+  const h0 = sideCE(veh); if (h0 == null) return null; let h = h0 * 1.05, E = null;
+  for (let it = 0; it < 12; it++) { E = sideCEEnvelope(veh, { ...opts, Fcap: capOf(h) }); if (Math.abs(E.design - h) < 1e-4) break; h = Math.max(h, E.design); }
+  return { ...E, design: h, Fcap: capOf(h) };
+}
+
+// highest SAFE driving speed on a heading in true wind U with gusts × gust (side force within the cap in the mean and the gust
+// state, best unloading mode), independent of whether the wind alone sustains it (hub- or store-assisted driving)
+export function safeDrivingSpeed(G, pol, veh, U, flex, twa, { rho = 1.225, gust = 1.4, vmax = 35, dv = 0.5, scanN = 40 } = {}) {
+  const FyS = flex.FyS ?? safeSide(veh, sideCE(veh) ?? G.hCE), modes = veh.vents ? [false, true] : [false];
+  const ok = (v) => modes.some(lev => [1, gust].every(g => { const a = apparentWind(U * g, twa, 0, v), Va = Math.max(a.Va, 1e-3); return !trimState(G, typeof pol === 'function' ? pol(Va) : pol, veh, Math.abs(a.beta), Va, rho, { ...flex, FyS, scanN, lever: lev }).overLimit; }));
+  if (!ok(0)) return { v: 0, standstill: false }; let v = 0; while (v < vmax && ok(v + dv)) v += dv; return { v, standstill: true };
+}
+// parked tip-over wind with the lever in PARK: the cable holds the kirigami relief panels fully open and the skin flat, and the
+// yaw limiter either holds the arch aligned with the car (α = apparent-wind angle, limiter 'locked') or leaves it free on the
+// ±δ flexure ('free'); worst over wind angles 0–180°. Overturning moment = arch side force at the centre of effort + the body
+// side force × its height; pass body(U, β) → { Fy, z } to use the SAME body model as every other design (Suite 01), otherwise
+// the lifting-line body of this model is used. Restoring moment M_res = m·g·SSF·h_cg. lever: false = parked in drive (solid).
+export function parkedTipWind(veh, Mres, { lever = false, limiter = 'locked', body = null, flex = { kTheta: 60, xAxis: 0.135, Cm0: 0.05, deltaMax: veh.yawLimit ?? 25 }, pol = sectionPolar('7418', 5e5), rho = 1.225 } = {}) {
+  const G = archGeometry(veh), V = veh.vents === true ? VENT_DEFAULT : veh.vents, kv = V ? ventK(V, lever ? V.phiMax : (V.phiClosed ?? 0)) : 1, rows = [];
+  const hW = sideCE(veh) ?? G.hCE, zB = (veh.wheelRadius ?? 0.3) + (veh.height ?? 1) / 2;
+  const momentAt = (b, U) => { const bb = Math.max(b, 0.1); let F;
+    if (limiter === 'free') { const T = trimState(G, pol, veh, Math.min(bb, 179.9), U, rho, { ...flex, FyS: Infinity, scanN: 40, camber: lever ? 0 : 1 }); F = archForces(G, pol, veh, Math.min(bb, 179.9), T.alpha, U, rho, { kv, interf: lever ? 0 : 1 }); }
+    else F = archForces(G, pol, veh, bb, (b <= 90 ? b : b - 180) || 0.1, U, rho, { kv, interf: lever ? 0 : 1 });
+    if (!body) return Math.abs(F.sideEq) * G.hCE;
+    const wS = F.Lw != null && F.L > 0 ? Math.abs(F.side) * F.Lw / F.L : Math.abs(F.wingSide), B = body(U, b); return wS * hW + Math.abs(B.Fy) * B.z; };
+  for (const b of [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180]) { let U = 4; for (; U < 60; U += 0.25) if (momentAt(b, U) > Mres) break; rows.push([b, U]); }
+  const w = rows.reduce((a, r) => r[1] < a[1] ? r : a); return { U: w[1], angle: w[0], rows, limiter, lever };
+}

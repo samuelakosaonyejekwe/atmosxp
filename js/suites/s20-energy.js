@@ -1,4 +1,6 @@
 // Suite 20 — Complete automobile propulsion, energy management & operating modes.
+import { safeSideForce } from '../core/safeside.js';
+import * as AA from '../core/archaero.js';
 import { G0, fmt, range, linspace, rng, sum, mean, max, min, interp1, brent, clamp, rad, deg } from '../core/num.js';
 import { kmh, roadLoad, apparentWind, wingForces, kaimal, oneMinusCos, carnot } from '../core/physics.js';
 import { SCENARIOS } from '../core/env.js';
@@ -53,6 +55,7 @@ export default {
     { key: 'clamshell', label: 'Passive split trailing-edge drag mode (rear flow only)', type: 'bool', group: 'Wing', default: false, help: 'Off by default: on the site climate it adds no feasible trips (dead-downwind drag mode needs ≥ 8 m/s to hold 20 km/h) while the closed panels cost mass and profile drag.' },
     { key: 'clamBeta', label: 'Drag-mode opening threshold (apparent-wind angle)', unit: '°', type: 'number', min: 100, max: 170, step: 5, group: 'Wing', default: 130, help: 'Opens only when the apparent wind comes from behind the arch (reversed trailing-edge flow); hysteresis closes it again below threshold − 10°.' },
     { key: 'clamCd', label: 'Open split-flap drag coefficient', type: 'number', min: 0.5, max: 2, step: 0.05, group: 'Wing', default: 1.1 },
+    { key: 'washDAF', label: 'Washout gust-overshoot factor (cap held at safe force / factor)', type: 'number', min: 1, max: 2, step: 0.01, group: 'Wing', default: 1.15, auto: (c) => { const d = c.upstream('s06')?.arch?.gustDAF; return d ? { value: +Math.max(1, d).toFixed(3), prov: 'coupled' } : undefined; } },
     { key: 'energyNeutralTrips', label: 'Trip feasibility: allow the buffer to bridge gust lulls (ΔE_stored ≥ 0 over the trip)', type: 'bool', group: 'Scenario', default: true },
     { key: 'groundEffect', label: 'Skirted-underbody ground-effect downforce (only with a skirt gap ≤ 60 mm)', type: 'bool', group: 'Wing', default: false, help: 'Off by default: at the lower-bound C_L 0.2 and L/D 8 the extra rolling resistance and drag outweigh the higher side-force cap (2 m/s −13 %, 10 m/s −1.4 % in the Revision 5.1 study).' },
     { key: 'geCL', label: 'Ground-effect downforce coefficient (plan area, lower bound)', type: 'number', min: 0, max: 1.5, step: 0.05, group: 'Wing', default: 0.2, expert: true, help: 'Lower bound for a smooth skirted underbody with a mild diffuser; sealed ground-effect underbodies reach several times more.' },
@@ -121,9 +124,9 @@ export default {
     // Revision 2.2 reefable wings: deployed span veh.wingHeight / area veh.wingArea; reefed span veh.wingReefSpan
     const spanD = veh.wingHeight, spanR = Math.min(spanD, veh.wingReefSpan ?? spanD), reefable = spanR < spanD - 1e-6;
     const archS01 = ctx.upstream('s01')?.arch, isArchV = (veh.wingConfig || 'arch') === 'arch';
-    const hCED = archS01?.hCE ?? (R + veh.height * 0.7 + spanD * (isArchV ? 0.5 : 0.45)), hCER = isArchV ? hCED : R + veh.height * 0.7 + spanR * 0.45, FyGrip = 0.7 * mu * m * G0;
-    const FyMaxOf = (hce) => p.safeDepower === false ? Infinity : Math.min(0.8 * ssf * m * G0 * veh.cgHeight / hce, FyGrip);
-    let Sw = veh.wingArea, FyMax = FyMaxOf(hCED), hCE = hCED, FyRoll = 0.8 * ssf * m * G0 * veh.cgHeight / hCED;
+    const hCED = ctx.upstream('s01')?.hCE_m ?? archS01?.hCE ?? (R + veh.height * 0.7 + spanD * (isArchV ? 0.5 : 0.45)), hCER = isArchV ? hCED : R + veh.height * 0.7 + spanR * 0.45, FyGrip = 0.7 * mu * m * G0;
+    const FyS01 = ctx.upstream('s01')?.FySafe_N, FyMaxOf = (hce) => p.safeDepower === false ? Infinity : (FyS01 != null && hce === hCED ? FyS01 : safeSideForce({ mass: m, cgHeight: veh.cgHeight, ssf, hCE: hce, mu }).Fs) / (p.washDAF ?? 1); /* the one cap (Suite 01); washout set below it by the gust overshoot */
+    let Sw = veh.wingArea, FyMax = FyMaxOf(hCED), hCE = hCED, FyRoll = ctx.upstream('s01')?.safeSide?.Froll ?? safeSideForce({ mass: m, cgHeight: veh.cgHeight, ssf, hCE: hCED, mu }).Froll;
     const reefMode = p.reefMode || 'auto';
     const setReef = (on) => { const r = reefable && on; Sw = r ? veh.wingArea * spanR / spanD : veh.wingArea; hCE = r ? hCER : hCED; FyMax = FyMaxOf(hCE); return r; };
     const reefFor = (U) => reefMode === 'reefed' ? true : reefMode === 'deployed' ? false : U > p.reefU;
@@ -174,10 +177,17 @@ export default {
         // washout: the bistable skin de-cambers between the trimmed state (CL, CD) and the fully de-cambered floor (CL0, CD0)
         const L0 = c.CL0 ?? (FE.minScale ?? 0.6) * c.CL, D0 = c.CD0 ?? c.CD, Fy0 = q * Sw * (c.CL * Math.cos(b) + c.CD * Math.sin(b));
         if (Fy0 > FyLim) { const s0 = L0 * Math.cos(b) + D0 * Math.sin(b), s1 = c.CL * Math.cos(b) + c.CD * Math.sin(b); sc = clamp((FyLim / (q * Sw) - s0) / Math.max(1e-9, s1 - s0), 0, 1); washed = true; }
-        const CL = L0 + sc * (c.CL - L0), CDs = D0 + sc * (c.CD - D0), Fy = q * Sw * (CL * Math.cos(b) + CDs * Math.sin(b));
+        let CL = L0 + sc * (c.CL - L0), CDs = D0 + sc * (c.CD - D0), Fy = q * Sw * (CL * Math.cos(b) + CDs * Math.sin(b)), vented = false;
+        /* passive pressure-relief vents (bistable slats snap open once the de-cambered arch still exceeds the cap): arch forces × k_v */
+        if (Fy > FyLim * 1.001 && veh.vents) { const Vv = veh.vents === true ? AA.VENT_DEFAULT : veh.vents, kv = AA.ventK(Vv, Vv.phiMax); CL *= kv; CDs *= kv; Fy = q * Sw * (CL * Math.cos(b) + CDs * Math.sin(b)); vented = true; }
         // beyond the de-cambering floor and the ±δ stop the arch cannot shed more lift: the side force would exceed the safe
         // limit, so this speed/heading is not admissible (no steady state; the time simulation slows down instead)
-        const over = Fy > FyLim * 1.001; return { Fx: q * Sw * (CL * Math.sin(b) - CDs * Math.cos(b)), Fy, overLimit: over, feather: -q * Sw * p.CD0 * Math.cos(b), incidence: c.delta, alpha: ab - c.delta, atLimit: Math.abs(c.delta) >= dMax * 180 / Math.PI - 1e-6, washed, src: 's07' };
+        /* progressive unloading by the driver lever (storm setting): tendon tension opens the kirigami flaps progressively
+           (buckling-induced pop-up grows continuously with panel strain), scaling lift AND drag by k_v ∈ [k_v,min, 1] at full camber;
+           take it when it gives more thrust at the cap than de-cambering (which sheds lift but keeps the profile drag) */
+        if (washed && veh.vents && veh.unloadingLever !== false) { const Vv = veh.vents === true ? AA.VENT_DEFAULT : veh.vents, kvMin = AA.ventK(Vv, Vv.phiMax), FyF = q * Sw * (c.CL * Math.cos(b) + c.CD * Math.sin(b)), kv = FyLim / Math.max(1e-9, FyF);
+          if (kv >= kvMin && kv < 1) { const FxV = kv * q * Sw * (c.CL * Math.sin(b) - c.CD * Math.cos(b)), FxD = q * Sw * (CL * Math.sin(b) - CDs * Math.cos(b)); if (FxV > FxD || Fy > FyLim * 1.001) { CL = kv * c.CL; CDs = kv * c.CD; Fy = FyLim; vented = 'lever'; } } }
+        const over = Fy > FyLim * 1.001; return { Fx: q * Sw * (CL * Math.sin(b) - CDs * Math.cos(b)), Fy, overLimit: over, feather: -q * Sw * p.CD0 * Math.cos(b), incidence: c.delta, alpha: ab - c.delta, atLimit: Math.abs(c.delta) >= dMax * 180 / Math.PI - 1e-6, washed, vented, src: 's07' };
       }
       const ab = Math.abs(beta), sc = (Va / FE.Va) ** 2 * (Sw / (FE.Sw || veh.wingArea)), q = 0.5 * rho * Va * Va; let Fx = interp1(FE.awa, FE.wingThrust, ab) * sc, Fy = Math.abs(interp1(FE.awa, FE.wingSide, ab)) * sc, washed = false;
       if (Fy > FyLim) { const r = FyLim / Fy; Fx = Fx >= 0 ? Fx * r : Fx; Fy = FyLim; washed = true; }
@@ -281,6 +291,7 @@ export default {
       // bracket [v_last ok, v_next not ok] and bisect the force-balance edge to ≈ 0.01 m/s (0.036 km/h)
       let lo = vs[last], hi = vs[last + 1]; for (let it = 0; it < 6; it++) { const mid = (lo + hi) / 2; if (steadyF(mid, U, twa, Ph) >= 0) lo = mid; else hi = mid; } return lo; };
     const vWind = vSus(Ubar, rel), vAll = vSus(Ubar, rel, hubAvail(S.day ?? true));
+    const beamBalance = linspace(2, 40, 20).map(vv => { const aw = apparentWind(Ubar, rel, 0, vv), wf = wing(aw.Va, aw.beta), bfs = bodyF(aw.Va, aw.beta); return { v_kmh: +(vv * 3.6).toFixed(1), Va: +aw.Va.toFixed(2), beta: +aw.beta.toFixed(1), cap: +capWing(aw.Va, aw.beta).toFixed(1), wFx: +wf.Fx.toFixed(1), wFy: +wf.Fy.toFixed(1), over: !!wf.overLimit, vented: !!wf.vented, bFx: bfs ? +bfs.Fx.toFixed(1) : null, bFy: bfs ? +bfs.Fy.toFixed(1) : null, net: +steadyF(vv, Ubar, rel).toFixed(1) }; }); /* force balance along the chosen heading (diagnostic output) */
     // Trip feasibility at the site's wind climate (for Suite 26 demand): the share of hourly wind samples (Suite 05 time
     // history at wing height) × trip headings (true-wind angle uniform 0–180°) for which the wind alone — or wind + hub — holds
     // the target speed in steady state. Wind speeds binned to 0.5 m/s so each bin is solved once.
@@ -331,7 +342,7 @@ export default {
     if (reefable) k('Reef / deploy changes', reefSt.n, '', `Auto-reef: reefed (span ${fmt(spanR, 3)} m, area ×${fmt(spanR / spanD, 3)}) above ${p.reefU} m/s wind or at the side-force cap; deployed below ${fmt(p.reefU - 1.5, 3)} m/s.`, 'calc');
     if (wingCtl === 'washout') k('Gust protection', 'passive washout (no release)', '', `Side force capped at ${fmt(FyMax, 3)} N by flexure stiffening and skin de-cambering; no feathering state, no mechanism.`, 'calc');
     if (wingCtl === 'feather') k('Wing feathering events', featherSt.n, '', `Breakaway releases at the safe side force (${fmt(FyMax, 3)} N); while feathered the wing only adds drag (C_D ≈ 0.02).`, 'calc', featherSt.n ? 'warn' : 'ok');
-    k('Safe side-force limit', Number.isFinite(FyMax) ? FyMax : 'not applied', Number.isFinite(FyMax) ? 'N' : '', `Wing side force allowed by tyre grip (${fmt(FyGrip, 3)} N) and rollover (${fmt(FyRoll, 3)} N, SSF ${fmt(ssf, 3)}, centre of effort ${fmt(hCE, 3)} m). The wing is depowered to stay inside it.`, 'calc');
+    k('Safe side-force limit', Number.isFinite(FyMax) ? FyMax : 'not applied', Number.isFinite(FyMax) ? 'N' : '', `Steady washout setting = the Suite 01 safe side force${FyS01 != null ? ` ${fmt(FyS01, 4)} N` : ''} ÷ gust overshoot ${fmt(p.washDAF ?? 1, 3)}, so the dynamic gust peak stays at the cap. Wing side force allowed by tyre grip (${fmt(FyGrip, 3)} N) and rollover (${fmt(FyRoll, 3)} N, SSF ${fmt(ssf, 3)}, centre of effort ${fmt(hCE, 3)} m). The wing is depowered to stay inside it.`, 'calc');
     k('Max sustainable speed — wind only', vWind * 3.6, 'km/h', `Steady force balance at U = ${fmt(Ubar, 3)} m/s, TWA ${rel}°.`);
     k('Max sustainable speed — wind + backup', vAll * 3.6, 'km/h', 'Including the continuous hub power available under this scenario.');
     k('Wheel power required at target', Preq, 'W', `Level road, ${p.speed} km/h (spec: 124 W at 20 km/h, 406 W at 40 km/h).`);
@@ -449,7 +460,23 @@ export default {
     out.explain.push({ title: 'What “success” means', text: 'A journey succeeds only if the speed history — computed from forces — achieves the requirement. If environmental and stored energy are insufficient, the simulation slows and stops; the worst-case energy test exists precisely to prove that the software never animates a powered journey without an energy source.' });
     out.explain.push({ title: 'Lifting body', text: BF ? `Body aerodynamics from Suite 07 (net body thrust incl. drag and side-force coefficient vs apparent-wind angle, acting at ${fmt(BF.hCE_m ?? 0.6, 3)} m); wing thrust × endplate factor ${fmt(epf, 3)}; the wing side-force cap is reduced by the body's rollover moment.` : 'Suite 07 has not published body forces yet: the body is treated as a drag area C_dA with no side force.' });
     out.explain.push({ title: 'Couplings used', text: `Wind: ${isLiveDN || (p.useLive && s05) ? 'Suite 05 live record' : 'scenario definition'}; thrust model: ${s07?.thrustVsAWA ? 'Suite 07 thrust table' : 'trimmed lift/drag polar'}; hub: ${hubProv}; buffer: ${ctx.upstream('s18') ? 'Suite 18' : 'parameter'}; switching thresholds: ${ctx.upstream('s19') ? 'Suite 19' : 'parameter'}; route: ${RT ? `imported (${fmt(RT.length / 1000, 3)} km, ${RT.segs.length} segments)` : 'flat straight'}.` });
-    out.outputs = { tripFeasibleShareWind: climate?.windOnly ?? null, tripFeasibleShareWithHub: climate?.withHub ?? null, tripShareByTwa: climate ? { twa: climate.twa, share: climate.byTwa } : null, tripSpeedByBin: climate?.vByBin ?? null, climateHours: climate?.hours ?? 0, ...flexOut, windFreeStartsPerDay: startsDay, startEnergy_J: Estart, thermalStored_J: L.thermalStored, sustainableSpeed_kmh: vAll * 3.6, sustainableSpeedWind_kmh: vWind * 3.6, range_km: dist / 1000, energyDeficit_J: energyDeficit, journeySuccess: success, sourceShares: shares, powerGap_W: gap, closure, Preq_W: Preq, scenario: p.scenario, ledger: { ...L, resid } };
+    // drivable-speed table up to 15 m/s mean wind with ×1.4 gusts (reduced arch model, same rule for every design): wind-only
+    // sustained speed (side force within the cap in the mean AND the gust state; best of normal and unloading-lever modes) and
+    // the safe speed bands per heading for hub/store-assisted driving
+    let DRV = null;
+    if ((veh.wingConfig || 'arch') === 'arch' && p.drivableTable !== false && Number.isFinite(FyMax)) {
+      const GA = AA.archGeometry(veh), polA = AA.sectionPolar('7418', 5e5), fx = s07?.flexure || {}, flD = { kTheta: fx.kTheta ?? 60, xAxis: fx.xAxis ?? 0.135, Cm0: fx.Cm0 ?? 0.05, deltaMax: fx.deltaMax ?? veh.yawLimit ?? 25, FyS: FyMax * (p.washDAF ?? 1) };
+      const WD = [2, 2.5, 3, 4, 6, 8, 10, 12, 15], gF = 1.4, lev = veh.vents ? 'auto' : 'off';
+      const vBeam = WD.map(U => AA.sustainableSpeed(GA, polA, veh, U, flD, { headings: [90], dv: 0.1, scanN: 40, reach: false, gust: gF, lever: lev, coarse: 1 }).v * 3.6);
+      const vBest = WD.map(U => AA.sustainableSpeed(GA, polA, veh, U, flD, { headings: [45, 60, 75, 90, 105, 120, 140, 160], dv: 0.25, scanN: 30, reach: false, gust: gF, lever: lev, coarse: 2 }));
+      const okAt = (U, twa, v) => (veh.vents ? [false, true] : [false]).some(lv => [1, gF].every(g => { const a = apparentWind(U * g, twa, 0, v); return !AA.trimState(GA, polA, veh, Math.abs(a.beta), Math.max(a.Va, 1e-3), 1.225, { ...flD, scanN: 30, lever: lv }).overLimit; }));
+      const bands = (U, twa) => { const ks = range(0, 26).map(i => i * 5), ok = ks.map(kv => okAt(U, twa, kv / 3.6)); const out2 = []; let st = null; ks.forEach((kv, i) => { if (ok[i] && st == null) st = kv; if ((!ok[i] || i === ks.length - 1) && st != null) { out2.push(ok[i] ? `${st}–${kv}+` : `${st}–${ks[i - 1]}`); st = null; } }); return out2.length ? out2.join(', ') : 'none'; };
+      const UB = [8, 10, 12, 15], TW = [45, 60, 75, 90, 105, 120, 150];
+      DRV = { winds: WD, gust: gF, beam_kmh: vBeam, best_kmh: vBest.map(b => b.v * 3.6), bestTwa: vBest.map(b => b.twa), bands: UB.map(U => ({ U, byTwa: TW.map(t => [t, bands(U, t)]) })) };
+      out.tables.push({ title: `Drivable speeds with ×${gF} gusts (side force within the safe cap in the mean and the gust; unloading lever used when it helps)`, cols: ['Mean true wind [m/s]', ...WD.map(String)], rows: [['Wind-only sustained, beam reach [km/h]', ...vBeam.map(v => fmt(v, 3))], ['Wind-only sustained, best heading [km/h]', ...vBest.map(b => `${fmt(b.v * 3.6, 3)} @ ${b.twa}°`)]], explain: 'Reduced arch model (stacked lifting line, flexure self-trim, washout, passive vents and lever); a state is admissible only if both the mean wind and the ×1.4 gust (same heading and speed) keep the moment-equivalent side force within the cap.' });
+      out.tables.push({ title: 'Safe speed bands [km/h] per true-wind angle (hub/store-assisted driving; mean wind and ×1.4 gust both within the cap)', cols: ['Mean wind [m/s]', ...TW.map(t => `TWA ${t}°`)], rows: DRV.bands.map(r => [r.U, ...r.byTwa.map(x => x[1])]), explain: 'Gaps between bands are speeds at which a gust would push the side force past the cap: pass through them only with the lever pulled and in the lulls, or choose another heading. A band starting at 0 means the car may stop on that heading.' });
+    }
+    out.outputs = { beamBalance, drivable: DRV, FySafe_N: FyS01 ?? FyMaxOf(hCED) * (p.washDAF ?? 1), hCE_m: hCED, hCEEnvelope: ctx.upstream('s01')?.hCEEnvelope ?? null, washoutSetting_N: FyMaxOf(hCED), washDAF: p.washDAF ?? 1, tripFeasibleShareWind: climate?.windOnly ?? null, tripFeasibleShareWithHub: climate?.withHub ?? null, tripShareByTwa: climate ? { twa: climate.twa, share: climate.byTwa } : null, tripSpeedByBin: climate?.vByBin ?? null, climateHours: climate?.hours ?? 0, ...flexOut, windFreeStartsPerDay: startsDay, startEnergy_J: Estart, thermalStored_J: L.thermalStored, sustainableSpeed_kmh: vAll * 3.6, sustainableSpeedWind_kmh: vWind * 3.6, range_km: dist / 1000, energyDeficit_J: energyDeficit, journeySuccess: success, sourceShares: shares, powerGap_W: gap, closure, Preq_W: Preq, scenario: p.scenario, ledger: { ...L, resid } };
     out.headline = `${S.label}: ${S.worst ? (success ? 'vehicle coasts to rest — no powered motion without energy.' : 'INCONSISTENT') : success ? 'SUCCESS' : 'FAILURE'} · ${fmt(dist / 1000, 3)} km, mean ${fmt(meanV * 3.6, 3)} km/h · gap ${fmt(gap, 3)} W, closure ${fmt(closure * 100, 3)} %.`;
     out.headlineKind = success ? 'info' : 'warn';
     void sum; void mean; void max; void min; void brent; void SCENARIOS; void h; void range;

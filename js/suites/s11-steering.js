@@ -3,6 +3,7 @@ import { G0, fmt, linspace, rk45, rad, deg, max, min, mean, interp1 } from '../c
 import { kmh, oneMinusCos } from '../core/physics.js';
 import { mfLateral, wheelLayout, threeWheelLoads, rolloverAy, trikeSSF, bicycle, ROADS } from '../core/vehicle.js';
 import { h } from '../core/ui.js';
+import { safeSideForce } from '../core/safeside.js';
 
 export default {
   description: 'Linear and nonlinear handling of the three-wheel vehicle: understeer gradient, yaw-rate gain, characteristic/critical speed, step-steer and crosswind-gust transients (nonlinear tyres, adaptive Runge–Kutta), trajectory, steering effort, maximum cornering speed, lateral load transfer and rollover with the wing’s aerodynamic side force and yawing moment.',
@@ -54,7 +55,7 @@ export default {
     const rSS = rr[rr.length - 1], rLin = bi.yawGain(u) * d0;
     // Revision 2: free-feathering wing root — side force capped at the breakaway setting, feathered (C_D≈0.02 + body) above it
     const a01 = ctx.upstream('s01'), washout = (a01?.wingRoot ?? ((veh.archRoot || 'flexure') === 'flexure' && (veh.wingConfig || 'arch') === 'arch' ? 'washout' : 'feathering')) === 'washout', feather = washout || ['feathering', 'ring'].includes(a01?.wingRoot ?? 'feathering');
-    const FySafe = a01?.washoutCap_N ?? a01?.FySafe_N ?? Math.min(0.7 * mu * W, 0.8 * trikeSSF(veh, p.frontFrac) * W * veh.cgHeight / (veh.wheelRadius + veh.height * 0.7 + veh.wingHeight * 0.45)), Abody = a01?.bodySideArea ?? 0.8 * veh.length * veh.height * 0.75;
+    const FySafe = a01?.FySafe_N ?? a01?.washoutCap_N ?? safeSideForce({ mass: W / G0, cgHeight: veh.cgHeight, ssf: trikeSSF(veh, p.frontFrac), hCE: veh.wheelRadius + veh.height * 0.7 + veh.wingHeight * 0.5, mu }).Fs, Abody = a01?.bodySideArea ?? 0.8 * veh.length * veh.height * 0.75;
     // Lifting body (Revision 2.3): body side force from Suite 07 (bodyForces) at its own low centre of effort; endplate factor on wings
     const s07b = ctx.upstream('s07')?.bodyForces, epf = ctx.upstream('s07')?.endplateFactor ?? 1;
     const hBody = s07b?.hCE_m ?? 0.6, CYb = (() => { const c = s07b?.CYvsAWA; if (c?.awa?.length && (c.CY || c.cy)) return Math.max(...(c.CY || c.cy).map(Math.abs)); return 0.8; })(), Ab = s07b?.Aref ?? Abody;
