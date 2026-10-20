@@ -222,7 +222,7 @@ async function anim2dLife(el, { flows, nominal, B, life, evProd, evUseYr, evBatt
   const ys = linspace(0, life, 121), atm = ys.map(y => B.reduce((s, r) => s + r.co2 * (1 + Math.floor(y / r.life)), 0)), ev = ys.map(y => evProd + evUseYr * y + Math.floor(y / evBattLife) * evBattCO2);
   el.append(h('p', { class: 'small muted' }, 'Solved economics and inventory of this suite, revealed year by year. Left: cumulative nominal and discounted cash flow of the production programme at the realism-adjusted price and volume. Right: cumulative CO₂e of one vehicle.'));
   const T = Math.max(life, flows.length - 1);
-  anim2d(el, { height: 420, duration: T, rate: T / 8, label: 'Year', unit: 'y', onFrame: (t, g) => {
+  anim2d(el, { height: 420, duration: T, rate: T / 5, label: 'Year', unit: 'y', onFrame: (t, g) => {
     g.clear(); const k = Math.min(flows.length - 1, Math.floor(t)), lo = Math.min(...cumF, ...cumD), hi = Math.max(...cumF, ...cumD, 0);
     const A = g.panel(0, 0, g.W / 2, g.H, { xr: [0, flows.length - 1], yr: [X(lo) * 1.1, X(hi) * 1.1 + 1], xlabel: 'Programme year', ylabel: `Cumulative cash [${cur}]`, title: `Cash (realism-adjusted): ${fmt(X(cumF[k]), 4)} (disc. ${fmt(X(cumD[k]), 4)}) ${cur}` });
     A.hline(0, '#94a3b8'); A.line(yrsF.slice(0, k + 1), cumF.slice(0, k + 1).map(X), '#38bdf8', 2.5); A.line(yrsF.slice(0, k + 1), cumD.slice(0, k + 1).map(X), '#a855f7', 2.5, [5, 3]); A.point(k, X(cumF[k]));

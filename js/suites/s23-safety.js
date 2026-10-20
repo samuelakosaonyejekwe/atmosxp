@@ -299,7 +299,7 @@ async function anim2dDamage(el, { grow, a0, ac, aD, Ntot, cycYrGust, Dyr, lifeYr
   const as = linspace(Math.log(a0), Math.log(ac * 0.999), 120).map(Math.exp), Ns = as.map(a => grow(a0, a));
   const yrs = Ns.map(n => n / Math.max(1, cycYrGust)), Y = yrs[yrs.length - 1] || 1, tY = Math.max(Y, Number.isFinite(lifeYr) ? lifeYr * 1.3 : 0, 1);
   el.append(h('p', { class: 'small muted' }, `Left: solved Paris-law growth from a₀ = ${fmt(a0 * 1000, 3)} mm to the critical size ${fmt(ac * 1000, 3)} mm (${fmt(Ntot, 3)} gust cycles ≈ ${fmt(Y, 3)} years); detection threshold ${fmt(aD * 1000, 3)} mm. Right: Miner damage of NiTi cartridges at ${epsA} % strain amplitude (D = 1 at ${fmt(lifeYr, 3)} years → replacement).`));
-  anim2d(el, { height: 420, duration: tY, rate: tY / 20, label: 'Service time', unit: 'years', onFrame: (t, g) => {
+  anim2d(el, { height: 420, duration: tY, rate: tY / 8, label: 'Service time', unit: 'years', onFrame: (t, g) => {
     g.clear(); let j = yrs.findIndex(y => y >= t); if (j < 0) j = yrs.length - 1; const a = as[j] * 1000;
     const A = g.panel(0, 0, g.W * 0.45, g.H * 0.62, { xr: [0, Y * 1.05], yr: [0, ac * 1000 * 1.1], xlabel: 'Years (gust cycles / year)', ylabel: 'Crack length a [mm]', title: `Insert crack a = ${fmt(a, 3)} mm` });
     A.line(yrs, as.map(v => v * 1000), '#ef4444', 2); A.hline(aD * 1000, '#f59e0b'); A.hline(ac * 1000, '#ef4444'); A.vline(Math.min(t, Y)); A.point(yrs[j], a);
@@ -309,5 +309,8 @@ async function anim2dDamage(el, { grow, a0, ac, aD, Ntot, cycYrGust, Dyr, lifeYr
     g.text(t >= Y ? 'CRITICAL — insert pull-out' : a >= aD * 1000 ? 'Detectable at inspection' : 'Below detection threshold', sx, sy - 6, { size: 11, color: t >= Y ? '#ef4444' : a >= aD * 1000 ? '#f59e0b' : '#22c55e' });
     const D = Dyr * t, B = g.panel(g.W * 0.5, 0, g.W * 0.5, g.H, { xr: [0, tY], yr: [0, Math.max(1.2, Dyr * tY * 1.05)], xlabel: 'Service years', ylabel: 'Miner damage D', title: `NiTi cartridges: D = ${fmt(D, 3)}${D >= 1 ? ' — replace' : ''}` });
     B.line([0, tY], [0, Dyr * tY], '#a855f7', 2); B.hline(1, '#ef4444'); B.vline(t); B.point(t, D, D >= 1 ? '#ef4444' : '#22c55e');
+    // service-time progress bar (elapsed share of the displayed life) so the evolution is visible at a glance
+    const fr = Math.min(1, t / tY), by = g.H - 14, bw = g.W - 80; g.ctx.fillStyle = 'rgba(148,163,184,.25)'; g.ctx.fillRect(40, by, bw, 8); g.ctx.fillStyle = D >= 1 ? '#ef4444' : '#22c55e'; g.ctx.fillRect(40, by, bw * fr, 8);
+    g.text(`${fmt(t, 3)} of ${fmt(tY, 3)} service years`, 40, by - 4, { size: 10 });
   } });
 }

@@ -427,7 +427,7 @@ async function anim2dStore(el, SB) {
   const C = SB.chg?.rec, D = SB.dis?.rec; if (!C && !D) { el.append(h('p', { class: 'small muted' }, 'No store installed.')); return; }
   el.append(h('p', { class: 'small muted' }, 'Solved enthalpy-method histories of one fin cell: sunny-day charge (left) then discharge at the road load (right). Shading = liquid fraction across the half-pitch from the heat-pipe fin; traces = fin-face temperature.'));
   const tc = C ? C.t[C.t.length - 1] : 0, td = D ? D.t[D.t.length - 1] : 0, T = tc + td;
-  anim2d(el, { height: 400, duration: T / 3600, rate: Math.max(0.5, T / 3600 / 6), label: 'Time', unit: 'h', onFrame: (th, g) => {
+  anim2d(el, { height: 400, duration: T / 3600, rate: Math.max(0.5, T / 3600 / 3), label: 'Time', unit: 'h', onFrame: (th, g) => {
     g.clear(); const t = th * 3600, W = g.W, Hh = g.H, inC = t <= tc, R = inC ? C : D, tl = inC ? t : t - tc;
     const i = R ? Math.max(0, Math.min(R.t.length - 1, R.t.findIndex(x => x >= tl))) : 0, melt = R ? R.melt[i] : 0, front = R ? R.front[i] : 0, Tf = R ? R.Tface[i] : 0;
     const x0 = 40, y0 = 30, w = W * 0.38, hh = Hh - 90, dmm = SB.delta * 1000;

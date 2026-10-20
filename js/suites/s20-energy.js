@@ -418,7 +418,7 @@ export default {
       const xmin = Math.min(...X), xmax = Math.max(...X), ymin = Math.min(...Y), ymax = Math.max(...Y);
       const modeName = (mo) => Object.keys(MODE).find(k2 => MODE[k2] === mo) || 'WIND', MCOL = { WIND: '#22c55e', ASSIST: '#84cc16', BACKUP: '#a855f7', BUFFER: '#f59e0b', COAST: '#94a3b8', BRAKE: '#ef4444', STOP: '#64748b' };
       const Pmax = Math.max(Preq, ...rec.Pw, ...rec.Ph, ...rec.Pb, 1), Emax = Math.max(1, ...rec.E);
-      A.anim2d(el, { duration: rec.t[n - 1], rate: [1, 2, 4, 8, 16, 60].reduce((b, r) => Math.abs(r - rec.t[n - 1] / 45) < Math.abs(b - rec.t[n - 1] / 45) ? r : b, 1), height: 460, label: 'Journey time', unit: 's', draw: (g, t, W, H) => {
+      A.anim2d(el, { duration: rec.t[n - 1], rate: [1, 2, 4, 8, 16, 60].reduce((b, r) => Math.abs(r - rec.t[n - 1] / 20) < Math.abs(b - rec.t[n - 1] / 20) ? r : b, 1), height: 460, label: 'Journey time', unit: 's', draw: (g, t, W, H) => {
         const k = A.at(rec.t, t), i = k.i, mapW = Math.min(W * 0.48, 460), mx = 12, my = 12, mh = H - 24;
         // plan-view map: travelled path coloured by mode, vehicle icon, wind arrow
         const sx = (mapW - 40) / Math.max(1, xmax - xmin, ymax - ymin), cx = mx + 20, cy = my + mh - 20, P = (j) => [cx + (X[j] - xmin) * sx, cy - (Y[j] - ymin) * sx];

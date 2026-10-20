@@ -146,7 +146,7 @@ export default {
       const MC = { WIND: '#22c55e', ASSIST: '#84cc16', BACKUP: '#a855f7', BUFFER: '#f59e0b', DECEL: '#ef4444', BRAKING: '#ef4444', PARKED: '#64748b' };
       const nodes = ['WIND', 'ASSIST', 'BACKUP', 'BUFFER', 'DECEL'];
       const Fmax = Math.max(disengage * 1.6, ...S.sensed.filter(Number.isFinite)) || 1;
-      A.anim2d(el, { duration: t[t.length - 1], rate: 16, height: 460, label: 'Time', unit: 's', draw: (g, tt, W, H) => {
+      A.anim2d(el, { duration: t[t.length - 1], rate: 32, height: 460, label: 'Time', unit: 's', draw: (g, tt, W, H) => {
         const k = A.at(t, tt), i = k.i, cur = S.modes[i];
         // state diagram
         const R0 = Math.min(W * 0.14, 110, (H - 120) / 2), cx = 20 + R0 + 30, cy = 44 + R0;
