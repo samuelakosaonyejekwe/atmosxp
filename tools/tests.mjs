@@ -73,4 +73,15 @@ const tb2 = parseDelimited('a;b\n1,5;2\n'); ok('semicolon CSV', tb2.header.lengt
 const fa = parseAirfoil('NACA test\n1 0\n0.5 0.05\n0 0\n0.5 -0.05\n1 0\n1 0\n0.5 0.05\n0 0\n0.5 -0.05\n1 0\n0.9 0.01\n0.8 0.02\n'); ok('airfoil parse', fa.points.length > 10);
 const z = await zip([{ name: 'a.txt', data: 'hello' }]); ok('zip has end-of-central-directory', new Uint8Array(await z.arrayBuffer()).slice(-22)[0] === 0x50);
 
+// measured converter efficiency → latent-heat-store viability (synthetic numbers, test of the pipeline only)
+{ const { measuredEfficiency } = await import('../js/core/measured.js'); const PS = await import('../js/core/pcmstore.js');
+  const mk = (frac, n = 6, jitter = 0.005) => { const Th = 160, Tc = 40, carnot = 1 - (Tc + 273.15) / (Th + 273.15), Q = 1000; const cols = { test_id: [], Q_in_J: [], W_net_J: [], T_hot_C: [], T_cold_C: [], Q_out_J: [] };
+    for (let i = 0; i < n; i++) { const f = frac + (i % 2 ? jitter : -jitter), W = Q * f * carnot; cols.test_id.push('T' + (i % 3)); cols.Q_in_J.push(Q); cols.W_net_J.push(W); cols.T_hot_C.push(Th); cols.T_cold_C.push(Tc); cols.Q_out_J.push(Q - W); }
+    return [{ name: 'synthetic', use: 'validation', header: Object.keys(cols), columns: cols }]; };
+  const lo = measuredEfficiency(mk(0.039)), hi = measuredEfficiency(mk(0.32));
+  ok('measured η: fraction of Carnot recovered', Math.abs(hi.mean - 0.32) < 1e-9, hi.mean); ok('measured η: lower 95 % below mean', hi.lo95 < hi.mean && hi.lo95 > 0.3, hi.lo95); ok('measured η: validation rules met', hi.validated);
+  ok('measured η: no data → null', measuredEfficiency([]) === null);
+  const pcm = PS.pcmById('hdpe'), Tlow = pcm.Tm - 25, Ttop = Math.min(pcm.Tmax, pcm.Tm + 8), size = (frac) => { let best = null; for (let Af = 0; Af <= 30; Af += 1) { const rej = PS.rejection({ v: 20 / 3.6, Afin: Af }), op = PS.storeOperatingPoint({ pcm, Ta: 30, Proad: 55, frac, rej }); if (!op.feasible) continue; const st = PS.storeForEnergy(pcm, op.Q * 3600 * 1.1, { Tlow, Ttop, Tamb: 30 }), tot = st.total + rej.finMass + 2 * 0.25 * op.Q / 1000 + 0.8; if (!best || tot < best) best = tot; } return best ?? Infinity; };
+  const base = 186, cap = 258; ok('store NOT viable on the built-device value', base + size(lo.lo95) > cap, size(lo.lo95)); ok('store viable on a high measured value (sizing flips)', base + size(hi.lo95) <= cap, size(hi.lo95)); }
+
 console.log(out.join('\n')); console.log(`\n${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

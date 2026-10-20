@@ -240,7 +240,7 @@ export function sustainableSpeed(G, pol, veh, U, flex, { rho = 1.225, headings =
      setting — the highest thrust with the side force within the cap */
   const CAMB = progressive ? [1, 0.75, 0.5, 0.25, 0] : [1];
   const progBest = (pV, b, VA) => { let best = null; for (const cb of CAMB) { const T = trimState(G, pV, veh, b, VA, rho, { ...flex, FyS, scanN, camber: cb }); if (!best || (best.overLimit && !T.overLimit) || (!T.overLimit === !best.overLimit && T.net > best.net)) best = { ...T, camberSetting: cb }; } return best; };
-  const netAt = (v, twa) => { const aw = apparentWind(U, twa, 0, v), b = Math.abs(aw.beta), VA = Math.max(aw.Va, 1e-3), pV = typeof pol === 'function' ? pol(VA) : pol; const F = mode === 'ideal' ? bestInEnvelope(G, pV, veh, b, VA, rho, { deltaMax: flex.deltaMax ?? 25, FyS }) : progBest(pV, b, VA); if (mode === 'ideal') return F.overLimit ? -Infinity : F.net;
+  const netAt = (v, twa) => { const aw = apparentWind(U, twa, 0, v), b = Math.abs(aw.beta), VA = Math.max(aw.Va, 1e-3), pV = typeof pol === 'function' ? pol(VA) : pol; const F = mode === 'ideal' ? bestInEnvelope(G, pV, veh, b, VA, rho, { deltaMax: flex.deltaMax ?? 35, FyS }) : progBest(pV, b, VA); if (mode === 'ideal') return F.overLimit ? -Infinity : F.net;
     /* gust admissibility (same heading and speed, true wind × gust) and the driver lever in its depower position (kirigami panels held open) */
     const okG = (lev) => { if (!gust) return true; const ag = apparentWind(U * gust, twa, 0, v), bg = Math.abs(ag.beta), Vg = Math.max(ag.Va, 1e-3); return !trimState(G, typeof pol === 'function' ? pol(Vg) : pol, veh, bg, Vg, rho, { ...flex, FyS, scanN, lever: lev }).overLimit; };
     const nN = !F.overLimit && okG(false) ? F.net : -Infinity; if (lever === 'off' || !veh.vents) return nN;
@@ -278,7 +278,7 @@ export function sideCE(veh, { alpha = 8 } = {}) {
   return f > 0 ? m / f : null;
 }
 // h_CE over the whole operating envelope (safety cap must be conservative): apparent-wind angle 20–160° (sets the body side-panel
-// angle that loads the stack from below), arch incidence −5…40° (self-trim, washout floor, gust +12°, yaw ±25° all land inside it),
+// angle that loads the stack from below), arch incidence −5…40° (self-trim, washout floor, gust +12°, yaw to the ±δ_max flexure limit (vehicle.yawLimit, ±35° by default) all land inside it),
 // skin de-camber states (zero-lift shift and section C_l,max scaled 1 → 0.3, which moves load between tip and root through
 // section stall), with and without the root-plate reflection credit, at apparent wind 3–35 m/s. The washout holds the arch side
 // force at or below the cap F, so the heeling moment of a state is min(|F_state|, F)·h_state; the design h_CE is the largest

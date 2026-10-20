@@ -104,7 +104,7 @@ export default {
     const s07 = ctx.upstream('s07'), vehF = ctx.vehicle || {}; let gustWash = null;
     if (s07?.flexure && (vehF.wingConfig || 'arch') === 'arch') {
       const GA = AA.archGeometry(vehF), polA = AA.sectionPolar('7418', s07.Re || 5e5), fx = s07.flexure, b0 = Math.max(5, Math.abs(s07.awa ?? 60)), Va0 = s07.Va || 8, FyS = s07.FySafe ?? AA.safeSide(vehF, GA.hCE);
-      const fl = { kTheta: fx.kTheta, xAxis: fx.xAxis, Cm0: fx.Cm0, deltaMax: fx.deltaMax ?? 25 }, T0 = AA.trimState(GA, polA, vehF, b0, Va0, 1.225, { ...fl, FyS: Infinity, scanN: 60 });
+      const fl = { kTheta: fx.kTheta, xAxis: fx.xAxis, Cm0: fx.Cm0, deltaMax: fx.deltaMax ?? 35 }, T0 = AA.trimState(GA, polA, vehF, b0, Va0, 1.225, { ...fl, FyS: Infinity, scanN: 60 });
       const gV = 1.4, gB = 12, b1 = Math.min(175, b0 + gB), Va1 = gV * Va0;
       const lockF = AA.archForces(GA, polA, vehF, b1, T0.alpha + gB, Va1, 1.225), trimF = AA.trimState(GA, polA, vehF, b1, Va1, 1.225, { ...fl, FyS, scanN: 60 }), trimU = AA.trimState(GA, polA, vehF, b1, Va1, 1.225, { ...fl, FyS: Infinity, scanN: 60 });
       const fA = ctx.upstream('s06')?.flexure?.fAero;
@@ -208,14 +208,17 @@ async function fsi2D(el, W, p, S, G) {
   const wS = interp1(Z, S.sol.w, z75), phS = interp1(Z, S.sol.phi, z75);
   const dyn = G.t.map((_, k) => { const q = G.q[k] || []; return { w: interp1(Z, Z.map((_, j) => q.reduce((a, qk, m) => a + qk * G.modes[m].w[j], 0)), z75), ph: interp1(Z, Z.map((_, j) => q.reduce((a, qk, m) => a + qk * G.modes[m].phi[j], 0)), z75) }; });
   const dMax = Math.max(1e-12, ...dyn.map(d => Math.abs(d.w))), amp = Math.max(1, Math.round(0.25 * c75 / dMax)), aAmp = Math.max(1, Math.min(200, Math.round(0.15 / Math.max(1e-9, ...dyn.map(d => Math.abs(d.ph))))));
+  const trail = []; /* display only: the convergence history replays every 4 s and the section trailing edge leaves a fading trail */
   return anim2d(el, { duration: T, rate: 0.5, label: 'Time', height: 380, draw: (g, t, Wd, H, c) => {
-    const hw = Wd / 2 - 20, nIt = Math.min(Hst.length, Math.max(1, Math.round(t / Math.min(2, T) * Hst.length)));
+    const hw = Wd / 2 - 20, nIt = Math.min(Hst.length, Math.max(1, Math.round(((t % 4) / 2) * Hst.length)));
     const A = axes2d(g, { x0: 60, y0: 30, w: hw - 70, h: H - 90, xr: [0, Math.max(2, Hst.length)], yr: [-12, 1], xl: 'Coupling iteration', yl: 'log₁₀ residual', fg: c.fg, mute: c.mute });
     polyline(g, Hst.slice(0, nIt).map((r, i) => [A.X(i + 1), A.Y(Math.log10(Math.max(1e-12, r)))]), '#22c55e', 2.5); g.fillStyle = '#facc15'; const rl = Hst[nIt - 1]; g.beginPath(); g.arc(A.X(nIt), A.Y(Math.log10(Math.max(1e-12, rl))), 5, 0, 7); g.fill();
     g.fillStyle = c.fg; g.fillText(`iteration ${nIt}/${Hst.length} · residual ${fmt(rl, 3)}`, 60, 18);
     const tt = t % T, k = Math.min(G.t.length - 1, Math.round(tt / (G.t[1] - G.t[0]))), d = dyn[k], cx = hw + 60 + hw * 0.3, cy = H / 2 - 10, sc = Math.min(hw * 0.55, H * 0.7) / c75;
     const draw = (w, ph, col, fill) => { g.beginPath(); af.forEach(([x, y], i) => { const xr = (x - 0.25) * c75, yr = y * c75, X = cx + sc * (xr * Math.cos(ph) - yr * Math.sin(ph)), Y = cy - sc * (xr * Math.sin(ph) + yr * Math.cos(ph) + w); i ? g.lineTo(X, Y) : g.moveTo(X, Y); }); g.closePath(); if (fill) { g.fillStyle = col; g.fill(); } else { g.strokeStyle = col; g.lineWidth = 1.5; g.stroke(); } };
     draw(0, phS, c.mute, false); draw(d.w * amp, phS + d.ph * aAmp, '#38bdf8cc', true);
+    { const ph = phS + d.ph * aAmp, xr = 0.75 * c75, X = cx + sc * xr * Math.cos(ph), Y = cy - sc * (xr * Math.sin(ph) + d.w * amp); trail.push([X, Y]); if (trail.length > 60) trail.shift();
+      trail.forEach(([x, y], i) => { const a = (i + 1) / trail.length; g.fillStyle = `rgba(250,204,21,${a})`; g.beginPath(); g.arc(x, y, 2 + 5 * a, 0, 7); g.fill(); }); }
     g.fillStyle = c.fg; g.fillText(`75 % span · t = ${fmt(G.t[k], 3)} s · Δw ${fmt(d.w * 1000, 3)} mm (×${amp}) · Δθ ${fmt(deg(d.ph), 3)}° (×${aAmp})`, hw + 40, 18);
   } });
 }

@@ -10,7 +10,7 @@ import * as live from './live.js';
 import * as materials from './materials.js';
 import { parseFile, ACCEPT, autoMap } from './io.js';
 import { zip } from './io.js';
-import { contextRecs, verdictRecs, bestPractice, cachedSiteContext, getSiteContext } from './advisor.js';
+import { contextRecs, verdictRecs, bestPractice, cachedSiteContext, getSiteContext, designRecs } from './advisor.js';
 import { SUITES, suiteIndex } from '../suites/index.js';
 
 const MODES = [
@@ -180,7 +180,7 @@ function explanation(def, res) {
 }
 
 async function recsPane(el, def, res) {
-  const base = [...verdictRecs(res.verdicts), ...(res.recs || [])];
+  const base = [...verdictRecs(res.verdicts), ...(res.recs || []), ...designRecs(def)];
   const listBox = h('div'); el.append(section('Engineering recommendations (from this analysis)', listBox)); listBox.append(recList(base));
   const ctxBox = h('div', {}, h('p', { class: 'muted small' }, 'Fetching live sustainability & economic context for the project site…')); el.append(section('Live sustainability & economics context', ctxBox));
   const litBox = h('div', {}, h('p', { class: 'muted small' }, 'Querying the global literature index for the latest best practice…')); el.append(section('Fresh best practice & prior art (live literature)', litBox));

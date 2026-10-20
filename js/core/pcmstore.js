@@ -89,6 +89,8 @@ export function regenEffectiveness({ nStations, arcDeg, fRev, tau }) {
 //                  Ni-45Ti Stirling/Ericsson-cycle engine, Springer doi:10.1007/BF00550253); no regenerator credit.
 //   model        — this chain's regenerated cycle (Suite 15 constitutive model + stationary-cam regenerator).
 //   target       — thermodynamic estimates of ≈ 1/5–1/3 of Carnot for SMA engines (research target, lower bound 20 %).
+// measured — imported cycle records (Suites 15/17, js/core/measured.js); when present Suite 14 REPLACES the demonstrated value
+//              with the lower 95 % bound of the measured fraction of Carnot.
 export const BASIS = { demo: { frac: 0.039, label: 'Demonstrated basis (built devices, ≈ 3.9 % of Carnot, no regenerator credit)' }, target: { frac: 0.20, label: 'Research target (≈ 20 % of Carnot, theoretical estimates)' } };
 
 // Cold-side rejection: graphite underbody as a heat-pipe-fed spreader (turbulent flat plate, no added drag) plus

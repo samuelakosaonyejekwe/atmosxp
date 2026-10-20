@@ -38,3 +38,10 @@ export async function bestPractice(suiteMeta, n = 6) {
 export function verdictRecs(verdicts = []) {
   return verdicts.filter(v => (v.status || (v.pass ? 'pass' : 'fail')) === 'fail').map(v => ({ level: 'critical', text: `Failed: ${v.test}. ${v.fix || 'Revise the design variables that drive this check (see the sensitivity tab) before relying on this configuration.'}`, basis: v.detail }));
 }
+
+// Design-state recommendations shared across suites (never change the design by themselves)
+export function designRecs(def) {
+  const recs = [], rs = store.output?.('s14')?.researchStore;
+  if (rs?.measuredViable && ['s14', 's15', 's17', 's18', 's20', 's26'].includes(def?.id)) recs.push({ level: 'good', text: `Imported test data put the converter at ≥ ${fmt((rs.measuredBasis?.lo95 ?? 0) * 100, 3)} % of Carnot (lower 95 % bound, ${rs.measuredBasis?.source}): the 1 h latent-heat store now fits the mass cap. Recommend enabling the store option and re-running the chain; it is not enabled automatically.`, basis: 'Suite 14 measured-basis sizing' });
+  return recs;
+}
