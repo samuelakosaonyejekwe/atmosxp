@@ -26,6 +26,7 @@ export default {
     { key: 'CD', label: 'Wing C_D at trim', type: 'number', min: 0.02, max: 0.5, step: 0.01, group: 'Operating point', default: 0.12 },
     { key: 'engageFrac', label: 'Engage threshold (× required force)', type: 'number', min: 0.3, max: 1.2, step: 0.01, group: 'Switch design', default: 0.85 },
     { key: 'disengageFrac', label: 'Disengage threshold (× required force)', type: 'number', min: 0.5, max: 2, step: 0.01, group: 'Switch design', default: 1.15 },
+    { key: 'autoBand', label: 'Auto-size the hysteresis band (narrowest chatter-free band)', type: 'bool', group: 'Switch design', default: true, help: 'Widens the engage/disengage band symmetrically about the required force until the 10-minute gust record produces no chatter; the passive switch is then built to that band.' },
     { key: 'kSens', label: 'Sensor flexure stiffness', unit: 'N/mm', type: 'number', min: 1, max: 500, step: 1, group: 'Switch design', default: 20 },
     { key: 'mSens', label: 'Sensor moving mass', unit: 'kg', type: 'number', min: 0.05, max: 10, step: 0.05, group: 'Switch design', default: 0.6 },
     { key: 'zeta', label: 'Sensor damping ratio', type: 'number', min: 0.05, max: 2, step: 0.05, group: 'Switch design', default: 0.5 },
@@ -71,11 +72,12 @@ export default {
       thrust.push(feath ? -0.5 * rho * apparentWind(Uw[i], p.twa, 0, v).Va ** 2 * veh.wingArea * 0.02 * 0.5 : thrustRaw[i] * trimF);
     }
     const side = sideRaw.map((f, i) => wingState[i] === 'FEATHERED' ? 0.5 * rho * Uw[i] ** 2 * veh.wingArea * 0.02 : ['TRIMMED', 'WASHOUT'].includes(wingState[i]) ? FySafe : f);
-    const engage = p.engageFrac * need, disengage = Math.max(p.disengageFrac, p.engageFrac) * need, wn = Math.sqrt(p.kSens * 1000 / p.mSens);
+    let engage = p.engageFrac * need, disengage = Math.max(p.disengageFrac, p.engageFrac) * need; const wn = Math.sqrt(p.kSens * 1000 / p.mSens);
     const brakeWin = (tt) => tt >= 200 && tt <= 230;
     const fault = p.fault, Pb = fault === 'weak' ? 5 : p.Pbackup;
     const run = (eF, dF, o = {}) => simulateSwitching(t, thrust, { need, engage: eF * need, disengage: Math.max(dF, eF) * need, wn, zeta: p.zeta, delay: p.delay, Pbackup: Pb, v, Ebuf0: p.Ebuf * 1000, braking: fault === 'brakeGust' && p.interlock ? brakeWin : () => false, jammed: fault === 'jammed', thresholdScale: fault === 'flexure' ? 0.4 : 1, ...o });
-    const S = run(p.engageFrac, p.disengageFrac), S0 = run(1, 1);
+    let S = run(p.engageFrac, p.disengageFrac); const S0 = run(1, 1);
+    if (p.autoBand && S.chatter > 0) { for (const bw of linspace(0.35, 1.2, 18)) { const eF = Math.max(0.3, 1 - bw / 2), dF = 1 + bw / 2, r = run(eF, dF); if (!r.chatter) { S = r; p.engageFrac = eF; p.disengageFrac = dF; engage = eF * need; disengage = dF * need; break; } } }
     // buffer charge state with solar-thermal recharge (re-scoped thermal backup, Suites 13–18) while the buffer is not discharging
     const thSrc = ['s18', 's17', 's15', 's14', 's13'].map(id => ctx.upstream(id)).find(o => o && Number.isFinite(o.thermalChargePower_W)), Pth = Math.max(0, thSrc?.thermalChargePower_W ?? 0), etaCh = ctx.upstream('s18')?.efficiency ?? 0.8, dayNow = ctx.upstream('s05')?.isDay ?? true;
     const Ecap = Math.max(p.Ebuf * 1000, ctx.upstream('s18')?.Etotal_J ?? 0), Ech = [p.Ebuf * 1000];
